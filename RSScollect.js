@@ -245,13 +245,16 @@ function fetchAndParseRss(rssUrl, siteName, existingUrls) {
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
-  if (!sheet) return;
+  if (!trendDataSheet) {
+    Logger.log("エラー: collectシートが見つかりません。");
+    return;
+  }
 
-  const lastRow = sheet.getLastRow();
+  const lastRow = trendDataSheet.getLastRow();
   if (lastRow < 2) return;
 
   // B〜E（タイトル, URL, 抜粋, 見出し）をまとめて取得
-  const range = sheet.getRange(2, 2, lastRow - 1, Config.CollectSheet.Columns.SUMMARY - 2 + 1); // B..E
+  const range = trendDataSheet.getRange(2, 2, lastRow - 1, Config.CollectSheet.Columns.SUMMARY - 2 + 1); // B..E
   const data = range.getValues();
 
   const updates = [];
@@ -279,11 +282,12 @@ function processSummarization() {
           }
         } else {
           // タイトルが空：Dで代替
-          if (abstractText && abstractText !== NO_ABSTRACT_TEXT) {
+          if (abstractText && abstractText !== Config.Llm.NO_ABSTRACT_TEXT) {
             if (isLikelyEnglish(String(abstractText))) {
               outE = `=GOOGLETRANSLATE(D${rowNumber},"auto","ja")`;
               Logger.log(`E${rowNumber}: タイトル欠落→抜粋(英)の機械翻訳を代替`);
-            } else {
+            }
+            else {
               outE = String(abstractText).trim();
               Logger.log(`E${rowNumber}: タイトル欠落→抜粋(日)を代替`);
             }
@@ -305,7 +309,7 @@ function processSummarization() {
   });
 
   if (updates.length > 0) {
-    const outRange = sheet.getRange(2, Config.CollectSheet.Columns.SUMMARY, updates.length, 1);
+    const outRange = trendDataSheet.getRange(2, Config.CollectSheet.Columns.SUMMARY, updates.length, 1);
     outRange.setValues(updates);
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました（短文はタイトル基準、英語は機械翻訳）。`);
   }
