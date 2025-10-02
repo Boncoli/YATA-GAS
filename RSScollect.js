@@ -457,7 +457,7 @@ function executeOpenAICall(systemPrompt, userPrompt) {
   }
 
   const payload = {
-    model: "GPT-5-mini", // または "gpt-4o" など、利用したいモデル
+    model: "gpt-3.5-turbo", // または "gpt-4o" など、利用したいモデル
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user",   content: userPrompt }
