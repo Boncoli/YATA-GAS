@@ -411,7 +411,7 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
       { role: "user",   content: userPrompt }
     ],
     temperature: 0.2,
-    max_completion_tokens: 128
+    max_completion_tokens: 256
   };
   const options = {
     method: "post",
@@ -462,8 +462,8 @@ function executeOpenAICall(systemPrompt, userPrompt) {
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
-    max_completion_tokens: 512, // ← ここを修正！
-    temperature: 0.7,      // 生成のランダム性（0=決定論的、1=多様性高め）
+    max_completion_tokens: 256, // ← ここを修正！
+    temperature: 0.2,           // 生成のランダム性
     top_p: 1,              // nucleus sampling。通常は1のままでOK
   };
   const options = {
@@ -852,8 +852,8 @@ function callAzureChatForText(systemPrompt, userPrompt) {
       { role: "system", content: systemPrompt },
       { role: "user",   content: userPrompt }
     ],
-    temperature: 0.1,
-    max_completion_tokens: 1200
+    temperature: 0.2,
+    max_completion_tokens: 256
   };
   var options = {
     method: "post",
@@ -887,7 +887,7 @@ function callGeminiForText(systemPrompt, userPrompt) {
   var prompt = (systemPrompt || "") + "\n\n" + (userPrompt || "");
   var payload = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
+    generationConfig: { temperature: 0.2, maxOutputTokens: 256 }
   };
   var options = {
     method: "post",
