@@ -457,13 +457,14 @@ function executeOpenAICall(systemPrompt, userPrompt) {
   }
 
   const payload = {
-    model: "gpt-3.5-turbo", // または "gpt-4o" など、利用したいモデル
+    model: "gpt-5-nano",   // 使用モデル
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user",   content: userPrompt }
+      { role: "user", content: userPrompt }
     ],
-    temperature: 0.2,
-    max_tokens: 128
+    max_tokens: 512,       // 出力の最大トークン数
+    temperature: 0.7,      // 生成のランダム性（0=決定論的、1=多様性高め）
+    top_p: 1,              // nucleus sampling。通常は1のままでOK
   };
   const options = {
     method: "post",
@@ -483,7 +484,7 @@ function executeOpenAICall(systemPrompt, userPrompt) {
       headline = "API Error: " + code;
     } else {
       const json = JSON.parse(txt);
-      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+      if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
         headline = String(json.choices[0].message.content).trim();
       } else {
         _logError("executeOpenAICall", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。他のLLMを試します。");

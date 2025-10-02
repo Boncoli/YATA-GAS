@@ -60,7 +60,7 @@ RSSフィードのURLとサイト名を管理します。
 | `GEMINI_API_KEY` | Gemini APIを利用する場合のAPIキー | `AIzaSy...` | AI見出し生成にGeminiを利用する場合必須 |
 | `AZURE_ENDPOINT_URL` | Azure OpenAIを利用する場合のエンドポイントURL | `https://your-resource-name.openai.azure.com/openai/deployments/your-deployment-name/chat/completions?api-version=2023-07-01-preview` | AI見出し生成にAzure OpenAIを利用する場合必須 |
 | `OPENAI_API_KEY` | Azure OpenAIを利用する場合のAPIキー | `your-azure-openai-api-key` | AI見出し生成にAzure OpenAIを利用する場合必須 |
-| `OPENAI_API_KEY_PERSONAL` | 個人的なOpenAI APIを利用する場合のAPIキー | `sk-...` | AI見出し生成にOpenAI APIを利用する場合必須 |
+| `OPENAI_API_KEY_PERSONAL` | 個人的なOpenAI APIを利用する場合のAPIキー | `sk-...` (例: `gpt-5-nano` モデル用) | AI見出し生成にOpenAI APIを利用する場合必須 |
 | `DIGEST_DAYS` | 週次ダイジェストの集計日数 | `7` (既定値) | 任意 |
 | `DIGEST_TOP_N` | 週次ダイジェストで表示する上位記事数 | `20` (既定値) | 任意 |
 | `DIGEST_USE_AI_RANK` | 週次ダイジェストでAIによる重要度重み付けを利用するか (`Y`/`N`) | `N` (既定値) | 任意 |
