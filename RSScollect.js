@@ -411,7 +411,7 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
       { role: "user",   content: userPrompt }
     ],
     temperature: 0.2,
-    max_tokens: 128
+    max_completion_tokens: 128
   };
   const options = {
     method: "post",
@@ -853,7 +853,7 @@ function callAzureChatForText(systemPrompt, userPrompt) {
       { role: "user",   content: userPrompt }
     ],
     temperature: 0.1,
-    max_tokens: 1200
+    max_completion_tokens: 1200
   };
   var options = {
     method: "post",
