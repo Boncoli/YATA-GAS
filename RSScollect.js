@@ -1,32 +1,57 @@
 // =================================================================
-// 📌 定数定義 ＆ プロパティの想定
+// 📌 Constants (定数定義)
 // =================================================================
-// シート名
-const RSS_LIST_SHEET_NAME = "RSS";
-const TREND_DATA_SHEET_NAME = "collect";
+const Config = {
+  SheetNames: {
+    RSS_LIST: "RSS",
+    TREND_DATA: "collect",
+  },
+  CollectSheet: {
+    Columns: {
+      URL: 3,
+      ABSTRACT: 4,
+      SUMMARY: 5,
+      SOURCE: 6,
+    },
+    DataRange: {
+      START_ROW: 2,
+      NUM_COLS_FOR_URL: 1,
+    },
+  },
+  RssListSheet: {
+    DataRange: {
+      START_ROW: 2,
+      START_COL: 1,
+      NUM_COLS: 2,
+    },
+  },
+  Llm: {
+    MODEL_NAME: "gemini-2.5-flash",
+    DELAY_MS: 1200,
+    MIN_SUMMARY_LENGTH: 200,
+    NO_ABSTRACT_TEXT: "抜粋なし",
+    MISSING_ABSTRACT_TEXT: "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。",
+    SHORT_JA_SKIP_TEXT: "記事が短く、日本語のため見出し生成をスキップしました。",
+  },
+  Digest: {
+    DEFAULT_USE_AI_RANK: "N",
+    DEFAULT_USE_AI_TLDR: "N",
+    DEFAULT_AI_CANDIDATES: 50,
+  },
+};
 
-// collectシートの列インデックス（1スタート）
-const URL_COL = 3;      // C列: URL
-const ABSTRACT_COL = 4; // D列: 抜粋
-const SUMMARY_COL = 5;  // E列: 見出し（AI生成）
-const SOURCE_COL = 6;   // F列: ソース（サイト名）
-
-// LLM設定（Geminiはフォールバック用として維持）
-const MODEL_NAME = "gemini-2.5-flash";
-const DELAY_MS = 1200;  // APIレート制御の待ち時間（ms）
-// 見出し生成の閾値・定型文
-const NO_ABSTRACT_TEXT = "抜粋なし";
-const MIN_SUMMARY_LENGTH = 200;
-const MISSING_ABSTRACT_TEXT = "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。";
-const SHORT_JA_SKIP_TEXT = "記事が短く、日本語のため見出し生成をスキップしました。";
-
-// 週次ダイジェスト：既定はヒューリスティックのみ（AIはデフォルトOFF）
-const DEFAULT_DIGEST_USE_AI_RANK = "N";
-const DEFAULT_DIGEST_USE_AI_TLDR = "N";
-const DEFAULT_DIGEST_AI_CANDIDATES = 50; // 将来AIを使う時の上限（既定50）
+/**
+ * エラーをログに記録するヘルパー関数
+ * @param {string} functionName エラーが発生した関数名
+ * @param {Error} error エラーオブジェクト
+ * @param {string} message 追加のメッセージ
+ */
+function _logError(functionName, error, message = "") {
+  Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
+}
 
 // =================================================================
-// 🔄 統合メインフロー（通知は呼びません）
+// 🔄 Core Automation (統合メインフロー)
 // =================================================================
 /**
  * 収集 → 見出し生成（通知は行わない）
@@ -39,16 +64,15 @@ function mainAutomationFlow() {
 }
 
 // =================================================================
-// 📥 RSS収集・データ書き込み
+// 📥 RSS Feed Processing (RSS収集・データ書き込み)
 // =================================================================
+
 /**
- * RSSフィードを取得し、collectシートに追記（重複URLはスキップ）
- * 追記後はA列（日付）で昇順に統一
+ * collectシートをA列（日付）で昇順にソートする
  */
-function collectRssFeeds() {
+function sortCollectByDateAsc() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const rssListSheet = ss.getSheetByName(RSS_LIST_SHEET_NAME);
-  const trendDataSheet = ss.getSheetByName(TREND_DATA_SHEET_NAME);
+  const sheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
 
   if (!rssListSheet || !trendDataSheet) {
     Logger.log("エラー: シート名が正しくありません。'RSS'または'collect'のシート名を確認してください。");
@@ -61,7 +85,7 @@ function collectRssFeeds() {
     return;
   }
 
-  const rssList = rssListSheet.getRange(2, 1, lastRow - 1, 2).getValues(); // [サイト名, RSS URL]
+  const rssList = rssListSheet.getRange(Config.RssListSheet.DataRange.START_ROW, Config.RssListSheet.DataRange.START_COL, lastRow - (Config.RssListSheet.DataRange.START_ROW - 1), Config.RssListSheet.DataRange.NUM_COLS).getValues(); // [サイト名, RSS URL]
   const existingUrls = getExistingUrls(trendDataSheet);
 
   let newData = [];
@@ -95,8 +119,74 @@ function collectRssFeeds() {
 function getExistingUrls(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return new Set();
-  const urls = sheet.getRange(2, URL_COL, lastRow - 1, 1).getValues().flat();
+  const urls = sheet.getRange(Config.CollectSheet.DataRange.START_ROW, Config.CollectSheet.Columns.URL, lastRow - (Config.CollectSheet.DataRange.START_ROW - 1), Config.CollectSheet.DataRange.NUM_COLS_FOR_URL).getValues().flat();
   return new Set(urls);
+}
+
+/** RSS 2.0 のパース */
+function parseRss2Feed(root, siteName, existingUrls) {
+  const rssArticles = [];
+  const channel = root.getChild("channel");
+  if (channel) {
+    const items = channel.getChildren("item");
+    items.forEach(item => {
+      const title = (item.getChild("title") && item.getChild("title").getText()) || "";
+      const link  = (item.getChild("link") && item.getChild("link").getText()) || "";
+      const pubDate = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || "";
+      const description = (item.getChild("description") && item.getChild("description").getText()) || "";
+
+      if (link && !existingUrls.has(link) && title) {
+        rssArticles.push([
+          pubDate ? new Date(pubDate) : new Date(), // A:日付
+          title.trim(),                              // B:元タイトル
+          link.trim(),                               // C:URL
+          stripHtml(description) || Config.Llm.NO_ABSTRACT_TEXT,// D:抜粋
+          "",                                        // E: 見出し（AI生成）
+          siteName                                   // F: ソース
+        ]);
+      }
+    });
+  }
+  return rssArticles;
+}
+
+/** Atom のパース */
+function parseAtomFeed(root, siteName, existingUrls) {
+  const atomArticles = [];
+  const ATOM_NS = XmlService.getNamespace("http://www.w3.org/2005/Atom");
+  const entries = root.getChildren("entry", ATOM_NS) || [];
+  entries.forEach(entry => {
+    const title = (entry.getChild("title", ATOM_NS) && entry.getChild("title", ATOM_NS).getText()) || "";
+    const linkElArr = entry.getChildren("link", ATOM_NS) || [];
+    let link = "";
+    for (var i = 0; i < linkElArr.length; i++) {
+      const relAttr = linkElArr[i].getAttribute("rel");
+      if (!relAttr || relAttr.getValue() === "alternate") {
+        const hrefAttr = linkElArr[i].getAttribute("href");
+        if (hrefAttr) link = hrefAttr.getValue();
+        break;
+      }
+    }
+    const updatedEl = entry.getChild("updated", ATOM_NS);
+    const publishedEl = entry.getChild("published", ATOM_NS);
+    const pubDate = (updatedEl && updatedEl.getText()) || (publishedEl && publishedEl.getText()) || "";
+
+    const summaryEl = entry.getChild("summary", ATOM_NS);
+    const contentEl = entry.getChild("content", ATOM_NS);
+    const summary = (summaryEl && summaryEl.getText()) || (contentEl && contentEl.getText()) || "";
+
+    if (link && !existingUrls.has(link) && title) {
+      atomArticles.push([
+        pubDate ? new Date(pubDate) : new Date(), // A
+        title.trim(),                              // B
+        link.trim(),                               // C
+        stripHtml(summary) || Config.Llm.NO_ABSTRACT_TEXT,    // D
+        "",                                        // E
+        siteName                                   // F
+      ]);
+    }
+  });
+  return atomArticles;
 }
 
 /** RSS/Atom両対応で記事抽出（siteName は F列に記録） */
@@ -109,91 +199,19 @@ function fetchAndParseRss(rssUrl, siteName, existingUrls) {
 
     const channel = root.getChild("channel");
     if (channel) {
-      // RSS 2.0
-      const items = channel.getChildren("item");
-      items.forEach(item => {
-        const title = (item.getChild("title") && item.getChild("title").getText()) || "";
-        const link  = (item.getChild("link") && item.getChild("link").getText()) || "";
-        const pubDate = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || "";
-        const description = (item.getChild("description") && item.getChild("description").getText()) || "";
-
-        if (link && !existingUrls.has(link) && title) {
-          articles.push([
-            pubDate ? new Date(pubDate) : new Date(), // A:日付
-            title.trim(),                              // B:元タイトル
-            link.trim(),                               // C:URL
-            stripHtml(description) || NO_ABSTRACT_TEXT,// D:抜粋
-            "",                                        // E: 見出し（AI生成）
-            siteName                                   // F: ソース
-          ]);
-        }
-      });
+      articles = parseRss2Feed(root, siteName, existingUrls);
     } else {
-      // Atom
-      const ATOM_NS = XmlService.getNamespace("http://www.w3.org/2005/Atom");
-      const entries = root.getChildren("entry", ATOM_NS) || [];
-      entries.forEach(entry => {
-        const title = (entry.getChild("title", ATOM_NS) && entry.getChild("title", ATOM_NS).getText()) || "";
-        const linkElArr = entry.getChildren("link", ATOM_NS) || [];
-        let link = "";
-        for (var i = 0; i < linkElArr.length; i++) {
-          const relAttr = linkElArr[i].getAttribute("rel");
-          if (!relAttr || relAttr.getValue() === "alternate") {
-            const hrefAttr = linkElArr[i].getAttribute("href");
-            if (hrefAttr) link = hrefAttr.getValue();
-            break;
-          }
-        }
-        const updatedEl = entry.getChild("updated", ATOM_NS);
-        const publishedEl = entry.getChild("published", ATOM_NS);
-        const pubDate = (updatedEl && updatedEl.getText()) || (publishedEl && publishedEl.getText()) || "";
-
-        const summaryEl = entry.getChild("summary", ATOM_NS);
-        const contentEl = entry.getChild("content", ATOM_NS);
-        const summary = (summaryEl && summaryEl.getText()) || (contentEl && contentEl.getText()) || "";
-
-        if (link && !existingUrls.has(link) && title) {
-          articles.push([
-            pubDate ? new Date(pubDate) : new Date(), // A
-            title.trim(),                              // B
-            link.trim(),                               // C
-            stripHtml(summary) || NO_ABSTRACT_TEXT,    // D
-            "",                                        // E
-            siteName                                   // F
-          ]);
-        }
-      });
+      articles = parseAtomFeed(root, siteName, existingUrls);
     }
   } catch (e) {
-    Logger.log("RSSの取得または解析エラー (" + siteName + "): " + e.toString());
+    _logError("fetchAndParseRss", e, `RSS/Atomフィードの取得またはパース中にエラーが発生しました。URL: ${rssUrl}`);
   }
   return articles;
 }
 
-/** HTMLタグ除去 */
-function stripHtml(html) {
-  if (!html) return "";
-  return html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-}
-
-/** 追記後にシート全体を A列（日付）で昇順ソート */
-function sortCollectByDateAsc() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sh = ss.getSheetByName(TREND_DATA_SHEET_NAME);
-  const lastRow = sh.getLastRow();
-  if (lastRow < 3) return; // データ行が1行以下なら処理不要
-  const lastCol = sh.getLastColumn();
-  // ヘッダー（1行目）を除く範囲を昇順ソート
-  sh.getRange(2, 1, lastRow - 1, lastCol).sort({ column: 1, ascending: true });
-}
-
 // =================================================================
-// 🧠 見出し生成（LLM） + 短文高速処理
+// 🧠 LLM Headline Generation (見出し生成)
 // =================================================================
-/** 日本語が含まれるかの簡易判定（含まれるなら false / 英語判定は true） */
-function isLikelyEnglish(text) {
-  return !(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(text));
-}
 
 /**
  * 未見出し（E列空）の行に、見出し or 代替テキストを生成して入れる
@@ -206,14 +224,14 @@ function isLikelyEnglish(text) {
  */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(TREND_DATA_SHEET_NAME);
+  const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
   if (!sheet) return;
 
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
   // B〜E（タイトル, URL, 抜粋, 見出し）をまとめて取得
-  const range = sheet.getRange(2, 2, lastRow - 1, SUMMARY_COL - 2 + 1); // B..E
+  const range = sheet.getRange(2, 2, lastRow - 1, Config.CollectSheet.Columns.SUMMARY - 2 + 1); // B..E
   const data = range.getValues();
 
   const updates = [];
@@ -227,7 +245,7 @@ function processSummarization() {
     const rowNumber = index + 2; // データは2行目から
 
     if (!currentE || String(currentE).trim() === "") {
-      const isShort = (abstractText === NO_ABSTRACT_TEXT) || (String(abstractText || "").length < MIN_SUMMARY_LENGTH);
+      const isShort = (abstractText === Config.Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < Config.Llm.MIN_SUMMARY_LENGTH);
 
       if (isShort) {
         // タイトルをそのまま（英語なら機械翻訳）
@@ -250,7 +268,7 @@ function processSummarization() {
               Logger.log(`E${rowNumber}: タイトル欠落→抜粋(日)を代替`);
             }
           } else {
-            outE = MISSING_ABSTRACT_TEXT; // 最終手段
+            outE = Config.Llm.MISSING_ABSTRACT_TEXT; // 最終手段
             Logger.log(`E${rowNumber}: タイトル・抜粋ともに利用不可→固定文言`);
           }
         }
@@ -267,45 +285,91 @@ function processSummarization() {
   });
 
   if (updates.length > 0) {
-    const outRange = sheet.getRange(2, SUMMARY_COL, updates.length, 1);
+    const outRange = sheet.getRange(2, Config.CollectSheet.Columns.SUMMARY, updates.length, 1);
     outRange.setValues(updates);
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました（短文はタイトル基準、英語は機械翻訳）。`);
   }
 }
 
-// =================================================================
-// 🧠 LLMディスパッチ & 各API呼び出し
-// =================================================================
-/** Azure設定があればAzure、無ければGeminiへ */
+
+/** LLMで「ネットニュース風見出し」を1行生成（Azure優先→OpenAI→Geminiへフォールバック） */
 function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
   const azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
-  const azureKey = props.getProperty("OPENAI_API_KEY");
+  const azureKey = props.getProperty("OPENAI_API_KEY"); // AzureのAPIキー
+
+  // 1. Azure OpenAIを試行
   if (azureUrl && azureKey) {
-    return summarizeWithAzureOpenAI(articleText);
+    const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
+    const USER = [
+      "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
+      "要件:",
+      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
+      " - 専門用語は噛み砕く（難語は短く）",
+      " - 誇張や断定は避け事実ベースで",
+      " - 目安は全角20〜35字（オーバー可）",
+      "例：『AIが血液検査を高度化、迅速診断の精度向上』",
+      "",
+      "記事: ---",
+      articleText,
+      "---"
+    ].join("\\n");
+    const result = executeAzureOpenAICall(SYSTEM, USER);
+    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
+      return result;
+    }
+    Logger.log("Azure OpenAIでの見出し生成に失敗しました。OpenAI APIを試行します。");
   }
-  return summarizeWithGemini(articleText); // フォールバック
+
+  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 個人のOpenAI APIキー
+
+  // 2. OpenAI APIを試行
+  if (openAiKey) {
+    const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
+    const USER = [
+      "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
+      "要件:",
+      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
+      " - 専門用語は噛み砕く（難語は短く）",
+      " - 誇張や断定は避け事実ベースで",
+      " - 目安は全角20〜35字（オーバー可）",
+      "例：『AIが血液検査を高度化、迅速診断の精度向上』",
+      "",
+      "記事: ---",
+      articleText,
+      "-"
+    ].join("\\n");
+    const result = executeOpenAICall(SYSTEM, USER);
+    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
+      return result;
+    }
+    Logger.log("OpenAI APIでの見出し生成に失敗しました。Gemini APIを試行します。");
+  }
+
+  // 3. Geminiを試行（フォールバック）
+  const geminiApiKey = props.getProperty("GEMINI_API_KEY");
+  if (!geminiApiKey) {
+    return "Gemini APIキーが未設定のため見出しを生成できませんでした。";
+  }
+  const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
+  const PROMPT =
+    "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の記事内容を、ネットニュースの見出しのように**1行**の日本語タイトルへ要約してください。\\n" +
+    "要件:\\n" +
+    "- 名詞止めを優先\\n" +
+    "- 専門用語は噛み砕いて簡潔に\\n" +
+    "- 誇張・断定は避け事実ベース\\n" +
+    "- 目安は全角20〜35字（オーバー可）\\n" +
+    "例：『AIが血液検査を高度化、迅速診断の精度向上』\\n" +
+    "記事: --- " + articleText + " ---";
+
+  return executeGeminiCall(API_ENDPOINT, PROMPT);
 }
 
-/** Azure OpenAI（Chat Completions）で「ネットニュース風見出し」を1行生成 */
-function summarizeWithAzureOpenAI(articleText) {
-  const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
-  const USER = [
-    "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
-    "要件:",
-    " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
-    " - 専門用語は噛み砕く（難語は短く）",
-    " - 誇張や断定は避け事実ベースで",
-    " - 目安は全角20〜35字（オーバー可）",
-    "例：『AIが血液検査を高度化、迅速診断の精度向上』",
-    "",
-    "記事: ---",
-    articleText,
-    "---"
-  ].join("\n");
-  return executeAzureOpenAICall(SYSTEM, USER);
-}
 
+
+// =================================================================
+// 🤖 LLM API Clients (LLM API呼び出しクライアント)
+// =================================================================
 /** Azure OpenAI 呼び出し（Chat Completions） */
 function executeAzureOpenAICall(systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
@@ -314,7 +378,7 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
 
   if (!endpoint || !apiKey) {
     Logger.log("Azure OpenAI のプロパティが未設定（AZURE_ENDPOINT_URL / OPENAI_API_KEY）");
-    return "Azure設定不足のため見出しを生成できませんでした。";
+    return "Azure OpenAI APIキーまたはエンドポイントが未設定のため見出しを生成できませんでした。";
   }
 
   const payload = {
@@ -339,42 +403,75 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
     const code = res.getResponseCode();
     const txt  = res.getContentText();
     if (code !== 200) {
-      Logger.log("Azure OpenAI API error: " + code + " - " + txt);
+      _logError("executeAzureOpenAICall", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
       headline = "API Error: " + code;
     } else {
       const json = JSON.parse(txt);
       if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
         headline = String(json.choices[0].message.content).trim();
       } else {
+        _logError("executeAzureOpenAICall", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
         headline = "見出しが生成できませんでした。";
       }
     }
   } catch (e) {
-    Logger.log("Azure OpenAI 呼び出しエラー: " + e.toString());
+    _logError("executeAzureOpenAICall", e, "Azure OpenAI呼び出し中に例外が発生しました。");
   }
 
-  Utilities.sleep(DELAY_MS);
+  Utilities.sleep(Config.Llm.DELAY_MS);
   return headline;
 }
 
-/** Gemini（フォールバック）で「ネットニュース風見出し」を1行生成 */
-function summarizeWithGemini(articleText) {
-  const API_KEY = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-  if (!API_KEY) {
-    return "Gemini APIキー未設定のため見出しを生成できませんでした。";
-  }
-  const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL_NAME + ":generateContent?key=" + API_KEY;
-  const PROMPT =
-    "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の記事内容を、ネットニュースの見出しのように**1行**の日本語タイトルへ要約してください。\n" +
-    "要件:\n" +
-    "- 名詞止めを優先\n" +
-    "- 専門用語は噛み砕いて簡潔に\n" +
-    "- 誇張・断定は避け事実ベース\n" +
-    "- 目安は全角20〜35字（オーバー可）\n" +
-    "例：『AIが血液検査を高度化、迅速診断の精度向上』\n" +
-    "記事: --- " + articleText + " ---";
+/** OpenAI API（Chat Completions）呼び出し */
+function executeOpenAICall(systemPrompt, userPrompt) {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey   = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 新しいプロパティ
 
-  return executeGeminiCall(API_ENDPOINT, PROMPT);
+  if (!apiKey) {
+    Logger.log("OpenAI API のプロパティが未設定（OPENAI_API_KEY_PERSONAL）");
+    return "OpenAI APIキーが未設定のため見出しを生成できませんでした。";
+  }
+
+  const payload = {
+    model: "gpt-3.5-turbo", // または "gpt-4o" など、利用したいモデル
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user",   content: userPrompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 128
+  };
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "Authorization": `Bearer ${apiKey}` },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  let headline = "API呼び出し失敗";
+  try {
+    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+    const code = res.getResponseCode();
+    const txt  = res.getContentText();
+    if (code !== 200) {
+      _logError("executeOpenAICall", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
+      headline = "API Error: " + code;
+    } else {
+      const json = JSON.parse(txt);
+      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+        headline = String(json.choices[0].message.content).trim();
+      } else {
+        _logError("executeOpenAICall", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。他のLLMを試します。");
+        headline = "見出しが生成できませんでした。";
+      }
+    }
+  } catch (e) {
+    _logError("executeOpenAICall", e, "OpenAI API呼び出し中に例外が発生しました。他のLLMを試します。");
+  }
+
+  Utilities.sleep(Config.Llm.DELAY_MS);
+  return headline;
 }
 
 /** Gemini API 呼び出し */
@@ -399,14 +496,14 @@ function executeGeminiCall(apiEndpoint, prompt) {
     }
     headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
   } catch (e) {
-    Logger.log("Gemini API呼び出しエラー: " + e.toString());
+    _logError("executeGeminiCall", e, "Gemini API呼び出し中に例外が発生しました。");
   }
-  Utilities.sleep(DELAY_MS);
+  Utilities.sleep(Config.Llm.DELAY_MS);
   return headline;
 }
 
 // =================================================================
-// 📣 通知（スタブ：いまは動かさない）
+// 📣 Notification Handlers (通知)
 // =================================================================
 /** 後日有効化用のスタブ：Teams通知（現状は何もしません） */
 function postNewArticlesToTeams() {
@@ -418,8 +515,28 @@ function postNewArticlesByEmail() {
 }
 
 // =====================================================================
-// 🗓️ 週間ダイジェスト（見出し＋1行要約＋リンク）生成（既定はヒューリのみ）
+// 🗓️ Weekly Digest Core (週間ダイジェスト)
 // =====================================================================
+/**
+ * 週次ダイジェストの設定をスクリプトプロパティから読み込み、オブジェクトとして返す。
+ * @returns {object} ダイジェスト設定オブジェクト
+ */
+function _getDigestConfig() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
+    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
+    useAiRank: (props.getProperty("DIGEST_USE_AI_RANK") || Config.Digest.DEFAULT_USE_AI_RANK).toUpperCase() === "Y",
+    useAiTldr: (props.getProperty("DIGEST_USE_AI_TLDR") || Config.Digest.DEFAULT_USE_AI_TLDR).toUpperCase() === "Y",
+    aiCandidates: parseInt(props.getProperty("DIGEST_AI_CANDIDATES") || String(Config.Digest.DEFAULT_AI_CANDIDATES), 10),
+    notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "none").toLowerCase(),
+    teamsWebhookUrl: props.getProperty("TEAMS_WEBHOOK_URL"),
+    mailTo: props.getProperty("MAIL_TO"),
+    mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】",
+    mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
+  };
+}
+
 /**
  * 週次バッチ入口：過去 N 日のダイジェストを作成し、設定に応じて配信。
  * 送信先が未設定なら送信せず、ログにプレビューを出力（安全運用）
@@ -437,14 +554,9 @@ function postNewArticlesByEmail() {
  *  - MAIL_SENDER_NAME     : 既定 'RSS要約ボット'
  */
 function weeklyDigestJob() {
-  var props = PropertiesService.getScriptProperties();
-  var days = parseInt(props.getProperty("DIGEST_DAYS") || "7", 10);
-  var topN = parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10);
-  var useAiRank = (props.getProperty("DIGEST_USE_AI_RANK") || DEFAULT_DIGEST_USE_AI_RANK).toUpperCase() === "Y";
-  var useAiTldr = (props.getProperty("DIGEST_USE_AI_TLDR") || DEFAULT_DIGEST_USE_AI_TLDR).toUpperCase() === "Y";
-  var channel = (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "none").toLowerCase();
+  const config = _getDigestConfig();
 
-  var win = getDateWindow(days);
+  var win = getDateWindow(config.days);
   var start = win.start;
   var end = win.end;
 
@@ -456,8 +568,8 @@ function weeklyDigestJob() {
 
   var capped = items.slice(0, Math.min(items.length, 120));
   var ranked;
-  if (useAiRank || useAiTldr) {
-    ranked = aiRankAndSummarize(capped, { useAiRank: useAiRank, useAiTldr: useAiTldr });
+  if (config.useAiRank || config.useAiTldr) {
+    ranked = aiRankAndSummarize(capped, { useAiRank: config.useAiRank, useAiTldr: config.useAiTldr }, config);
   } else {
     // デフォルト：ヒューリだけ
     ranked = capped.map(function (it) {
@@ -471,7 +583,7 @@ function weeklyDigestJob() {
 
   // 並び替え（score降順）→ TOP N
   ranked.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
-  var digest = ranked.slice(0, topN);
+  var digest = ranked.slice(0, config.topN);
 
 // 本文（Markdown）を生成：見出し＋1行要約＋リンク
   var headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1)) + "（" + digest.length + "件）";
@@ -494,10 +606,10 @@ function weeklyDigestJob() {
   Logger.log(preview);
 
   // 送信（送信先が無ければスキップ）
-  if (channel === "email" || channel === "both") {
+  if (config.notifyChannel === "email" || config.notifyChannel === "both") {
     sendWeeklyDigestEmail(headerLine, mdBody);
   }
-  if (channel === "teams" || channel === "both") {
+  if (config.notifyChannel === "teams" || config.notifyChannel === "both") {
     sendWeeklyDigestTeams(headerLine, mdBody);
   }
 }
@@ -582,35 +694,14 @@ function heuristicTldr(it) {
   return tl;
 }
 
-/** 比較用に正規化（空白・句読点・記号を除去し、全角半角も大まかに吸収） */
-function normalizeForCompare(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/[ \u3000\t\r\n]/g, "")                   // 空白・改行除去（全角含む）
-    .replace(/[「」『』【】\[\]\(\)（）…・、。,:;.!?'"\-–—]/g, "") // 句読点・記号
-    .replace(/｜/g, "|");                              // 全角縦棒を半角へ
-}
 
-/** 1行化＆最大長トリミング */
-function oneLine(text, maxLen) {
-  var s = String(text).replace(/\s+/g, " ").trim();
-  if (s.length <= maxLen) return s;
-  return s.slice(0, Math.max(0, maxLen - 1)) + "…";
-}
-/** yyyy/MM/dd */
-function fmtDate(d) {
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
-}
-/** yyyy/MM/dd HH:mm */
-function fmtDateTime(d) {
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm");
-}
+
 
 // ------------------------------
 // 🤖 AIで重み付け＆1行要約（将来ONにする場合のみ使用）
 //   - デフォルトは Script Properties が 'N' のため、本ルートは呼ばれません
 // ------------------------------
-function aiRankAndSummarize(items, opts) {
+function aiRankAndSummarize(items, opts, config) {
   var useRank = !!opts.useAiRank;
   var useTldr = !!opts.useAiTldr;
 
@@ -626,9 +717,7 @@ function aiRankAndSummarize(items, opts) {
   }
 
   // AIに渡す最大候補数（巨大入力による不安定化を避ける）
-  var props = PropertiesService.getScriptProperties();
-  var aiMaxStr = props.getProperty("DIGEST_AI_CANDIDATES");
-  var aiMax = aiMaxStr ? Math.max(5, parseInt(aiMaxStr, 10) || DEFAULT_DIGEST_AI_CANDIDATES) : DEFAULT_DIGEST_AI_CANDIDATES;
+  var aiMax = Math.max(5, config.aiCandidates);
 
   // まずヒューリスティックで粗選別（上位 aiMax 件だけAIにかける）
   var prelim = items
@@ -637,27 +726,21 @@ function aiRankAndSummarize(items, opts) {
     .slice(0, Math.min(items.length, aiMax))
     .map(function (x) { return x.it; });
 
-  // 逐次で score|tldr を取得（PSV 1行）→ 壊れてもその件だけフォールバック
-  var prelimResults = [];
+  var out = [];
+  var processedUrls = new Set();
+
+  // AI処理対象の記事を処理
   for (var i = 0; i < prelim.length; i++) {
     var it = prelim[i];
-    var result = getScoreAndTldrPSV(it, useRank, useTldr);
-    prelimResults.push(result);
-    Utilities.sleep(DELAY_MS); // レート制御
+    out.push(getScoreAndTldrPSV(it, useRank, useTldr));
+    processedUrls.add(it.url);
+    Utilities.sleep(Config.Llm.DELAY_MS); // レート制御
   }
 
-  var resultMap = {};
-  for (var j = 0; j < prelimResults.length; j++) resultMap[prelimResults[j].url] = prelimResults[j];
-
-  // マージ
-  var out = [];
-  for (var k = 0; k < prelim.length; k++) out.push(resultMap[prelim[k].url]);
-
-  var used = {};
-  for (var u = 0; u < prelim.length; u++) used[prelim[u].url] = true;
+  // AI処理対象外の記事をヒューリスティックで処理
   for (var m = 0; m < items.length; m++) {
     var it2 = items[m];
-    if (used[it2.url]) continue;
+    if (processedUrls.has(it2.url)) continue;
     out.push({
       date: it2.date, title: it2.title, url: it2.url, abstractText: it2.abstractText,
       headline: it2.headline, source: it2.source,
@@ -731,20 +814,6 @@ function callLLM_TextItemPSV(systemPrompt, userPrompt) {
   return out;
 }
 
-/** `score|tldr` をパース */
-function parseOnePSVLine(line) {
-  if (!line) return null;
-  var sep = line.indexOf("|");
-  if (sep <= 0) return null;
-  var s = line.slice(0, sep).trim();
-  var t = line.slice(sep + 1).trim();
-  var sc = parseInt(s, 10);
-  if (isNaN(sc)) return null;
-  if (!t) return { score: sc, tldr: "" };
-  // tldrに '|' が紛れた時は全角へ置換
-  t = t.replace(/\|/g, "｜");
-  return { score: sc, tldr: t };
-}
 
 /** Azure（通常テキスト） */
 function callAzureChatForText(systemPrompt, userPrompt) {
@@ -778,7 +847,7 @@ function callAzureChatForText(systemPrompt, userPrompt) {
     var txt = (obj && obj.choices && obj.choices[0] && obj.choices[0].message && obj.choices[0].message.content) ? obj.choices[0].message.content : "";
     return txt || "";
   } catch (e) {
-    Logger.log("Azure PSV呼び出し例外: " + e.toString());
+    Logger.log("Azure PSV呼び出し例外: " + e.toString() + "\nStack: " + e.stack);
     return "";
   }
 }
@@ -787,7 +856,7 @@ function callAzureChatForText(systemPrompt, userPrompt) {
 function callGeminiForText(systemPrompt, userPrompt) {
   var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
   if (!apiKey) return "";
-  var model = MODEL_NAME || "gemini-2.5-flash";
+  var model = Config.Llm.MODEL_NAME;
   var url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
 
   var prompt = (systemPrompt || "") + "\n\n" + (userPrompt || "");
@@ -813,7 +882,7 @@ function callGeminiForText(systemPrompt, userPrompt) {
       : "";
     return txt || "";
   } catch (e) {
-    Logger.log("Gemini PSV呼び出し例外: " + e.toString());
+    Logger.log("Gemini PSV呼び出し例外: " + e.toString() + "\nStack: " + e.stack);
     return "";
   }
 }
@@ -845,7 +914,7 @@ function safeParseJSON(text) {
   }
   try { return JSON.parse(raw); } catch (e3) {
     var head = String(raw).slice(0, 200).replace(/\s+/g, " ");
-    Logger.log("safeParseJSON 失敗: " + e3.toString() + " / 先頭200字: " + head);
+    _logError("safeParseJSON", e3, `JSONパース失敗。先頭200字: ${head}`);
     return null;
   }
 }
@@ -853,6 +922,17 @@ function safeParseJSON(text) {
 // =================================================================
 // ✉️ 週次の送信（送信先未設定なら送らない）
 // =================================================================
+function convertMarkdownToHtml(mdBody) {
+  return mdBody
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')          // **太字**
+    .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')      // > 引用
+    // 記事を読む → URL記事を読む</a>
+    .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g,
+     '<a href="$2">$1</a>')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
 function sendWeeklyDigestEmail(headerLine, mdBody) {
   const props = PropertiesService.getScriptProperties();
   const to = props.getProperty("MAIL_TO");
@@ -867,15 +947,8 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   const htmlBody =
     `<p>${escapeHtml(headerLine)}</p>` +
     `<div>` +
-      mdBody
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')          // **太字**
-        .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')      // > 引用
-        // 記事を読む → URL記事を読む</a>
-        .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g,
-         '<a href="$2">$1</a>')
-        .replace(/\n\n/g, '<br><br>')
-        .replace(/\n/g, '<br>')
-    + `</div>`;
+      convertMarkdownToHtml(mdBody) +
+    `</div>`;
 
   // テキスト版（互換用）
   const textBody = `${headerLine}\n\n${mdBody.replace(/\*\*/g, "").replace(/^> /gm, "  ")}`;
@@ -884,37 +957,12 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   Logger.log("メール送信完了: " + to);
 }
 
-// 既存の重複＆誤実装を置き換え（正しいHTMLエスケープ）
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g,"&amp;")
-    .replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;");
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
-
 function sendWeeklyDigestTeams(headerLine, mdBody) {
   var url = PropertiesService.getScriptProperties().getProperty("TEAMS_WEBHOOK_URL");
   if (!url) { Logger.log("TEAMS_WEBHOOK_URL未設定のためTeams送信せず。"); return; }
 
   // メール送信と同様に Markdown を HTML のサブセットに変換し、Teamsに渡す
-  var htmlText =
-      mdBody
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')          // **太字**
-        .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')      // > 引用
-        // Markdownリンク [Text](URL) を HTML <a>タグに変換（メールと同じロジック）
-        .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g,
-                 '<a href="$2">$1</a>')
-        .replace(/\n\n/g, '<br><br>') // 2つの改行を2つの<br>に
-        .replace(/\n/g, '<br>');      // 1つの改行を<br>に
+  var htmlText = convertMarkdownToHtml(mdBody);
 
   var payload = {
     "@type": "MessageCard",
@@ -937,8 +985,78 @@ function sendWeeklyDigestTeams(headerLine, mdBody) {
   try {
     var res = UrlFetchApp.fetch(url, options);
     var ok = res.getResponseCode() === 200;
-    Logger.log(ok ? "Teams送信完了" : ("Teams送信失敗: " + res.getContentText()));
+    if (!ok) {
+      _logError("sendWeeklyDigestTeams", new Error(res.getContentText()), "Teams送信失敗。");
+    }
+    Logger.log(ok ? "Teams送信完了" : "Teams送信失敗。");
   } catch (e) {
-    Logger.log("Teams送信例外: " + e.toString());
+    _logError("sendWeeklyDigestTeams", e, "Teams送信中に例外が発生しました。");
   }
+}
+
+// =================================================================
+// 🛠️ Utilities (ユーティリティ関数)
+// =================================================================
+
+/**
+ * HTMLタグを除去するユーティリティ関数
+ * @param {string} html HTML文字列
+ * @returns {string} HTMLタグを除去した文字列
+ */
+function stripHtml(html) {
+  return html ? html.replace(/<[^>]*>?/gm, '') : '';
+}
+
+/** 日本語が含まれるかの簡易判定（含まれるなら false / 英語判定は true） */
+function isLikelyEnglish(text) {
+  return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
+}
+
+/** 1行化＆最大長トリミング */
+function oneLine(text, maxLen) {
+  var s = String(text).replace(/\s+/g, " ").trim();
+  if (s.length <= maxLen) return s;
+  return s.slice(0, Math.max(0, maxLen - 1)) + "…";
+}
+
+/** 比較用に正規化（空白・句読点・記号を除去し、全角半角も大まかに吸収） */
+function normalizeForCompare(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[ \u3000\t\r\n]/g, "")                   // 空白・改行除去（全角含む）
+    .replace(/[「」『』【】\[\]\(\)（）…・、。,:;.!?\'"\-–—]/g, "") // 句読点・記号
+    .replace(/｜/g, "|");                              // 全角縦棒を半角へ
+}
+
+/** yyyy/MM/dd */
+function fmtDate(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
+}
+
+/** yyyy/MM/dd HH:mm */
+function fmtDateTime(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm");
+}
+
+/** HTMLエスケープ */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
+}
+
+/** `score|tldr` をパース */
+function parseOnePSVLine(line) {
+  if (!line) return null;
+  var sep = line.indexOf("|");
+  if (sep <= 0) return null;
+  var s = line.slice(0, sep).trim();
+  var t = line.slice(sep + 1).trim();
+  var sc = parseInt(s, 10);
+  if (isNaN(sc)) return null;
+  if (!t) return { score: sc, tldr: "" };
+  // tldrに '|' が紛れた時は全角へ置換
+  t = t.replace(/\|/g, "｜");
+  return { score: sc, tldr: t };
 }
