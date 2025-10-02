@@ -462,7 +462,7 @@ function executeOpenAICall(systemPrompt, userPrompt) {
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
-    max_tokens: 512,       // 出力の最大トークン数
+    max_completion_tokens: 512, // ← ここを修正！
     temperature: 0.7,      // 生成のランダム性（0=決定論的、1=多様性高め）
     top_p: 1,              // nucleus sampling。通常は1のままでOK
   };
