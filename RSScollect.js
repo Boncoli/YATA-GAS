@@ -73,6 +73,26 @@ function mainAutomationFlow() {
 function sortCollectByDateAsc() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
+  if (!sheet) {
+    Logger.log("エラー: collectシートが見つかりません。");
+    return;
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return; // ヘッダー行のみの場合
+
+  // データ範囲をA列でソート
+  sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).sort({ column: 1, ascending: true });
+  Logger.log("collectシートをA列（日付）で昇順にソートしました。");
+}
+
+/**
+ * RSSフィードを取得し、collectシートに追記（重複URLはスキップ）
+ * 追記後はA列（日付）で昇順に統一
+ */
+function collectRssFeeds() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rssListSheet = ss.getSheetByName(Config.SheetNames.RSS_LIST);
+  const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
 
   if (!rssListSheet || !trendDataSheet) {
     Logger.log("エラー: シート名が正しくありません。'RSS'または'collect'のシート名を確認してください。");
