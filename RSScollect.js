@@ -27,7 +27,7 @@ const Config = {
   },
   Llm: {
     MODEL_NAME: "gemini-2.5-flash",
-    DELAY_MS: 1200,
+    DELAY_MS: 1100,
     MIN_SUMMARY_LENGTH: 200,
     NO_ABSTRACT_TEXT: "抜粋なし",
     MISSING_ABSTRACT_TEXT: "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。",
@@ -389,8 +389,6 @@ function summarizeWithLLM(articleText) {
   return executeGeminiCall(API_ENDPOINT, PROMPT);
 }
 
-
-
 // =================================================================
 // 🤖 LLM API Clients (LLM API呼び出しクライアント)
 // =================================================================
@@ -550,7 +548,7 @@ function _getDigestConfig() {
   const props = PropertiesService.getScriptProperties();
   return {
     days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
-    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
+    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "10", 10),
     useAiRank: (props.getProperty("DIGEST_USE_AI_RANK") || Config.Digest.DEFAULT_USE_AI_RANK).toUpperCase() === "Y",
     useAiTldr: (props.getProperty("DIGEST_USE_AI_TLDR") || Config.Digest.DEFAULT_USE_AI_TLDR).toUpperCase() === "Y",
     aiCandidates: parseInt(props.getProperty("DIGEST_AI_CANDIDATES") || String(Config.Digest.DEFAULT_AI_CANDIDATES), 10),
@@ -648,7 +646,7 @@ function getDateWindow(days) {
 
 /** A〜F列から、期間内＆見出し（E）がある記事だけ抽出（collectを読み取り） */
 function getArticlesInDateWindow(start, end) {
-  var sh = SpreadsheetApp.getActive().getSheetByName(TREND_DATA_SHEET_NAME);
+  var sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return [];
   var lastCol = sh.getLastColumn();
@@ -718,9 +716,6 @@ function heuristicTldr(it) {
   }
   return tl;
 }
-
-
-
 
 // ------------------------------
 // 🤖 AIで重み付け＆1行要約（将来ONにする場合のみ使用）
