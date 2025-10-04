@@ -741,7 +741,7 @@ function convertMarkdownToHtml(mdBody) {
   html = processedLines.join('\n');
 
   html = html
-    .replace(/^---$/gm, '<hr>') // 水平線を<hr>タグに変換
+    .replace(/^--+$/gm, '<hr>') // '--' や '---' など、2つ以上のハイフンに対応
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')          // **太字**
     .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')      // > 引用
     // 記事を読む → URL記事を読む</a>
