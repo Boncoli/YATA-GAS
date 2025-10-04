@@ -26,7 +26,7 @@ const Config = {
     },
   },
   Llm: {
-    MODEL_NAME: "gemini-2.5-flash",
+    MODEL_NAME: "gemini-2.5-flash-lite",
     DELAY_MS: 1100,
     MIN_SUMMARY_LENGTH: 200,
     NO_ABSTRACT_TEXT: "抜粋なし",
@@ -344,7 +344,7 @@ function summarizeWithLLM(articleText) {
  * LLMを呼び出す汎用関数（Azure優先→OpenAI→Geminiへフォールバック）
  * @param {string} systemPrompt システムプロンプト
  * @param {string} userPrompt ユーザープロンプト
- * @param {string} [openAiModel="gpt-3.5-turbo"] OpenAI APIで使用するモデル名
+ * @param {string} [openAiModel="gpt-4.1-nano"] OpenAI APIで使用するモデル名
  * @returns {string} LLMからの応答テキスト、またはエラーメッセージ
  */
 function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano") {
@@ -444,29 +444,19 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
 }
 
 /** OpenAI API（Chat Completions）呼び出し */
-function executeOpenAICall(model = "gpt-4.1-nano", systemPrompt, userPrompt) {
+function executeOpenAICall(model = "gpt-5-nano", systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
-  const apiKey   = props.getProperty("OPENAI_API_KEY_PERSONAL");
-
-  if (!apiKey) {
-    Logger.log("OpenAI API のプロパティが未設定（OPENAI_API_KEY_PERSONAL）");
-    return "OpenAI APIキーが未設定のため見出しを生成できませんでした。";
-  }
+  const apiKey = props.getProperty("OPENAI_API_KEY_PERSONAL");
+  if (!apiKey) return "OpenAI APIキーが未設定です";
 
   const payload = {
-    model: model, // 引数で受け取ったmodelを使用
+    model: model,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
-    max_completion_tokens: 1024,
+    max_tokens: 1024 // GPT-5系でも使用可能
   };
-
-  // nano系モデルの場合、temperatureとtop_pは設定しない
-  if (!model.includes("nano")) {
-    payload.temperature = 0.2;
-    payload.top_p = 1;
-  }
 
   const options = {
     method: "post",
@@ -476,29 +466,23 @@ function executeOpenAICall(model = "gpt-4.1-nano", systemPrompt, userPrompt) {
     muteHttpExceptions: true
   };
 
-  let headline = "API呼び出し失敗";
   try {
     const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
     const code = res.getResponseCode();
     const txt  = res.getContentText();
-    if (code !== 200) {
-      _logError("executeOpenAICall", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
-      headline = "API Error: " + code;
-    } else {
-      const json = JSON.parse(txt);
-      if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-        headline = String(json.choices[0].message.content).trim();
-      } else {
-        _logError("executeOpenAICall", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。他のLLMを試します。");
-        headline = "見出しが生成できませんでした。";
-      }
-    }
-  } catch (e) {
-    _logError("executeOpenAICall", e, "OpenAI API呼び出し中に例外が発生しました。他のLLMを試します。");
-  }
+    if (code !== 200) return `API Error: ${code} - ${txt}`;
 
-  Utilities.sleep(Config.Llm.DELAY_MS);
-  return headline;
+    const json = JSON.parse(txt);
+    // 念のため複数パターンに対応
+    if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+      return String(json.choices[0].message.content).trim();
+    } else {
+      return "見出し生成に失敗しました";
+    }
+
+  } catch (e) {
+    return "OpenAI呼び出し例外: " + e.toString();
+  }
 }
 
 /** Gemini API 呼び出し */
@@ -720,8 +704,6 @@ function heuristicTldr(it) {
   }
   return tl;
 }
-
-
 
 /** LLM（Azure優先→OpenAI→Gemini）でテキスト（PSV 期待）を1件取得 */
 function callLLM_TextItemPSV(systemPrompt, userPrompt) {
