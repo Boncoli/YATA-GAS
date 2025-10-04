@@ -354,14 +354,49 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 個人のOpenAI APIキー
   const geminiApiKey = props.getProperty("GEMINI_API_KEY");
 
-  let result = "";
-
   // 1. Azure OpenAIを試行
   if (azureUrl && azureKey) {
     Logger.log("Azure OpenAIを試行中...");
-    result = executeAzureOpenAICall(systemPrompt, userPrompt);
-    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
-      return result;
+    const payload = {
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user",   content: userPrompt }
+      ],
+      temperature: 0.2,
+      max_completion_tokens: 1024
+    };
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "api-key": azureKey },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    let headline = "API呼び出し失敗";
+    try {
+      const res = UrlFetchApp.fetch(azureUrl, options);
+      const code = res.getResponseCode();
+      const txt  = res.getContentText();
+      if (code !== 200) {
+        _logError("callLlmWithFallback (Azure)", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
+        headline = "API Error: " + code;
+      } else {
+        const json = JSON.parse(txt);
+        if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+          headline = String(json.choices[0].message.content).trim();
+        } else {
+          _logError("callLlmWithFallback (Azure)", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
+          headline = "見出しが生成できませんでした。";
+        }
+      }
+    } catch (e) {
+      _logError("callLlmWithFallback (Azure)", e, "Azure OpenAI呼び出し中に例外が発生しました。");
+    }
+    Utilities.sleep(Config.Llm.DELAY_MS);
+
+    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出しが生成できませんでした。") === -1 && headline.indexOf("API呼び出し失敗") === -1) {
+      return headline;
     }
     Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
   }
@@ -369,9 +404,42 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   // 2. OpenAI APIを試行
   if (openAiKey) {
     Logger.log("OpenAI APIを試行中...");
-    result = executeOpenAICall(openAiModel, systemPrompt, userPrompt);
-    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
-      return result;
+    const payload = {
+      model: openAiModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      max_tokens: 1024
+    };
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "Authorization": `Bearer ${openAiKey}` },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    let headline = "API呼び出し失敗";
+    try {
+      const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+      const code = res.getResponseCode();
+      const txt  = res.getContentText();
+      if (code !== 200) {
+        headline = `API Error: ${code} - ${txt}`;
+      } else {
+        const json = JSON.parse(txt);
+        if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+          headline = String(json.choices[0].message.content).trim();
+        } else {
+          headline = "見出し生成に失敗しました";
+        }
+      }
+    } catch (e) {
+      headline = "OpenAI呼び出し例外: " + e.toString();
+    }
+
+    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出し生成に失敗しました") === -1 && headline.indexOf("API呼び出し失敗") === -1 && headline.indexOf("OpenAI呼び出し例外") === -1) {
+      return headline;
     }
     Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
   }
@@ -381,9 +449,32 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
     Logger.log("Gemini APIを試行中...");
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-    result = executeGeminiCall(API_ENDPOINT, PROMPT);
-    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
-      return result;
+    const payload = {
+      contents: [{ parts: [{ text: PROMPT }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+    };
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    let headline = "API呼び出し失敗";
+    try {
+      const response = UrlFetchApp.fetch(API_ENDPOINT, options);
+      const json = JSON.parse(response.getContentText());
+      let text = null;
+      if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
+        text = json.candidates[0].content.parts[0].text;
+      }
+      headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
+    } catch (e) {
+      _logError("callLlmWithFallback (Gemini)", e, "Gemini API呼び出し中に例外が発生しました。");
+    }
+    Utilities.sleep(Config.Llm.DELAY_MS);
+    
+    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出しが生成できませんでした。") === -1 && headline.indexOf("API呼び出し失敗") === -1) {
+      return headline;
     }
     Logger.log("Gemini APIでの呼び出しに失敗しました。");
   }
@@ -391,139 +482,13 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   return "いずれのLLMでも見出しを生成できませんでした。";
 }
 
-/** Azure OpenAI 呼び出し（Chat Completions） */
-function executeAzureOpenAICall(systemPrompt, userPrompt) {
-  const props = PropertiesService.getScriptProperties();
-  const endpoint = props.getProperty("AZURE_ENDPOINT_URL");
-  const apiKey   = props.getProperty("OPENAI_API_KEY");
-
-  if (!endpoint || !apiKey) {
-    Logger.log("Azure OpenAI のプロパティが未設定（AZURE_ENDPOINT_URL / OPENAI_API_KEY）");
-    return "Azure OpenAI APIキーまたはエンドポイントが未設定のため見出しを生成できませんでした。";
-  }
-
-  const payload = {
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user",   content: userPrompt }
-    ],
-    temperature: 0.2,
-    max_completion_tokens: 1024
-  };
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    headers: { "api-key": apiKey },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  let headline = "API呼び出し失敗";
-  try {
-    const res = UrlFetchApp.fetch(endpoint, options);
-    const code = res.getResponseCode();
-    const txt  = res.getContentText();
-    if (code !== 200) {
-      _logError("executeAzureOpenAICall", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
-      headline = "API Error: " + code;
-    } else {
-      const json = JSON.parse(txt);
-      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-        headline = String(json.choices[0].message.content).trim();
-      } else {
-        _logError("executeAzureOpenAICall", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
-        headline = "見出しが生成できませんでした。";
-      }
-    }
-  } catch (e) {
-    _logError("executeAzureOpenAICall", e, "Azure OpenAI呼び出し中に例外が発生しました。");
-  }
-
-  Utilities.sleep(Config.Llm.DELAY_MS);
-  return headline;
-}
-
-/** OpenAI API（Chat Completions）呼び出し */
-function executeOpenAICall(model = "gpt-5-nano", systemPrompt, userPrompt) {
-  const props = PropertiesService.getScriptProperties();
-  const apiKey = props.getProperty("OPENAI_API_KEY_PERSONAL");
-  if (!apiKey) return "OpenAI APIキーが未設定です";
-
-  const payload = {
-    model: model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt }
-    ],
-    max_tokens: 1024 // GPT-5系でも使用可能
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    headers: { "Authorization": `Bearer ${apiKey}` },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
-    const code = res.getResponseCode();
-    const txt  = res.getContentText();
-    if (code !== 200) return `API Error: ${code} - ${txt}`;
-
-    const json = JSON.parse(txt);
-    // 念のため複数パターンに対応
-    if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-      return String(json.choices[0].message.content).trim();
-    } else {
-      return "見出し生成に失敗しました";
-    }
-
-  } catch (e) {
-    return "OpenAI呼び出し例外: " + e.toString();
-  }
-}
-
-/** Gemini API 呼び出し */
-function executeGeminiCall(apiEndpoint, prompt) {
-  const payload = {
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
-  };
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-  let headline = "API呼び出し失敗";
-  try {
-    const response = UrlFetchApp.fetch(apiEndpoint, options);
-    const json = JSON.parse(response.getContentText());
-    let text = null;
-    if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
-      text = json.candidates[0].content.parts[0].text;
-    }
-    headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
-  } catch (e) {
-    _logError("executeGeminiCall", e, "Gemini API呼び出し中に例外が発生しました。");
-  }
-  Utilities.sleep(Config.Llm.DELAY_MS);
-  return headline;
-}
-
 // =================================================================
 // 📣 Notification Handlers (通知)
 // =================================================================
-/** 後日有効化用のスタブ：Teams通知（現状は何もしません） */
-function postNewArticlesToTeams() {
-  Logger.log("postNewArticlesToTeams(): 通知は未運用のため実行しません（スタブ）");
-}
-/** 後日有効化用のスタブ：メール通知（現状は何もしません） */
-function postNewArticlesByEmail() {
-  Logger.log("postNewArticlesByEmail(): 通知は未運用のため実行しません（スタブ）");
-}
+/*
+ * TODO: 将来的に、日々の更新をTeamsやメールで通知する機能を実装予定。
+ * 現在は週次ダイジェestの通知のみが有効です。
+ */
 
 // =====================================================================
 // 🗓️ Weekly Digest Core (週間ダイジェスト)
@@ -668,142 +633,6 @@ function getArticlesInDateWindow(start, end) {
   return out;
 }
 
-/** ヒューリスティックなスコア（新しさ＋抜粋長） */
-function heuristicScore(it) {
-  var now = Date.now();
-  var ageDays = Math.max(0, (now - it.date.getTime()) / (1000 * 60 * 60 * 24));
-  var recency = Math.max(0, 100 - ageDays * 10); // 1日ごとに -10 点
-  var length = Math.min(100, (String(it.abstractText || "").length / 600) * 100);
-  return Math.round(0.7 * recency + 0.3 * length);
-}
-
-/** 1行要約（ヒューリ）：D（抜粋）→B（タイトル）を優先し、見出しと被る場合は抑制/代替 */
-function heuristicTldr(it) {
-  // まずは D（抜粋）を優先、無ければ B（タイトル）
-  var base = String(it.abstractText || it.title || "").trim();
-  var tl = base ? oneLine(base, 120) : "";
-
-  // 見出しと実質同一なら、代替 or 非表示
-  if (tl) {
-    var h = normalizeForCompare(String(it.headline || ""));
-    var t = normalizeForCompare(tl);
-    if (h && h === t) {
-      // 代替候補：タイトル（B）と抜粋（D）のどちらか片方が違えばそちらを試す
-      var alt = (base === it.abstractText && it.title) ? String(it.title).trim()
-               : (base === it.title && it.abstractText) ? String(it.abstractText).trim()
-               : "";
-      if (alt) {
-        var alt1 = oneLine(alt, 120);
-        var a = normalizeForCompare(alt1);
-        if (a && a !== h) tl = alt1;  // 代替成功
-        else tl = "";                 // 代替も同一なら非表示
-      } else {
-        tl = ""; // 非表示（引用行を出さない）
-      }
-    }
-  }
-  return tl;
-}
-
-/** LLM（Azure優先→OpenAI→Gemini）でテキスト（PSV 期待）を1件取得 */
-function callLLM_TextItemPSV(systemPrompt, userPrompt) {
-  var props = PropertiesService.getScriptProperties();
-  var azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
-  var azureKey = props.getProperty("OPENAI_API_KEY");
-  var openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 追加
-  var out = "";
-  if (azureUrl && azureKey) {
-    out = callAzureChatForText(systemPrompt, userPrompt);
-  } else if (openAiKey) { // 追加
-    out = executeOpenAICall("gpt-4.1-mini", systemPrompt, userPrompt); // gpt-4.1-mini を使用
-  } else {
-    out = callGeminiForText(systemPrompt, userPrompt);
-  }
-  // コードフェンス等が来た場合に備えて除去
-  out = String(out || "").trim();
-  var fenced = out.match(/```[\s\S]*?```/);
-  if (fenced && fenced[0]) {
-    var inner = fenced[0].replace(/```[\w-]*\s*|\s*```/g, "").trim();
-    if (inner) out = inner;
-  }
-  // 1行化
-  out = out.replace(/\r?\n/g, " ").trim();
-  return out;
-}
-
-
-/** Azure（通常テキスト） */
-function callAzureChatForText(systemPrompt, userPrompt) {
-  var props = PropertiesService.getScriptProperties();
-  var endpoint = props.getProperty("AZURE_ENDPOINT_URL");
-  var apiKey   = props.getProperty("OPENAI_API_KEY");
-  if (!endpoint || !apiKey) return "";
-
-  var payload = {
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user",   content: userPrompt }
-    ],
-    temperature: 0.2,
-    max_completion_tokens: 256
-  };
-  var options = {
-    method: "post",
-    contentType: "application/json",
-    headers: { "api-key": apiKey },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-  try {
-    var res = UrlFetchApp.fetch(endpoint, options);
-    if (res.getResponseCode() !== 200) {
-      Logger.log("Azure PSV応答エラー: " + res.getResponseCode() + " - " + res.getContentText());
-      return "";
-    }
-    var obj = JSON.parse(res.getContentText());
-    var txt = (obj && obj.choices && obj.choices[0] && obj.choices[0].message && obj.choices[0].message.content) ? obj.choices[0].message.content : "";
-    return txt || "";
-  } catch (e) {
-    Logger.log("Azure PSV呼び出し例外: " + e.toString() + "\nStack: " + e.stack);
-    return "";
-  }
-}
-
-/** Gemini（通常テキスト） */
-function callGeminiForText(systemPrompt, userPrompt) {
-  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-  if (!apiKey) return "";
-  var model = Config.Llm.MODEL_NAME;
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
-
-  var prompt = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-  var payload = {
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 256 } // maxOutputTokensを256に増やす
-  };
-  var options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-  try {
-    var res = UrlFetchApp.fetch(url, options);
-    if (res.getResponseCode() !== 200) {
-      Logger.log("Gemini PSV応答エラー: " + res.getResponseCode() + " - " + res.getContentText());
-      return "";
-    }
-    var jobj = JSON.parse(res.getContentText());
-    var txt = (jobj && jobj.candidates && jobj.candidates[0] && jobj.candidates[0].content && jobj.candidates[0].content.parts && jobj.candidates[0].content.parts[0] && jobj.candidates[0].content.parts[0].text)
-      ? jobj.candidates[0].content.parts[0].text
-      : "";
-    return txt || "";
-  } catch (e) {
-    Logger.log("Gemini PSV呼び出し例外: " + e.toString() + "\nStack: " + e.stack);
-    return "";
-  }
-}
-
 /**
  * 複数記事の抜粋を元に、週次トレンドレポートを生成する
  * @param {Array<object>} articles 期間内の記事オブジェクトの配列
@@ -868,38 +697,6 @@ function _parseWeeklyReportOutput(reportText, originalArticles) {
   // 今回はLLMに「Markdown形式で埋め込んでください」と指示しているので、そのまま表示する方針
 
   return { parsedReportBody, otherArticles };
-}
-
-/** ```json ... ``` を含め、文字列中の最初のJSONを抽出し復元パース（堅牢版） */
-function safeParseJSON(text) {
-  if (!text) return null;
-  var fenced = text.match(/```json\s*([\s\S]*?)```/i);
-  var raw = fenced ? fenced[1] : text;
-  var start = raw.indexOf("{");
-  var end = raw.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    var candidate = raw.slice(start, end + 1);
-    try { return JSON.parse(candidate); } catch (e1) {}
-  }
-  if (start >= 0) {
-    var depth = 0;
-    for (var i = start; i < raw.length; i++) {
-      var ch = raw.charAt(i);
-      if (ch === "{") depth++;
-      if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          var cand2 = raw.slice(start, i + 1);
-          try { return JSON.parse(cand2); } catch (e2) { break; }
-        }
-      }
-    }
-  }
-  try { return JSON.parse(raw); } catch (e3) {
-    var head = String(raw).slice(0, 200).replace(/\s+/g, " ");
-    _logError("safeParseJSON", e3, `JSONパース失敗。先頭200字: ${head}`);
-    return null;
-  }
 }
 
 // =================================================================
@@ -1036,30 +833,9 @@ function isLikelyEnglish(text) {
   return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
 }
 
-/** 1行化＆最大長トリミング */
-function oneLine(text, maxLen) {
-  var s = String(text).replace(/\s+/g, " ").trim();
-  if (s.length <= maxLen) return s;
-  return s.slice(0, Math.max(0, maxLen - 1)) + "…";
-}
-
-/** 比較用に正規化（空白・句読点・記号を除去し、全角半角も大まかに吸収） */
-function normalizeForCompare(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/[ \u3000\t\r\n]/g, "")                   // 空白・改行除去（全角含む）
-    .replace(/[「」『』【】\[\]\(\)（）…・、。,:;.!?\'"\-–—]/g, "") // 句読点・記号
-    .replace(/｜/g, "|");                              // 全角縦棒を半角へ
-}
-
 /** yyyy/MM/dd */
 function fmtDate(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
-}
-
-/** yyyy/MM/dd HH:mm */
-function fmtDateTime(d) {
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm");
 }
 
 /** HTMLエスケープ */
