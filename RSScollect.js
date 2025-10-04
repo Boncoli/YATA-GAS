@@ -318,80 +318,79 @@ function processSummarization() {
 
 /** LLMで「ネットニュース風見出し」を1行生成（Azure優先→OpenAI→Geminiへフォールバック） */
 function summarizeWithLLM(articleText) {
-  const props = PropertiesService.getScriptProperties();
-  const azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
-  const azureKey = props.getProperty("OPENAI_API_KEY"); // AzureのAPIキー
+  const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
+  const USER = [
+    "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
+    "要件:",
+    " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
+    " - 専門用語は噛み砕く（難語は短く）",
+    " - 誇張や断定は避け事実ベースで",
+    " - 目安は全角20〜35字（オーバー可）",
+    "例：『AIが血液検査を高度化、迅速診断の精度向上』",
+    "",
+    "記事: ---",
+    articleText,
+    "---"
+  ].join("\n");
 
-  // 1. Azure OpenAIを試行
-  if (azureUrl && azureKey) {
-    const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
-    const USER = [
-      "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
-      "要件:",
-      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
-      " - 専門用語は噛み砕く（難語は短く）",
-      " - 誇張や断定は避け事実ベースで",
-      " - 目安は全角20〜35字（オーバー可）",
-      "例：『AIが血液検査を高度化、迅速診断の精度向上』",
-      "",
-      "記事: ---",
-      articleText,
-      "---"
-    ].join("\\n");
-    const result = executeAzureOpenAICall(SYSTEM, USER);
-    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
-      return result;
-    }
-    Logger.log("Azure OpenAIでの見出し生成に失敗しました。OpenAI APIを試行します。");
-  }
-
-  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 個人のOpenAI APIキー
-
-  // 2. OpenAI APIを試行
-  if (openAiKey) {
-    const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
-    const USER = [
-      "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
-      "要件:",
-      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
-      " - 専門用語は噛み砕く（難語は短く）",
-      " - 誇張や断定は避け事実ベースで",
-      " - 目安は全角20〜35字（オーバー可）",
-      "例：『AIが血液検査を高度化、迅速診断の精度向上』",
-      "",
-      "記事: ---",
-      articleText,
-      "-"
-    ].join("\\n");
-    const result = executeOpenAICall(SYSTEM, USER);
-    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
-      return result;
-    }
-    Logger.log("OpenAI APIでの見出し生成に失敗しました。Gemini APIを試行します。");
-  }
-
-  // 3. Geminiを試行（フォールバック）
-  const geminiApiKey = props.getProperty("GEMINI_API_KEY");
-  if (!geminiApiKey) {
-    return "Gemini APIキーが未設定のため見出しを生成できませんでした。";
-  }
-  const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
-  const PROMPT =
-    "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の記事内容を、ネットニュースの見出しのように**1行**の日本語タイトルへ要約してください。\\n" +
-    "要件:\\n" +
-    "- 名詞止めを優先\\n" +
-    "- 専門用語は噛み砕いて簡潔に\\n" +
-    "- 誇張・断定は避け事実ベース\\n" +
-    "- 目安は全角20〜35字（オーバー可）\\n" +
-    "例：『AIが血液検査を高度化、迅速診断の精度向上』\\n" +
-    "記事: --- " + articleText + " ---";
-
-  return executeGeminiCall(API_ENDPOINT, PROMPT);
+  return callLlmWithFallback(SYSTEM, USER, "gpt-4.1-nano");
 }
 
 // =================================================================
 // 🤖 LLM API Clients (LLM API呼び出しクライアント)
 // =================================================================
+
+/**
+ * LLMを呼び出す汎用関数（Azure優先→OpenAI→Geminiへフォールバック）
+ * @param {string} systemPrompt システムプロンプト
+ * @param {string} userPrompt ユーザープロンプト
+ * @param {string} [openAiModel="gpt-3.5-turbo"] OpenAI APIで使用するモデル名
+ * @returns {string} LLMからの応答テキスト、またはエラーメッセージ
+ */
+function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano") {
+  const props = PropertiesService.getScriptProperties();
+  const azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
+  const azureKey = props.getProperty("OPENAI_API_KEY"); // AzureのAPIキー
+  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 個人のOpenAI APIキー
+  const geminiApiKey = props.getProperty("GEMINI_API_KEY");
+
+  let result = "";
+
+  // 1. Azure OpenAIを試行
+  if (azureUrl && azureKey) {
+    Logger.log("Azure OpenAIを試行中...");
+    result = executeAzureOpenAICall(systemPrompt, userPrompt);
+    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
+      return result;
+    }
+    Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
+  }
+
+  // 2. OpenAI APIを試行
+  if (openAiKey) {
+    Logger.log("OpenAI APIを試行中...");
+    result = executeOpenAICall(openAiModel, systemPrompt, userPrompt);
+    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
+      return result;
+    }
+    Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
+  }
+
+  // 3. Geminiを試行
+  if (geminiApiKey) {
+    Logger.log("Gemini APIを試行中...");
+    const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
+    const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
+    result = executeGeminiCall(API_ENDPOINT, PROMPT);
+    if (result && result.indexOf("API Error") === -1 && result.indexOf("見出しが生成できませんでした。") === -1) {
+      return result;
+    }
+    Logger.log("Gemini APIでの呼び出しに失敗しました。");
+  }
+
+  return "いずれのLLMでも見出しを生成できませんでした。";
+}
+
 /** Azure OpenAI 呼び出し（Chat Completions） */
 function executeAzureOpenAICall(systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
@@ -409,7 +408,7 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
       { role: "user",   content: userPrompt }
     ],
     temperature: 0.2,
-    max_completion_tokens: 256
+    max_completion_tokens: 1024
   };
   const options = {
     method: "post",
@@ -445,9 +444,9 @@ function executeAzureOpenAICall(systemPrompt, userPrompt) {
 }
 
 /** OpenAI API（Chat Completions）呼び出し */
-function executeOpenAICall(systemPrompt, userPrompt) {
+function executeOpenAICall(model = "gpt-4.1-nano", systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
-  const apiKey   = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 新しいプロパティ
+  const apiKey   = props.getProperty("OPENAI_API_KEY_PERSONAL");
 
   if (!apiKey) {
     Logger.log("OpenAI API のプロパティが未設定（OPENAI_API_KEY_PERSONAL）");
@@ -455,15 +454,20 @@ function executeOpenAICall(systemPrompt, userPrompt) {
   }
 
   const payload = {
-    model: "gpt-5-nano",   // 使用モデル
+    model: model, // 引数で受け取ったmodelを使用
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
-    max_completion_tokens: 256, // ← ここを修正！
-    temperature: 0.2,           // 生成のランダム性
-    top_p: 1,              // nucleus sampling。通常は1のままでOK
+    max_completion_tokens: 1024,
   };
+
+  // nano系モデルの場合、temperatureとtop_pは設定しない
+  if (!model.includes("nano")) {
+    payload.temperature = 0.2;
+    payload.top_p = 1;
+  }
+
   const options = {
     method: "post",
     contentType: "application/json",
@@ -501,7 +505,7 @@ function executeOpenAICall(systemPrompt, userPrompt) {
 function executeGeminiCall(apiEndpoint, prompt) {
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 128 }
+    generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
   };
   const options = {
     method: "post",
@@ -583,57 +587,57 @@ function weeklyDigestJob() {
   var start = win.start;
   var end = win.end;
 
-  var items = getArticlesInDateWindow(start, end); // headline(E)がある行のみ抽出
-  if (items.length === 0) {
+  var allItems = getArticlesInDateWindow(start, end); // headline(E)がある行のみ抽出
+  if (allItems.length === 0) {
     Logger.log("週間ダイジェスト：対象期間 " + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1)) + " に記事はありません。");
     return;
   }
 
-  var capped = items.slice(0, Math.min(items.length, 120));
-  var ranked;
-  if (config.useAiRank || config.useAiTldr) {
-    ranked = aiRankAndSummarize(capped, { useAiRank: config.useAiRank, useAiTldr: config.useAiTldr }, config);
-  } else {
-    // デフォルト：ヒューリだけ
-    ranked = capped.map(function (it) {
-      return {
-        date: it.date, title: it.title, url: it.url, abstractText: it.abstractText,
-        headline: it.headline, source: it.source,
-        score: heuristicScore(it), tldr: heuristicTldr(it)
-      };
+  // テーマに関連するキーワードリスト
+  const THEME_KEYWORDS = ["臨床検査", "バイオ", "遺伝子", "ゲノム", "DNA", "RNA", "タンパク質", "疾患", "医療", "診断", "治療", "創薬", "研究", "技術", "解析", "シーケンシング", "エピジェネティック", "細胞", "免疫", "微生物", "AI", "機械学習"];
+
+  // 記事を関連性の有無でフィルタリング
+  const relevantArticles = [];
+  let nonRelevantArticles = [];
+
+  allItems.forEach(article => {
+    const textToSearch = `${article.title} ${article.abstractText} ${article.headline}`;
+    const isRelevant = THEME_KEYWORDS.some(keyword => textToSearch.includes(keyword));
+    if (isRelevant) {
+      relevantArticles.push(article);
+    } else {
+      nonRelevantArticles.push(article);
+    }
+  });
+
+  var headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+  var mdBody = "";
+  var otherArticlesMd = "";
+
+  // 週次レポートを生成 (関連性の高い記事のみを渡す)
+  const { reportBody, otherArticles: llmOtherArticles } = generateWeeklyReportWithLLM(relevantArticles);
+  mdBody = reportBody;
+
+  // LLMが生成したその他の記事と、フィルタリングで除外された記事を結合
+  const combinedOtherArticles = nonRelevantArticles.concat(llmOtherArticles);
+
+  // その他の記事をMarkdown形式で整形
+  if (combinedOtherArticles.length > 0) {
+    otherArticlesMd = "\n\n---\n\n&#128218; その他の記事\n";
+    combinedOtherArticles.forEach(article => {
+      otherArticlesMd += `- [${article.title}](${article.url})\n`;
     });
   }
 
-  // 並び替え（score降順）→ TOP N
-  ranked.sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
-  var digest = ranked.slice(0, config.topN);
-
-// 本文（Markdown）を生成：見出し＋1行要約＋リンク
-  var headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1)) + "（" + digest.length + "件）";
-  var mdParts = [];
-  for (var i = 0; i < digest.length; i++) {
-    var it = digest[i];
-    var tl = (it.tldr && String(it.tldr).trim()) || heuristicTldr(it);
-    var normalizedH = normalizeForCompare(it.headline);
-    var normalizedT = normalizeForCompare(tl);
-    var includeTldr = tl && normalizedH !== normalizedT;
-    var line = "**" + (i + 1) + ". " + it.headline + "**\n";
-    if (includeTldr) line += "> " + oneLine(tl, 120) + "\n";
-    line += "[" + "記事を読む" + "](" + it.url + ")"
-      + "　｜　" + fmtDateTime(it.date)
-      + (it.source ? "　｜　" + it.source : "");
-    mdParts.push(line);
-  }
-  var mdBody = mdParts.join("\n\n");
-  var preview = "【週間RSSダイジェスト】\n" + headerLine + "\n\n" + mdBody;
+  var preview = "【週間RSSダイジェスト】\\n" + headerLine + "\\n\\n" + mdBody + otherArticlesMd;
   Logger.log(preview);
 
   // 送信（送信先が無ければスキップ）
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendWeeklyDigestEmail(headerLine, mdBody);
+    sendWeeklyDigestEmail(headerLine, mdBody, otherArticlesMd); // otherArticlesMd を追加
   }
   if (config.notifyChannel === "teams" || config.notifyChannel === "both") {
-    sendWeeklyDigestTeams(headerLine, mdBody);
+    sendWeeklyDigestTeams(headerLine, mdBody, otherArticlesMd); // otherArticlesMd を追加
   }
 }
 
@@ -717,108 +721,19 @@ function heuristicTldr(it) {
   return tl;
 }
 
-// ------------------------------
-// 🤖 AIで重み付け＆1行要約（将来ONにする場合のみ使用）
-//   - デフォルトは Script Properties が 'N' のため、本ルートは呼ばれません
-// ------------------------------
-function aiRankAndSummarize(items, opts, config) {
-  var useRank = !!opts.useAiRank;
-  var useTldr = !!opts.useAiTldr;
 
-  // 両方OFFなら即ヒューリ（待機やAPI呼び出し無し）
-  if (!useRank && !useTldr) {
-    return items.map(function (it) {
-      return {
-        date: it.date, title: it.title, url: it.url, abstractText: it.abstractText,
-        headline: it.headline, source: it.source,
-        score: heuristicScore(it), tldr: heuristicTldr(it)
-      };
-    });
-  }
 
-  // AIに渡す最大候補数（巨大入力による不安定化を避ける）
-  var aiMax = Math.max(5, config.aiCandidates);
-
-  // まずヒューリスティックで粗選別（上位 aiMax 件だけAIにかける）
-  var prelim = items
-    .map(function (it) { return { it: it, sc: heuristicScore(it) }; })
-    .sort(function (a, b) { return b.sc - a.sc; })
-    .slice(0, Math.min(items.length, aiMax))
-    .map(function (x) { return x.it; });
-
-  var out = [];
-  var processedUrls = new Set();
-
-  // AI処理対象の記事を処理
-  for (var i = 0; i < prelim.length; i++) {
-    var it = prelim[i];
-    out.push(getScoreAndTldrPSV(it, useRank, useTldr));
-    processedUrls.add(it.url);
-    Utilities.sleep(Config.Llm.DELAY_MS); // レート制御
-  }
-
-  // AI処理対象外の記事をヒューリスティックで処理
-  for (var m = 0; m < items.length; m++) {
-    var it2 = items[m];
-    if (processedUrls.has(it2.url)) continue;
-    out.push({
-      date: it2.date, title: it2.title, url: it2.url, abstractText: it2.abstractText,
-      headline: it2.headline, source: it2.source,
-      score: heuristicScore(it2), tldr: heuristicTldr(it2)
-    });
-  }
-  return out;
-}
-
-/** 1件に対して score|tldr を返す（PSV 1行）。失敗時はヒューリにフォールバック */
-function getScoreAndTldrPSV(it, useRank, useTldr) {
-  var score0 = heuristicScore(it);
-  var tldr0  = heuristicTldr(it);
-
-  if (!useRank && !useTldr) {
-    return {
-      date: it.date, title: it.title, url: it.url, abstractText: it.abstractText,
-      headline: it.headline, source: it.source,
-      score: score0, tldr: tldr0
-    };
-  }
-
-  var SYSTEM = "あなたは編集デスクです。日本語で簡潔・正確に応答します。";
-  var USER = [
-    "以下の1件について、日本語60〜120字の1行要約(tldr)と、重要度score(0〜100整数)を返してください。",
-    "評価観点：臨床検査・バイオの新規性、実用性、波及効果、話題性。誇張は禁止、事実ベース。",
-    "出力は **1行のみ**、形式は `score|tldr`。tldr にパイプ(|)と改行は含めない。前後に説明文・コードブロック・引用は一切出力しない。",
-    "input:",
-    JSON.stringify({
-      headline: it.headline,
-      abstract: oneLine(String(it.abstractText || ""), 500),
-      source: it.source || "",
-      date: fmtDate(it.date),
-      url: it.url
-    })
-  ].join("\n");
-
-  var text = callLLM_TextItemPSV(SYSTEM, USER);
-  var parsed = parseOnePSVLine(text); // {score, tldr} or null
-
-  var score = useRank ? (parsed && typeof parsed.score === "number" ? parsed.score : score0) : score0;
-  var tldr  = useTldr ? (parsed && parsed.tldr ? oneLine(parsed.tldr, 120) : tldr0) : tldr0;
-
-  return {
-    date: it.date, title: it.title, url: it.url, abstractText: it.abstractText,
-    headline: it.headline, source: it.source,
-    score: score, tldr: tldr
-  };
-}
-
-/** LLM（Azure優先→Gemini）でテキスト（PSV 期待）を1件取得 */
+/** LLM（Azure優先→OpenAI→Gemini）でテキスト（PSV 期待）を1件取得 */
 function callLLM_TextItemPSV(systemPrompt, userPrompt) {
   var props = PropertiesService.getScriptProperties();
   var azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
   var azureKey = props.getProperty("OPENAI_API_KEY");
+  var openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 追加
   var out = "";
   if (azureUrl && azureKey) {
     out = callAzureChatForText(systemPrompt, userPrompt);
+  } else if (openAiKey) { // 追加
+    out = executeOpenAICall("gpt-4.1-mini", systemPrompt, userPrompt); // gpt-4.1-mini を使用
   } else {
     out = callGeminiForText(systemPrompt, userPrompt);
   }
@@ -882,7 +797,7 @@ function callGeminiForText(systemPrompt, userPrompt) {
   var prompt = (systemPrompt || "") + "\n\n" + (userPrompt || "");
   var payload = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 256 }
+    generationConfig: { temperature: 0.2, maxOutputTokens: 256 } // maxOutputTokensを256に増やす
   };
   var options = {
     method: "post",
@@ -905,6 +820,72 @@ function callGeminiForText(systemPrompt, userPrompt) {
     Logger.log("Gemini PSV呼び出し例外: " + e.toString() + "\nStack: " + e.stack);
     return "";
   }
+}
+
+/**
+ * 複数記事の抜粋を元に、週次トレンドレポートを生成する
+ * @param {Array<object>} articles 期間内の記事オブジェクトの配列
+ * @returns {object} { reportBody: string, otherArticles: Array<{title: string, url: string}> }
+ */
+function generateWeeklyReportWithLLM(articles) {
+  const systemPrompt = "あなたはプロのニュース編集者です。1週間の動向を、読者が1分で把握できる要旨にまとめます。";
+  const userPrompt = `
+あなたはプロのニュース編集者です。以下の今週の記事抜粋一覧から、臨床検査・バイオ要素技術に関する共通するテーマを見つけて3〜4つのトレンドに分け、それぞれ見出しと要点を整理してください。
+
+条件:
+- 全体で400〜500字程度にまとめること。
+- 各トレンドは見出しと2行以内の説明で構成すること。
+- 誇張や断定は避け、事実に基づいた内容にすること。
+- 最後に1文で全体のまとめを入れること。
+- 各要点には、関連する記事のタイトルとURLをMarkdown形式のリンクとして埋め込むこと。例: [記事タイトル](記事URL)
+- **重要**: 臨床検査・バイオ要素技術に無関係な記事は、レポート本文に含めないでください。
+
+記事一覧:
+${articles.map(a => `- ${a.abstractText}（${a.source}: ${a.url}）`).join("\\n")}
+`;
+
+  const reportText = callLlmWithFallback(systemPrompt, userPrompt, "gpt-4.1-mini");
+
+  // LLMの出力からレポート本文とその他の記事を分離
+  const { parsedReportBody, otherArticles } = _parseWeeklyReportOutput(reportText, articles);
+
+  return { reportBody: parsedReportBody, otherArticles };
+}
+
+/**
+ * LLMから返された週次レポートのテキストを解析し、レポート本文と「その他の記事」を分離する
+ * @param {string} reportText LLMから返された週次レポートのテキスト
+ * @param {Array<object>} originalArticles 週次レポート生成に使用した元の記事リスト
+ * @returns {object} { parsedReportBody: string, otherArticles: Array<{title: string, url: string}> }
+ */
+function _parseWeeklyReportOutput(reportText, originalArticles) {
+  let parsedReportBody = reportText;
+  const includedUrls = new Set();
+  const otherArticles = [];
+
+  // Markdownリンクの正規表現: [テキスト](URL)
+  const markdownLinkRegex = /\[([^\]]+?)\]\((https?:\/\/[^\s)]+?)\)/g;
+  let match;
+
+  // レポート本文からリンクを抽出し、含まれるURLを記録
+  while ((match = markdownLinkRegex.exec(reportText)) !== null) {
+    const url = match[2];
+    includedUrls.add(url);
+  }
+
+  // 元の記事リストを走査し、レポート本文に含まれていない記事をotherArticlesに追加
+  originalArticles.forEach(article => {
+    if (!includedUrls.has(article.url)) {
+      otherArticles.push({ title: article.title, url: article.url });
+    }
+  });
+
+  // レポート本文からMarkdownリンクを削除（表示用）
+  // ただし、LLMの出力が既に整形されていることを期待するため、ここでは削除せずそのまま使用する
+  // 必要であれば、ここで `reportText.replace(markdownLinkRegex, '$1')` のような処理を入れる
+  // 今回はLLMに「Markdown形式で埋め込んでください」と指示しているので、そのまま表示する方針
+
+  return { parsedReportBody, otherArticles };
 }
 
 /** ```json ... ``` を含め、文字列中の最初のJSONを抽出し復元パース（堅牢版） */
@@ -943,17 +924,51 @@ function safeParseJSON(text) {
 // ✉️ 週次の送信（送信先未設定なら送らない）
 // =================================================================
 function convertMarkdownToHtml(mdBody) {
-  return mdBody
+  let html = mdBody;
+
+  // MarkdownリストをHTMLリストに変換
+  // 各行を処理し、'- 'で始まる行をリストアイテムに変換
+  const lines = html.split(/\n/);
+  let inList = false;
+  let processedLines = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('-')) {
+      if (!inList) {
+        processedLines.push('<ul>');
+        inList = true;
+      }
+      processedLines.push(`<li>${line.trim().substring(1).trim()}</li>`);
+    } else {
+      if (inList) {
+        processedLines.push('</ul>');
+        inList = false;
+      }
+      if (line.trim() !== '') { // 空行は<p>タグで囲まない
+        processedLines.push(`<p>${line}</p>`);
+      } else {
+        processedLines.push(line); // 空行はそのまま
+      }
+    }
+  }
+  if (inList) {
+    processedLines.push('</ul>');
+  }
+  html = processedLines.join('\n');
+
+  html = html
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')          // **太字**
     .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')      // > 引用
     // 記事を読む → URL記事を読む</a>
     .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g,
      '<a href="$2">$1</a>')
-    .replace(/\n\n/g, '<br><br>')
-    .replace(/\n/g, '<br>');
+
+
+  return html;
 }
 
-function sendWeeklyDigestEmail(headerLine, mdBody) {
+function sendWeeklyDigestEmail(headerLine, mdBody, otherArticlesMd) { // otherArticlesMd を引数に追加
   const props = PropertiesService.getScriptProperties();
   const to = props.getProperty("MAIL_TO");
   if (!to) { Logger.log("MAIL_TO未設定のためメール送信せず。"); return; }
@@ -961,28 +976,35 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   const subjectPrefix = props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】";
   const senderName = props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット";
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
-  const subject = subjectPrefix + today;
+    const fullMdBody = mdBody + otherArticlesMd; // otherArticles を結合
+
+  const convertedHtmlContent = convertMarkdownToHtml(fullMdBody); // ここで定義
 
   // --- Markdown → HTML（必要最小限：太字/引用/リンク/改行） ---
   const htmlBody =
     `<p>${escapeHtml(headerLine)}</p>` +
     `<div>` +
-      convertMarkdownToHtml(mdBody) +
+      convertedHtmlContent + // convertedHtmlContent を使用
     `</div>`;
 
   // テキスト版（互換用）
-  const textBody = `${headerLine}\n\n${mdBody.replace(/\*\*/g, "").replace(/^> /gm, "  ")}`;
+  const textBody = `${headerLine}\n\n${fullMdBody.replace(/\*\*/g, "").replace(/^> /gm, "  ")}`;
 
-  GmailApp.sendEmail(to, subject, textBody, { name: senderName, htmlBody: htmlBody });
+  // subject変数を再定義し、強制的にスコープ内で認識させる
+  const finalSubject = subjectPrefix + today;
+
+  GmailApp.sendEmail(to, finalSubject, textBody, { name: senderName, htmlBody: htmlBody });
   Logger.log("メール送信完了: " + to);
 }
 
-function sendWeeklyDigestTeams(headerLine, mdBody) {
+function sendWeeklyDigestTeams(headerLine, mdBody, otherArticlesMd) { // otherArticlesMd を引数に追加
   var url = PropertiesService.getScriptProperties().getProperty("TEAMS_WEBHOOK_URL");
   if (!url) { Logger.log("TEAMS_WEBHOOK_URL未設定のためTeams送信せず。"); return; }
 
+  const fullMdBody = mdBody + otherArticlesMd; // otherArticlesMd を結合
+
   // メール送信と同様に Markdown を HTML のサブセットに変換し、Teamsに渡す
-  var htmlText = convertMarkdownToHtml(mdBody);
+  var htmlText = convertMarkdownToHtml(fullMdBody); // fullMdBody を使用
 
   var payload = {
     "@type": "MessageCard",
