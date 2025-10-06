@@ -586,7 +586,7 @@ function weeklyDigestJob() {
     sendWeeklyDigestEmail(headerLine, mdBody, otherArticlesMd); // otherArticlesMd を追加
   }
   if (config.notifyChannel === "teams" || config.notifyChannel === "both") {
-    sendWeeklyDigestTeams(headerLine, mdBody, otherArticlesMd); // otherArticlesMd を追加
+    sendWeeklyDigestTeams(headerLine, mdBody, combinedOtherArticles);
   }
 }
 
@@ -795,7 +795,7 @@ function sendWeeklyDigestEmail(headerLine, mdBody, otherArticlesMd) { // otherAr
  * @param {string} reportBody レポート本文
  * @param {Array<Object>} otherArticles その他の記事
  */
-function sendWeeklyDigestTeams(reportBody, otherArticles) {
+function sendWeeklyDigestTeams(headerLine, mdBody, combinedOtherArticles) { // 引数名を変更
   const props = PropertiesService.getScriptProperties();
   const webhookUrl = props.getProperty("TEAMS_WEBHOOK_URL");
   if (!webhookUrl) {
@@ -804,7 +804,7 @@ function sendWeeklyDigestTeams(reportBody, otherArticles) {
   }
 
   // ステップ1で追加した関数を呼び出し、アダプティブカードのペイロードを生成
-  const payload = createAdaptiveCardJSON(reportBody, otherArticles);
+  const payload = createAdaptiveCardJSON(mdBody, combinedOtherArticles);
 
   const options = {
     method: "post",
@@ -928,7 +928,8 @@ function createAdaptiveCardJSON(reportBody, otherArticles) {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.5",
-        "body": cardBody
+        "body": cardBody,
+        "msteams": { "width": "full" } 
       }
     }]
   };
