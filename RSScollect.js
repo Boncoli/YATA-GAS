@@ -347,9 +347,9 @@ function summarizeWithLLM(articleText) {
  * @param {string} [openAiModel="gpt-4.1-nano"] OpenAI APIで使用するモデル名
  * @returns {string} LLMからの応答テキスト、またはエラーメッセージ
  */
-function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano") {
+function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null) {
   const props = PropertiesService.getScriptProperties();
-  const azureUrl = props.getProperty("AZURE_ENDPOINT_URL");
+  const azureUrl = azureUrlOverride || props.getProperty("AZURE_ENDPOINT_URL");
   const azureKey = props.getProperty("OPENAI_API_KEY"); // AzureのAPIキー
   const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // 個人のOpenAI APIキー
   const geminiApiKey = props.getProperty("GEMINI_API_KEY");
@@ -641,25 +641,30 @@ function getArticlesInDateWindow(start, end) {
 function generateWeeklyReportWithLLM(articles) {
   const systemPrompt = "あなたはプロのニュース編集者です。1週間の動向を、読者が1分で把握できる要旨にまとめます。";
   const userPrompt = `
-あなたはプロのニュース編集者です。以下の今週の記事抜粋一覧から、臨床検査・バイオ要素技術に関する共通するテーマを見つけて3〜4つのトレンドに分け、それぞれ見出しと要点を整理してください。
+  あなたは、臨床検査・バイオ技術分野の動向を分析するプロのニュース編集者です。
+  以下の今週の記事抜粋一覧を分析し、示唆に富んだ週次トレンドレポートを作成してください。
 
-**このレポートはメールで配信されるため、読者が素早く内容を把握できるよう、可読性を特に重視してください。**
+  **このレポートはメールで配信されるため、読者が1分で今週の重要動向を把握できるよう、構成と可読性を特に重視してください。**
 
-条件:
-- 全体で400〜500字程度にまとめること。
-- 各トレンドは見出しと2行以内の説明で構成すること。
-- **各トレンドの終わりには、区切りとして水平線（---）を挿入すること。**
-- **トレンドの見出しは、太字（**見出し**）にして強調すること。**
-- 誇張や断定は避け、事実に基づいた内容にすること。
-- 最後に1文で全体のまとめを入れること。
-- 各要点には、関連する記事のタイトルとURLをMarkdown形式のリンクとして埋め込むこと。例: [記事タイトル](記事URL)
-- **重要**: 臨床検査・バイオ要素技術に無関係な記事は、レポート本文に含めないでください。
+  **満たすべき条件:**
+  - **最初に「今週のハイライト」**として、最も重要な動向を3行程度の箇条書きで示してください。
+  - 次に、記事全体を**3〜4つの主要なトレンド**に分類してください。
+    - （例：「新たな診断技術」「AI創薬の進展」「ゲノム編集の応用」「特定の疾患研究」など）
+  - 各トレンドは**太字の見出し（**見出し**）**と、**2〜3行の要点解説**で構成してください。
+    - 解説には、**そのトレンドがなぜ今重要なのか**という視点を含めてください。
+  - 各トレンドの要点には、関連する元記事のタイトルとURLをMarkdown形式のリンクとして埋め込んでください。（例: [記事タイトル](記事URL)）
+  - 各トレンドセクションの終わりには、区切りとして水平線（---）を必ず挿入してください。
+  - 最後に、**1文で全体のまとめ**を記載してください。
+  - 誇張や断定は避け、事実に基づいた客観的な内容にしてください。
+  - 全体で400〜600字程度にまとめてください。
 
-記事一覧:
-${articles.map(a => `- ${a.abstractText}（${a.source}: ${a.url}）`).join("\\n")}
-`;
+  **記事一覧:**
+  ${articles.map(a => `- ${a.abstractText}（${a.source}: ${a.url}）`).join("\\n")}
+  `;
 
-  const reportText = callLlmWithFallback(systemPrompt, userPrompt, "gpt-4.1-mini");
+  const props = PropertiesService.getScriptProperties();
+  const weeklyAzureUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY");
+  const reportText = callLlmWithFallback(systemPrompt, userPrompt, "gpt-4.1-mini", weeklyAzureUrl);
 
   // LLMの出力からレポート本文とその他の記事を分離
   const { parsedReportBody, otherArticles } = _parseWeeklyReportOutput(reportText, articles);
@@ -781,43 +786,154 @@ function sendWeeklyDigestEmail(headerLine, mdBody, otherArticlesMd) { // otherAr
   Logger.log("メール送信完了: " + to);
 }
 
-function sendWeeklyDigestTeams(headerLine, mdBody, otherArticlesMd) { // otherArticlesMd を引数に追加
-  var url = PropertiesService.getScriptProperties().getProperty("TEAMS_WEBHOOK_URL");
-  if (!url) { Logger.log("TEAMS_WEBHOOK_URL未設定のためTeams送信せず。"); return; }
+// =================================================================
+// ✉️ 週次の送信（Teams）
+// =================================================================
 
-  const fullMdBody = mdBody + otherArticlesMd; // otherArticlesMd を結合
+/**
+ * 週次ダイジェストをTeamsにアダプティブカードで送信する
+ * @param {string} reportBody レポート本文
+ * @param {Array<Object>} otherArticles その他の記事
+ */
+function sendWeeklyDigestTeams(reportBody, otherArticles) {
+  const props = PropertiesService.getScriptProperties();
+  const webhookUrl = props.getProperty("TEAMS_WEBHOOK_URL");
+  if (!webhookUrl) {
+    Logger.log("TeamsのWebhook URLが設定されていません。");
+    return;
+  }
 
-  // メール送信と同様に Markdown を HTML のサブセットに変換し、Teamsに渡す
-  var htmlText = convertMarkdownToHtml(fullMdBody); // fullMdBody を使用
+  // ステップ1で追加した関数を呼び出し、アダプティブカードのペイロードを生成
+  const payload = createAdaptiveCardJSON(reportBody, otherArticles);
 
-  var payload = {
-    "@type": "MessageCard",
-    "@context": "http://schema.org/extensions",
-    "themeColor": "0072C6",
-    "summary": "週間RSSダイジェスト",
-    "sections": [{
-      "activityTitle": "週間RSSダイジェスト",
-      // htmlText を渡す
-      "text": "**" + headerLine + "**<br><br>" + htmlText
-    }]
-  };
-
-  var options = {
+  const options = {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
-    muteHttpExceptions: true
   };
+
   try {
-    var res = UrlFetchApp.fetch(url, options);
-    var ok = res.getResponseCode() === 200;
-    if (!ok) {
-      _logError("sendWeeklyDigestTeams", new Error(res.getContentText()), "Teams送信失敗。");
+    // UrlFetchAppは200番台以外を例外として扱うため、明示的にfalseにする
+    options.muteHttpExceptions = true;
+    const res = UrlFetchApp.fetch(webhookUrl, options);
+    
+    // TeamsのWebhookは成功時に "1" というテキストを返すことがあるため、レスポンスコードで判定
+    const responseCode = res.getResponseCode();
+    if (responseCode >= 200 && responseCode < 300) {
+      Logger.log("Teams送信完了");
+    } else {
+      const errorText = res.getContentText();
+      _logError("sendWeeklyDigestTeams", new Error(errorText), `Teams送信失敗。ステータスコード: ${responseCode}`);
+      Logger.log(`Teams送信失敗。ステータスコード: ${responseCode}, エラー: ${errorText}`);
     }
-    Logger.log(ok ? "Teams送信完了" : "Teams送信失敗。");
   } catch (e) {
     _logError("sendWeeklyDigestTeams", e, "Teams送信中に例外が発生しました。");
   }
+}
+
+/**
+ * 週次レポートの内容からTeams用のアダプティブカードJSONを生成する
+ * @param {string} reportBody - LLMが生成したレポート本文（ハイライトとトレンドを含む）
+ * @param {Array<Object>} otherArticles - 「その他の記事」の配列
+ * @returns {Object} Teams Webhook用のペイロードオブジェクト
+ */
+function createAdaptiveCardJSON(reportBody, otherArticles) {
+  const cardTitle = `今週の臨床検査・バイオ技術トレンド Weekly Digest (${fmtDate(new Date())}週)`;
+
+  // reportBodyを解析して、ハイライトと各トレンドに分割する
+  const sections = reportBody.split('---').map(s => s.trim());
+  const highlightsAndTrends = sections.filter(s => s.length > 0);
+
+  const cardBody = [];
+
+  // 1. カード全体のタイトルを追加
+  cardBody.push({
+    "type": "TextBlock",
+    "text": cardTitle,
+    "weight": "Bolder",
+    "size": "Large"
+  });
+
+  // 2. ハイライトとトレンドのセクションをカードに追加
+  highlightsAndTrends.forEach((sectionText, index) => {
+    // 水平線（区切り）を追加（最初の要素以外）
+    if (index > 0) {
+      cardBody.push({ "type": "TextBlock", "text": " ", "separator": true });
+    }
+
+    const lines = sectionText.split('\\n').filter(line => line.trim() !== '');
+    lines.forEach(line => {
+      // 見出し行（**太字**）を検出
+      if (line.startsWith('**') && line.endsWith('**')) {
+        cardBody.push({
+          "type": "TextBlock",
+          "text": line.replace(/\*\*/g, ''), // ** を除去
+          "weight": "Bolder",
+          "size": "Medium",
+          "wrap": true
+        });
+      } else {
+        // 通常のテキスト行（記事リンクなどを含む）
+        cardBody.push({
+          "type": "TextBlock",
+          "text": line,
+          "wrap": true
+        });
+      }
+    });
+  });
+
+  // 3. 「その他の記事」セクションを追加（折りたたみ可能なコンテナ）
+  if (otherArticles && otherArticles.length > 0) {
+    // 水平線
+    cardBody.push({ "type": "TextBlock", "text": " ", "separator": true });
+
+    const otherArticleItems = otherArticles.map(article => {
+      return {
+        "type": "TextBlock",
+        "text": `- [${article.title}](${article.url})`, // Markdownリンク
+        "wrap": true
+      };
+    });
+
+    cardBody.push({
+      "type": "Container",
+      "items": [
+        {
+          "type": "ActionSet",
+          "actions": [
+            {
+              "type": "Action.ToggleVisibility",
+              "title": `📚 その他の注目記事 (${otherArticles.length}件) を表示`,
+              "targetElements": ["otherArticlesContainer"]
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "id": "otherArticlesContainer",
+          "isVisible": false, // 最初は非表示
+          "items": otherArticleItems
+        }
+      ]
+    });
+  }
+
+  // アダプティブカードの最終的なJSON構造
+  const payload = {
+    "type": "message",
+    "attachments": [{
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.5",
+        "body": cardBody
+      }
+    }]
+  };
+
+  return payload;
 }
 
 // =================================================================
