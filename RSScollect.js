@@ -656,7 +656,7 @@ function _composeTopPicksSection(articles, topN, TLDR_MIN, TLDR_MAX) {
     return num + head + link + "\n" + tldr;
   });
 
-  return lines.join("\n\n");
+  return lines.join("\n"); // 項目間の改行を1つに修正
 }
 
 
@@ -677,7 +677,7 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   const today         = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl      = props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)";
 
-  const fullMdBody = mdBody + "\n---\nその他の記事一覧は下記スプレッドシートでご覧いただけます。\n→ " + sheetUrl;
+  const fullMdBody = mdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
   const textBody = headerLine + "\n\n" + fullMdBody;
   const finalSubject = subjectPrefix + today;
 
@@ -1032,7 +1032,7 @@ function markdownToHtml(md) {
     .replace(/>/g, '&gt;')
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/[\[\]\(]([^\]\)]+?)[\(]([^)]+?)[\)]/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
     .replace(/^\s*---\s*$/gm, '<hr style="border: none; border-top: 1px solid #eee;">')
     .replace(/^- (.*$)/gim, '&bull; $1')
     .replace(/\n/g, '<br>\n');
