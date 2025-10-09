@@ -242,14 +242,24 @@ function processSummarization() {
 
   let apiCallCount = 0;
   if (articlesToSummarize.length > 0) {
-    Logger.log(`${articlesToSummarize.length} 件の記事に対してLLMで見出し生成を試行します。`);
-    const generatedHeadlinesMap = _getDailyHeadlinesInBatch(articlesToSummarize);
-    apiCallCount = Math.ceil(articlesToSummarize.length / 5); // BATCH_SIZE=5を仮定
-
+    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIスコアとTL;DR生成を試行します。`);
+    // 各記事に対して個別にgetAiScoresAndTldrsInBatchを呼び出す
     articlesToSummarize.forEach(article => {
-      const headline = generatedHeadlinesMap.get(article.originalRowIndex);
-      if (headline) {
-        values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = headline;
+      const singleArticleForLlm = {
+        url: values[article.originalRowIndex][Config.CollectSheet.Columns.URL - 1], // C列のURLを渡す
+        headline: article.title,
+        abstractText: article.abstractText
+      };
+      const aiResultMap = getAiScoresAndTldrsInBatch([singleArticleForLlm]); // 1記事のみ処理
+      apiCallCount++; // 1記事につき1コール
+
+      if (aiResultMap.size > 0) {
+        const result = aiResultMap.values().next().value; // 最初の結果を取得
+        if (result && result.tldr) {
+          values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = result.tldr; // E列にTL;DRを書き込む
+          values[article.originalRowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = result.score; // G列にAIスコアを書き込む
+          values[article.originalRowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = result.tldr; // H列にもTL;DRを書き込む
+        }
       }
     });
   }
@@ -288,23 +298,15 @@ function rankAndSelectArticles(relevantArticles, config) {
     }))
     .sort((a, b) => b.heuristicScore - a.heuristicScore);
 
-  // ② AIバッチ評価 (useAiRankがYの場合)
-  let aiScoredItems = [];
+  // ② AI評価 (useAiRankがYの場合)
+  // AIスコアはヒューリスティックを優先し、TL;DRは既存のものを利用
+  let aiScoredItems = []; // この配列は主にwriteBackAiResultsに渡すためのもの
   if (config.useAiRank) {
-    const articlesToScore = withHeu.slice(0, aiCandidates).filter(a => a.aiScore === null);
-    Logger.log(`[AI Batch] Candidates: ${aiCandidates}, To Score Now: ${articlesToScore.length}`);
-
-    if (articlesToScore.length > 0) {
-      const batchResults = getAiScoresAndTldrsInBatch(articlesToScore);
-      withHeu.forEach(article => {
-        if (batchResults.has(article.url)) {
-          const result = batchResults.get(article.url);
-          article.aiScore = result.score;
-          article.tldr = result.tldr;
-        }
-      });
-    }
-    aiScoredItems = withHeu.slice(0, aiCandidates);
+    // AIスコアはcomputeHeuristicScoreで既に計算済み
+    // TL;DRはスプレッドシートから読み込まれた既存のものを利用
+    // ここではAIによる追加の評価は行わないため、LLM呼び出しは不要
+    Logger.log(`[AI Evaluation] AIスコアはヒューリスティック、TL;DRは既存のものを利用します。`);
+    aiScoredItems = withHeu.filter(a => a.aiScore !== null || a.tldr !== ""); // AIスコアまたはTL;DRがあるものを対象とする
   }
 
   // ③ 複合スコアを計算
@@ -593,111 +595,31 @@ function summarizeWithLLM(articleText) {
   return callLlmWithFallback(SYSTEM, USER, model);
 }
 
-/**
- * 【日次・バッチ用】複数記事の見出しをAIで一括生成
- */
-function _getDailyHeadlinesInBatch(articlesToSummarize) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
 
-  if (!articlesToSummarize || articlesToSummarize.length === 0) return new Map();
-
-  const BATCH_SIZE = 5; // 一度にLLMに送る記事の数
-  const results = new Map(); // { originalRowIndex: headline }
-
-  for (let i = 0; i < articlesToSummarize.length; i += BATCH_SIZE) {
-    const batch = articlesToSummarize.slice(i, i + BATCH_SIZE);
-    const articlesForPrompt = batch.map(a => ({
-      originalRowIndex: a.originalRowIndex,
-      title: a.title,
-      abstractText: a.abstractText
-    }));
-
-    const systemPrompt = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
-    const userPrompt = [
-      "以下のJSON形式の記事リストについて、それぞれネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
-      "要件:",
-      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
-      " - 専門用語は噛み砕く（難語は短く）",
-      " - 誇張や断定は避け事実ベースで",
-      " - 目安は全角20〜35字（オーバー可）",
-      " - 各オブジェクトには `originalRowIndex` と `headline` の2つのキーのみを含めてください。",
-      " - 厳密に以下のJSONフォーマットの配列として出力し、それ以外のテキストは一切含めないでください。",
-      "",
-      "【出力フォーマット】",
-      "[",
-      "  { \"originalRowIndex\": 2, \"headline\": \"見出し1...\" },\n  { \"originalRowIndex\": 5, \"headline\": \"見出し2...\" }\n]",
-      "",
-      "【評価対象記事リスト】",
-      JSON.stringify(articlesForPrompt, null, 2)
-    ].join("\n");
-
-    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
-    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-
-    try {
-      let jsonString = null;
-      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-
-      if (jsonMatch && jsonMatch[1]) {
-        jsonString = jsonMatch[1];
-      } else {
-        const trimmedResponse = rawResponse.trim();
-        if (trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) {
-          jsonString = trimmedResponse;
-        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
-          jsonString = `[${trimmedResponse}]`; // 単一オブジェクトの場合も配列として扱う
-        }
-      }
-
-      if (jsonString) {
-        const parsed = JSON.parse(jsonString);
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
-              results.set(item.originalRowIndex, item.headline);
-            }
-          });
-        }
-      } else {
-        _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-      }
-    } catch (e) {
-      _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-    }
-  } // forループの閉じ括弧
-  return results;
-}
 /**
  * 【週次・バッチ用】複数記事の重要度とTL;DRをAIで一括生成
  */
 function getAiScoresAndTldrsInBatch(articles) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
+  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano"; // Dailyモデルを使用
 
   if (!articles || articles.length === 0) return new Map();
 
-  const BATCH_SIZE = 30; // 一度にLLMに送る記事の数
   const results = new Map();
 
-  for (let i = 0; i < articles.length; i += BATCH_SIZE) {
-    const batch = articles.slice(i, i + BATCH_SIZE);
-    const articlesForPrompt = batch.map(a => ({ url: a.url, headline: a.headline, abstractText: a.abstractText }));
-
+  articles.forEach(article => {
     const systemPrompt = "あなたは臨床検査・バイオ技術の専門ニュースエディターです。";
     const userPrompt = [
-      "以下のJSON形式の記事リストについて、臨床検査・医療・バイオ要素技術の観点での重要度を0〜100の数値で評価し、",
+      "以下の記事について、臨床検査・医療・バイオ要素技術の観点での重要度を0〜100の数値で評価し、",
       "日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
-      "",
-      "厳密に以下のJSONフォーマットの配列として出力し、それ以外のテキストは一切含めないでください。",
-      "各オブジェクトには `url`, `score`, `tldr` の3つのキーのみを含めてください。",
+      "結果は以下のJSON形式で出力してください。`url`, `score`, `tldr` の3つのキーのみを含めてください。",
+      "**重要:** 出力は必ず完全なJSON形式で終了してください。途中で途切れたり、JSONの後に余計なテキストを含めたりしないでください。",
       "",
       "【出力フォーマット】",
-      "[",
-      "  { \"url\": \"記事URL1\", \"score\": 85, \"tldr\": \"要約1...\" },\n  { \"url\": \"記事URL2\", \"score\": 70, \"tldr\": \"要約2...\" }\n]",
+      "{ \"url\": \"記事URL\", \"score\": 85, \"tldr\": \"要約...\" }",
       "",
-      "【評価対象記事リスト】",
-      JSON.stringify(articlesForPrompt, null, 2)
+      "【評価対象記事】",
+      `Headline: ${article.headline}\nAbstract: ${article.abstractText}` // URLはプロンプトに含めない
     ].join("\n");
 
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
@@ -705,35 +627,31 @@ function getAiScoresAndTldrsInBatch(articles) {
 
     try {
       let jsonString = null;
-      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-
-      if (jsonMatch && jsonMatch[1]) {
-        jsonString = jsonMatch[1];
+      const codeBlockMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+      if (codeBlockMatch && codeBlockMatch[1]) {
+        jsonString = codeBlockMatch[1];
       } else {
         const trimmedResponse = rawResponse.trim();
-        if (trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) {
+        if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
           jsonString = trimmedResponse;
-        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
-          jsonString = `[${trimmedResponse}]`; // 単一オブジェクトの場合も配列として扱う
         }
       }
 
       if (jsonString) {
         const parsed = JSON.parse(jsonString);
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
-              results.set(item.url, { score: item.score, tldr: item.tldr });
-            }
-          });
+        // ここでparsed.urlはAIが生成したものではなく、元のarticle.urlを使用する
+        if (typeof parsed.score === 'number' && typeof parsed.tldr === 'string') {
+          results.set(article.url, { score: parsed.score, tldr: parsed.tldr }); // 元のarticle.urlをキーにする
+        } else {
+          _logError("getAiScoresAndTldrsInBatch", new Error("Parsed JSON does not match expected structure"), "AIからのレスポンスのJSON構造が期待と異なりました。Response: " + rawResponse);
         }
       } else {
         _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
       }
     } catch (e) {
-      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse + " Error: " + e.message);
     }
-  }
+  });
   return results;
 }
 
