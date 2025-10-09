@@ -653,23 +653,32 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
             }
           }
     
-          if (jsonString) {
-            const parsed = JSON.parse(jsonString);
-            if (Array.isArray(parsed)) {
-              parsed.forEach(item => {
-                if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
-                  results.set(item.originalRowIndex, item.headline);
+                if (jsonString) {
+                  // JSON文字列の末尾が不完全な場合に強制的に閉じる処理を追加
+                  if (!jsonString.endsWith(']') && !jsonString.endsWith('}')) {
+                    // 最後の文字が引用符でなければ、引用符を追加
+                    if (!jsonString.endsWith('\"')) {
+                      jsonString += '\"';
+                    }
+                    // 配列の閉じ括弧を追加
+                    jsonString += ']';
+                    _logError("_getDailyHeadlinesInBatch", new Error("Incomplete JSON string, forced close"), "AIからのレスポンスのJSON文字列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
+                  }
+                  const parsed = JSON.parse(jsonString);
+                  if (Array.isArray(parsed)) {
+                    parsed.forEach(item => {
+                      if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
+                        results.set(item.originalRowIndex, item.headline);
+                      }
+                    });
+                  }
+                } else {
+                  _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
                 }
-              });
-            }
-          } else {
-            _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-          }
-        } catch (e) {
-          _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-        }
-        Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-  }
+              } catch (e) {
+                _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+              }
+              Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策  }
   return results;
 }
 
@@ -727,22 +736,31 @@ function getAiScoresAndTldrsInBatch(articles) {
         }
       }
 
-      if (jsonString) {
-        const parsed = JSON.parse(jsonString);
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
-              results.set(item.url, { score: item.score, tldr: item.tldr });
+          if (jsonString) {
+            // JSON文字列の末尾が不完全な場合に強制的に閉じる処理を追加
+            if (!jsonString.endsWith(']') && !jsonString.endsWith('}')) {
+              // 最後の文字が引用符でなければ、引用符を追加
+              if (!jsonString.endsWith('\"')) {
+                jsonString += '\"';
+              }
+              // 配列の閉じ括弧を追加
+              jsonString += ']';
+              _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON string, forced close"), "AIからのレスポンスのJSON文字列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
             }
-          });
-        }
-      } else {
-        _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-      }
-    } catch (e) {
-      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-    }
-    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+            const parsed = JSON.parse(jsonString);
+            if (Array.isArray(parsed)) {
+              parsed.forEach(item => {
+                if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
+                  results.set(item.url, { score: item.score, tldr: item.tldr });
+                }
+              });
+            }
+          } else {
+            _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+          }
+        } catch (e) {
+          _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+        }    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
   }
   return results;
 }
