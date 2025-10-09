@@ -632,9 +632,22 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
 
     try {
+      let jsonString = null;
       const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+
       if (jsonMatch && jsonMatch[1]) {
-        const jsonString = jsonMatch[1];
+        // ```json``` ブロックが見つかった場合
+        jsonString = jsonMatch[1];
+      } else {
+        // ```json``` ブロックが見つからなかった場合、rawResponse自体がJSONであるか試す
+        const trimmedResponse = rawResponse.trim();
+        // JSON配列またはオブジェクトの開始と終了で簡易チェック
+        if ((trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) || (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}'))) {
+          jsonString = trimmedResponse;
+        }
+      }
+
+      if (jsonString) {
         const parsed = JSON.parse(jsonString);
         if (Array.isArray(parsed)) {
           parsed.forEach(item => {
@@ -644,7 +657,7 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
           });
         }
       } else {
-        _logError("_getDailyHeadlinesInBatch", new Error("JSON block not found in response"), "AIからのJSONレスポンスにJSONブロックが見つかりませんでした。Response: " + rawResponse);
+        _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
       }
     } catch (e) {
       _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
@@ -685,9 +698,22 @@ function getAiScoresAndTldrsInBatch(articles) {
   const results = new Map();
 
   try {
+    let jsonString = null;
     const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+
     if (jsonMatch && jsonMatch[1]) {
-      const jsonString = jsonMatch[1];
+      // ```json``` ブロックが見つかった場合
+      jsonString = jsonMatch[1];
+    } else {
+      // ```json``` ブロックが見つからなかった場合、rawResponse自体がJSONであるか試す
+      const trimmedResponse = rawResponse.trim();
+      // JSON配列またはオブジェクトの開始と終了で簡易チェック
+      if ((trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) || (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}'))) {
+        jsonString = trimmedResponse;
+      }
+    }
+
+    if (jsonString) {
       const parsed = JSON.parse(jsonString);
       if (Array.isArray(parsed)) {
         parsed.forEach(item => {
@@ -697,7 +723,7 @@ function getAiScoresAndTldrsInBatch(articles) {
         });
       }
     } else {
-      _logError("getAiScoresAndTldrsInBatch", new Error("JSON block not found in response"), "AIからのJSONレスポンスにJSONブロックが見つかりませんでした。Response: " + rawResponse);
+      _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
     }
   } catch (e) {
     _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
