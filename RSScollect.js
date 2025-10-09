@@ -675,14 +675,12 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
                 } else {
                   _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
                 }
-              } catch (e) {
-                _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-              }
-              Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-  }
-  return results;
-}
-
+                            } catch (e) {
+                              _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+                            }
+                            Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+                        return results;
+                      }
 /**
  * 【週次・バッチ用】複数記事の重要度とTL;DRをAIで一括生成
  */
