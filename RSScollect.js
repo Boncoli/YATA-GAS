@@ -678,7 +678,8 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
               } catch (e) {
                 _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
               }
-              Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策  }
+              Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+  }
   return results;
 }
 
