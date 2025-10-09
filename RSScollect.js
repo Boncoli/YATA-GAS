@@ -631,39 +631,44 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
 
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
 
-    try {
-      let jsonString = null;
-      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-
-      if (jsonMatch && jsonMatch[1]) {
-        // ```json``` ブロックが見つかった場合
-        jsonString = jsonMatch[1];
-      } else {
-        // ```json``` ブロックが見つからなかった場合、rawResponse自体がJSONであるか試す
-        const trimmedResponse = rawResponse.trim();
-        // JSON配列またはオブジェクトの開始と終了で簡易チェック
-        if ((trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) || (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}'))) {
-          jsonString = trimmedResponse;
-        }
-      }
-
-      if (jsonString) {
-        const parsed = JSON.parse(jsonString);
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
-              results.set(item.originalRowIndex, item.headline);
+        try {
+          let jsonString = null;
+          const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+    
+          if (jsonMatch && jsonMatch[1]) {
+            jsonString = jsonMatch[1];
+          } else {
+            const trimmedResponse = rawResponse.trim();
+            if (trimmedResponse.startsWith('[')) {
+              // JSON配列が途中で途切れている場合、強制的に閉じる
+              if (!trimmedResponse.endsWith(']')) {
+                jsonString = trimmedResponse + ']';
+                _logError("_getDailyHeadlinesInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
+              } else {
+                jsonString = trimmedResponse;
+              }
+            } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
+              // 単一のJSONオブジェクトの場合
+              jsonString = trimmedResponse;
             }
-          });
+          }
+    
+          if (jsonString) {
+            const parsed = JSON.parse(jsonString);
+            if (Array.isArray(parsed)) {
+              parsed.forEach(item => {
+                if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
+                  results.set(item.originalRowIndex, item.headline);
+                }
+              });
+            }
+          } else {
+            _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+          }
+        } catch (e) {
+          _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
         }
-      } else {
-        _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-      }
-    } catch (e) {
-      _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-    }
-    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-  }
+        Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策  }
   return results;
 }
 
@@ -702,13 +707,19 @@ function getAiScoresAndTldrsInBatch(articles) {
     const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
 
     if (jsonMatch && jsonMatch[1]) {
-      // ```json``` ブロックが見つかった場合
       jsonString = jsonMatch[1];
     } else {
-      // ```json``` ブロックが見つからなかった場合、rawResponse自体がJSONであるか試す
       const trimmedResponse = rawResponse.trim();
-      // JSON配列またはオブジェクトの開始と終了で簡易チェック
-      if ((trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) || (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}'))) {
+      if (trimmedResponse.startsWith('[')) {
+        // JSON配列が途中で途切れている場合、強制的に閉じる
+        if (!trimmedResponse.endsWith(']')) {
+          jsonString = trimmedResponse + ']';
+          _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
+        } else {
+          jsonString = trimmedResponse;
+        }
+      } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
+        // 単一のJSONオブジェクトの場合
         jsonString = trimmedResponse;
       }
     }
