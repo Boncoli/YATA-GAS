@@ -197,46 +197,66 @@ function processSummarization() {
   const lastRow = trendDataSheet.getLastRow();
   if (lastRow < 2) return;
 
-  const range = trendDataSheet.getRange(2, 2, lastRow - 1, 4); // B列からE列まで
-  const data = range.getValues();
+  // シートの全データを一度に読み込む
+  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, trendDataSheet.getLastColumn());
+  const values = dataRange.getValues();
 
-  const updates = [];
-  let apiCallCount = 0;
+  const articlesToSummarize = [];
+  const llmModel = PropertiesService.getScriptProperties().getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
 
-  data.forEach((row, index) => {
-    const title = row[0];
-    const abstractText = row[2];
-    const currentHeadline = row[3];
-    let newHeadline = currentHeadline;
-    const rowNumber = index + 2;
+  values.forEach((row, index) => {
+    const originalRowIndex = index; // values配列の0-indexedインデックス
+    const sheetRowNumber = index + 2; // スプレッドシートの行番号
+
+    const title = row[Config.CollectSheet.Columns.URL - 2]; // B列 (0-indexedで1)
+    const abstractText = row[Config.CollectSheet.Columns.ABSTRACT - 1]; // D列 (0-indexedで3)
+    const currentHeadline = row[Config.CollectSheet.Columns.SUMMARY - 1]; // E列 (0-indexedで4)
 
     if (!currentHeadline || String(currentHeadline).trim() === "") {
       const isShort = (abstractText === Config.Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < Config.Llm.MIN_SUMMARY_LENGTH);
 
       if (isShort) {
+        let newHeadline;
         if (title && String(title).trim() !== "") {
           newHeadline = isLikelyEnglish(String(title))
-            ? `=GOOGLETRANSLATE(B${rowNumber},"auto","ja")`
+            ? `=GOOGLETRANSLATE(B${sheetRowNumber},"auto","ja")`
             : String(title).trim();
         } else if (abstractText && abstractText !== Config.Llm.NO_ABSTRACT_TEXT) {
           newHeadline = isLikelyEnglish(String(abstractText))
-            ? `=GOOGLETRANSLATE(D${rowNumber},"auto","ja")`
+            ? `=GOOGLETRANSLATE(D${sheetRowNumber},"auto","ja")`
             : String(abstractText).trim();
         } else {
           newHeadline = Config.Llm.MISSING_ABSTRACT_TEXT;
         }
+        values[originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
-        const material = String(abstractText || title);
-        newHeadline = summarizeWithLLM(material);
-        apiCallCount++;
+        // LLMでの見出し生成が必要な記事を収集
+        articlesToSummarize.push({
+          originalRowIndex: originalRowIndex,
+          title: title,
+          abstractText: abstractText
+        });
       }
     }
-    updates.push([newHeadline]);
   });
 
-  if (updates.length > 0) {
-    trendDataSheet.getRange(2, Config.CollectSheet.Columns.SUMMARY, updates.length, 1).setValues(updates);
+  let apiCallCount = 0;
+  if (articlesToSummarize.length > 0) {
+    Logger.log(`${articlesToSummarize.length} 件の記事に対してLLMで見出し生成を試行します。`);
+    const generatedHeadlines = _getDailyHeadlinesInBatch(articlesToSummarize);
+    apiCallCount = Math.ceil(articlesToSummarize.length / 5); // BATCH_SIZE=5を仮定
+
+    generatedHeadlines.forEach((headline, originalRowIndex) => {
+      values[originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = headline;
+    });
+  }
+
+  // 更新されたデータ配列をシートに一括書き込み
+  if (articlesToSummarize.length > 0 || values.some(row => row[Config.CollectSheet.Columns.SUMMARY - 1] !== '')) { // 何らかの更新があった場合
+    dataRange.setValues(values);
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
+  } else {
+    Logger.log("見出し生成が必要な記事は見つかりませんでした。");
   }
 }
 
@@ -348,29 +368,167 @@ function writeBackAiResults(aiScoredItems) {
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return;
 
-  const range = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
-  const urlToRow = new Map();
-  for (let i = 0; i < range.length; i++) {
-    urlToRow.set(range[i][2], i + 2); // C列(URL)をキーに行番号をマップ
+  // シートの全データを一度に読み込む
+  const dataRange = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn());
+  const values = dataRange.getValues();
+
+  const urlToRowIndex = new Map(); // URLをキーに、values配列のインデックスをマップ
+  for (let i = 0; i < values.length; i++) {
+    urlToRowIndex.set(values[i][Config.CollectSheet.Columns.URL - 1], i); // C列(URL)は0-indexedで2
   }
 
+  let updatedCount = 0;
   aiScoredItems.forEach(a => {
-    const r = urlToRow.get(a.url);
-    if (r) {
+    const rowIndex = urlToRowIndex.get(a.url);
+    if (rowIndex !== undefined) {
       if (a.aiScore !== null) {
-        sh.getRange(r, Config.CollectSheet.Columns.AI_SCORE).setValue(a.aiScore);
+        values[rowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = a.aiScore;
+        updatedCount++;
       }
       if (a.tldr) {
-        sh.getRange(r, Config.CollectSheet.Columns.AI_TLDR).setValue(a.tldr);
+        values[rowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = a.tldr;
+        updatedCount++;
       }
     }
   });
+
+  if (updatedCount > 0) {
+    // 更新されたデータ配列をシートに一括書き込み
+    dataRange.setValues(values);
+    Logger.log(`${updatedCount} 件のAIスコア/TL;DRをシートに書き戻しました。`);
+  }
 }
 
 
 // =================================================================
 // 🤖 4. LLM Clients & Sub-routines (AI関連)
 // =================================================================
+
+/**
+ * LLMを呼び出す汎用関数（Azure優先→OpenAI→Geminiへフォールバック）
+ */
+/**
+ * Azure OpenAI APIを呼び出すプライベート関数
+ * @returns {string|null} 生成された見出し、またはエラー時はnull
+ */
+function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
+  Logger.log("Azure OpenAIを試行中...");
+  const payload = {
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user",   content: userPrompt }
+    ],
+    temperature: 0.2,
+    max_completion_tokens: 1024
+  };
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "api-key": azureKey },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const res = UrlFetchApp.fetch(azureUrl, options);
+    const code = res.getResponseCode();
+    const txt  = res.getContentText();
+    if (code !== 200) {
+      _logError("_callAzureLlm", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
+      return null;
+    } else {
+      const json = JSON.parse(txt);
+      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+        return String(json.choices[0].message.content).trim();
+      } else {
+        _logError("_callAzureLlm", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
+        return null;
+      }
+    }
+  } catch (e) {
+    _logError("_callAzureLlm", e, "Azure OpenAI呼び出し中に例外が発生しました。");
+    return null;
+  }
+}
+
+/**
+ * OpenAI APIを呼び出すプライベート関数
+ * @returns {string|null} 生成された見出し、またはエラー時はnull
+ */
+function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
+  Logger.log("OpenAI APIを試行中...");
+  const payload = {
+    model: openAiModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt }
+    ],
+    max_tokens: 1024
+  };
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "Authorization": `Bearer ${openAiKey}` },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+    const code = res.getResponseCode();
+    const txt  = res.getContentText();
+    if (code !== 200) {
+      _logError("_callOpenAiLlm", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
+      return null;
+    } else {
+      const json = JSON.parse(txt);
+      if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+        return String(json.choices[0].message.content).trim();
+      } else {
+        _logError("_callOpenAiLlm", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。");
+        return null;
+      }
+    }
+  } catch (e) {
+    _logError("_callOpenAiLlm", e, "OpenAI呼び出し中に例外が発生しました。");
+    return null;
+  }
+}
+
+/**
+ * Gemini APIを呼び出すプライベート関数
+ * @returns {string|null} 生成された見出し、またはエラー時はnull
+ */
+function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
+  Logger.log("Gemini APIを試行中...");
+  const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
+  const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
+  const payload = {
+    contents: [{ parts: [{ text: PROMPT }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+  };
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(API_ENDPOINT, options);
+    const json = JSON.parse(response.getContentText());
+    let text = null;
+    if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
+      text = json.candidates[0].content.parts[0].text;
+    }
+    const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
+    Utilities.sleep(Config.Llm.DELAY_MS); // Gemini APIのレート制限対策
+    return headline;
+  } catch (e) {
+    _logError("_callGeminiLlm", e, "Gemini API呼び出し中に例外が発生しました。");
+    return null;
+  }
+}
 
 /**
  * LLMを呼び出す汎用関数（Azure優先→OpenAI→Geminiへフォールバック）
@@ -382,127 +540,26 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL");
   const geminiApiKey = props.getProperty("GEMINI_API_KEY");
 
+  let result = null;
+
   // 1. Azure OpenAI
   if (azureUrl && azureKey) {
-    Logger.log("Azure OpenAIを試行中...");
-    const payload = {
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user",   content: userPrompt }
-      ],
-      temperature: 0.2,
-      max_completion_tokens: 1024
-    };
-    const options = {
-      method: "post",
-      contentType: "application/json",
-      headers: { "api-key": azureKey },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-
-    let headline = "API呼び出し失敗";
-    try {
-      const res = UrlFetchApp.fetch(azureUrl, options);
-      const code = res.getResponseCode();
-      const txt  = res.getContentText();
-      if (code !== 200) {
-        _logError("callLlmWithFallback (Azure)", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
-        headline = "API Error: " + code;
-      } else {
-        const json = JSON.parse(txt);
-        if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-          headline = String(json.choices[0].message.content).trim();
-        } else {
-          _logError("callLlmWithFallback (Azure)", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
-          headline = "見出しが生成できませんでした。";
-        }
-      }
-    } catch (e) {
-      _logError("callLlmWithFallback (Azure)", e, "Azure OpenAI呼び出し中に例外が発生しました。");
-    }
-
-    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出しが生成できませんでした。") === -1 && headline.indexOf("API呼び出し失敗") === -1) {
-      return headline;
-    }
+    result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey);
+    if (result !== null) return result;
     Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
   }
 
   // 2. OpenAI
   if (openAiKey) {
-    Logger.log("OpenAI APIを試行中...");
-    const payload = {
-      model: openAiModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      max_tokens: 1024
-    };
-    const options = {
-      method: "post",
-      contentType: "application/json",
-      headers: { "Authorization": `Bearer ${openAiKey}` },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-    let headline = "API呼び出し失敗";
-    try {
-      const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
-      const code = res.getResponseCode();
-      const txt  = res.getContentText();
-      if (code !== 200) {
-        headline = `API Error: ${code} - ${txt}`;
-      } else {
-        const json = JSON.parse(txt);
-        if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-          headline = String(json.choices[0].message.content).trim();
-        } else {
-          headline = "見出し生成に失敗しました";
-        }
-      }
-    } catch (e) {
-      headline = "OpenAI呼び出し例外: " + e.toString();
-    }
-
-    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出し生成に失敗しました") === -1 && headline.indexOf("API呼び出し失敗") === -1 && headline.indexOf("OpenAI呼び出し例外") === -1) {
-      return headline;
-    }
+    result = _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey);
+    if (result !== null) return result;
     Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
   }
 
   // 3. Gemini
   if (geminiApiKey) {
-    Logger.log("Gemini APIを試行中...");
-    const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
-    const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-    const payload = {
-      contents: [{ parts: [{ text: PROMPT }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
-    };
-    const options = {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-    let headline = "API呼び出し失敗";
-    try {
-      const response = UrlFetchApp.fetch(API_ENDPOINT, options);
-      const json = JSON.parse(response.getContentText());
-      let text = null;
-      if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
-        text = json.candidates[0].content.parts[0].text;
-      }
-      headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
-    } catch (e) {
-      _logError("callLlmWithFallback (Gemini)", e, "Gemini API呼び出し中に例外が発生しました。");
-    }
-    Utilities.sleep(Config.Llm.DELAY_MS);
-    
-    if (headline && headline.indexOf("API Error") === -1 && headline.indexOf("見出しが生成できませんでした。") === -1 && headline.indexOf("API呼び出し失敗") === -1) {
-      return headline;
-    }
+    result = _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey);
+    if (result !== null) return result;
     Logger.log("Gemini APIでの呼び出しに失敗しました。");
   }
 
@@ -531,6 +588,66 @@ function summarizeWithLLM(articleText) {
   ].join("\n");
 
   return callLlmWithFallback(SYSTEM, USER, model);
+}
+
+/**
+ * 【日次・バッチ用】複数記事の見出しをAIで一括生成
+ */
+function _getDailyHeadlinesInBatch(articlesToSummarize) {
+  const props = PropertiesService.getScriptProperties();
+  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
+
+  if (!articlesToSummarize || articlesToSummarize.length === 0) return new Map();
+
+  const BATCH_SIZE = 5; // 一度にLLMに送る記事の数
+  const results = new Map(); // { originalRowIndex: headline }
+
+  for (let i = 0; i < articlesToSummarize.length; i += BATCH_SIZE) {
+    const batch = articlesToSummarize.slice(i, i + BATCH_SIZE);
+    const articlesForPrompt = batch.map(a => ({
+      originalRowIndex: a.originalRowIndex,
+      title: a.title,
+      abstractText: a.abstractText
+    }));
+
+    const systemPrompt = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
+    const userPrompt = [
+      "以下のJSON形式の記事リストについて、それぞれネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
+      "要件:",
+      " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
+      " - 専門用語は噛み砕く（難語は短く）",
+      " - 誇張や断定は避け事実ベースで",
+      " - 目安は全角20〜35字（オーバー可）",
+      " - 各オブジェクトには `originalRowIndex` と `headline` の2つのキーのみを含めてください。",
+      " - 厳密に以下のJSONフォーマットの配列として出力し、それ以外のテキストは一切含めないでください。",
+      "",
+      "【出力フォーマット】",
+      "[",
+      "  { \"originalRowIndex\": 2, \"headline\": \"見出し1...\" },\n  { \"originalRowIndex\": 5, \"headline\": \"見出し2...\" }\n]",
+      "",
+      "【評価対象記事リスト】",
+      JSON.stringify(articlesForPrompt, null, 2)
+    ].join("\n");
+
+    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+
+    try {
+      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+      const jsonString = jsonMatch ? jsonMatch[1] : rawResponse;
+      const parsed = JSON.parse(jsonString);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(item => {
+          if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
+            results.set(item.originalRowIndex, item.headline);
+          }
+        });
+      }
+    } catch (e) {
+      _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+    }
+    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+  }
+  return results;
 }
 
 /**
