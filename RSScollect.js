@@ -681,65 +681,68 @@ function getAiScoresAndTldrsInBatch(articles) {
 
   if (!articles || articles.length === 0) return new Map();
 
-  const articlesForPrompt = articles.map(a => ({ url: a.url, headline: a.headline, abstractText: a.abstractText }));
-
-  const systemPrompt = "あなたは臨床検査・バイオ技術の専門ニュースエディターです。";
-  const userPrompt = [
-    "以下のJSON形式の記事リストについて、臨床検査・医療・バイオ要素技術の観点での重要度を0〜100の数値で評価し、",
-    "日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
-    "",
-    "厳密に以下のJSONフォーマットの配列として出力し、それ以外のテキストは一切含めないでください。",
-    "各オブジェクトには `url`, `score`, `tldr` の3つのキーのみを含めてください。",
-    "",
-    "【出力フォーマット】",
-    "[",
-    "  { \"url\": \"記事URL1\", \"score\": 85, \"tldr\": \"要約1...\" },\n  { \"url\": \"記事URL2\", \"score\": 70, \"tldr\": \"要約2...\" }\n]",
-    "",
-    "【評価対象記事リスト】",
-    JSON.stringify(articlesForPrompt, null, 2)
-  ].join("\n");
-
-  const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+  const BATCH_SIZE = 30; // 一度にLLMに送る記事の数
   const results = new Map();
 
-  try {
-    let jsonString = null;
-    const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+  for (let i = 0; i < articles.length; i += BATCH_SIZE) {
+    const batch = articles.slice(i, i + BATCH_SIZE);
+    const articlesForPrompt = batch.map(a => ({ url: a.url, headline: a.headline, abstractText: a.abstractText }));
 
-    if (jsonMatch && jsonMatch[1]) {
-      jsonString = jsonMatch[1];
-    } else {
-      const trimmedResponse = rawResponse.trim();
-      if (trimmedResponse.startsWith('[')) {
-        // JSON配列が途中で途切れている場合、強制的に閉じる
-        if (!trimmedResponse.endsWith(']')) {
-          jsonString = trimmedResponse + ']';
-          _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
-        } else {
+    const systemPrompt = "あなたは臨床検査・バイオ技術の専門ニュースエディターです。";
+    const userPrompt = [
+      "以下のJSON形式の記事リストについて、臨床検査・医療・バイオ要素技術の観点での重要度を0〜100の数値で評価し、",
+      "日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
+      "",
+      "厳密に以下のJSONフォーマットの配列として出力し、それ以外のテキストは一切含めないでください。",
+      "各オブジェクトには `url`, `score`, `tldr` の3つのキーのみを含めてください。",
+      "",
+      "【出力フォーマット】",
+      "[",
+      "  { \"url\": \"記事URL1\", \"score\": 85, \"tldr\": \"要約1...\" },\n  { \"url\": \"記事URL2\", \"score\": 70, \"tldr\": \"要約2...\" }\n]",
+      "",
+      "【評価対象記事リスト】",
+      JSON.stringify(articlesForPrompt, null, 2)
+    ].join("\n");
+
+    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+
+    try {
+      let jsonString = null;
+      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+
+      if (jsonMatch && jsonMatch[1]) {
+        jsonString = jsonMatch[1];
+      } else {
+        const trimmedResponse = rawResponse.trim();
+        if (trimmedResponse.startsWith('[')) {
+          if (!trimmedResponse.endsWith(']')) {
+            jsonString = trimmedResponse + ']';
+            _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
+          } else {
+            jsonString = trimmedResponse;
+          }
+        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
           jsonString = trimmedResponse;
         }
-      } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
-        // 単一のJSONオブジェクトの場合
-        jsonString = trimmedResponse;
       }
-    }
 
-    if (jsonString) {
-      const parsed = JSON.parse(jsonString);
-      if (Array.isArray(parsed)) {
-        parsed.forEach(item => {
-          if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
-            results.set(item.url, { score: item.score, tldr: item.tldr });
-          }
-        });
+      if (jsonString) {
+        const parsed = JSON.parse(jsonString);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
+              results.set(item.url, { score: item.score, tldr: item.tldr });
+            }
+          });
+        }
+      } else {
+        _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
       }
-    } else {
-      _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+    } catch (e) {
+      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
     }
-  } catch (e) {
-    _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
   }
-
   return results;
 }
 
