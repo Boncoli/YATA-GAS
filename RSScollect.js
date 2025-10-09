@@ -633,14 +633,18 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
 
     try {
       const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-      const jsonString = jsonMatch ? jsonMatch[1] : rawResponse;
-      const parsed = JSON.parse(jsonString);
-      if (Array.isArray(parsed)) {
-        parsed.forEach(item => {
-          if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
-            results.set(item.originalRowIndex, item.headline);
-          }
-        });
+      if (jsonMatch && jsonMatch[1]) {
+        const jsonString = jsonMatch[1];
+        const parsed = JSON.parse(jsonString);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
+              results.set(item.originalRowIndex, item.headline);
+            }
+          });
+        }
+      } else {
+        _logError("_getDailyHeadlinesInBatch", new Error("JSON block not found in response"), "AIからのJSONレスポンスにJSONブロックが見つかりませんでした。Response: " + rawResponse);
       }
     } catch (e) {
       _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
@@ -682,14 +686,18 @@ function getAiScoresAndTldrsInBatch(articles) {
 
   try {
     const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-    const jsonString = jsonMatch ? jsonMatch[1] : rawResponse;
-    const parsed = JSON.parse(jsonString);
-    if (Array.isArray(parsed)) {
-      parsed.forEach(item => {
-        if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
-          results.set(item.url, { score: item.score, tldr: item.tldr });
-        }
-      });
+    if (jsonMatch && jsonMatch[1]) {
+      const jsonString = jsonMatch[1];
+      const parsed = JSON.parse(jsonString);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(item => {
+          if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
+            results.set(item.url, { score: item.score, tldr: item.tldr });
+          }
+        });
+      }
+    } else {
+      _logError("getAiScoresAndTldrsInBatch", new Error("JSON block not found in response"), "AIからのJSONレスポンスにJSONブロックが見つかりませんでした。Response: " + rawResponse);
     }
   } catch (e) {
     _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
