@@ -243,11 +243,14 @@ function processSummarization() {
   let apiCallCount = 0;
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してLLMで見出し生成を試行します。`);
-    const generatedHeadlines = _getDailyHeadlinesInBatch(articlesToSummarize);
+    const generatedHeadlinesMap = _getDailyHeadlinesInBatch(articlesToSummarize);
     apiCallCount = Math.ceil(articlesToSummarize.length / 5); // BATCH_SIZE=5を仮定
 
-    generatedHeadlines.forEach((headline, originalRowIndex) => {
-      values[originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = headline;
+    articlesToSummarize.forEach(article => {
+      const headline = generatedHeadlinesMap.get(article.originalRowIndex);
+      if (headline) {
+        values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = headline;
+      }
     });
   }
 
@@ -630,57 +633,41 @@ function _getDailyHeadlinesInBatch(articlesToSummarize) {
     ].join("\n");
 
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
 
-        try {
-          let jsonString = null;
-          const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-    
-          if (jsonMatch && jsonMatch[1]) {
-            jsonString = jsonMatch[1];
-          } else {
-            const trimmedResponse = rawResponse.trim();
-            if (trimmedResponse.startsWith('[')) {
-              // JSON配列が途中で途切れている場合、強制的に閉じる
-              if (!trimmedResponse.endsWith(']')) {
-                jsonString = trimmedResponse + ']';
-                _logError("_getDailyHeadlinesInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
-              } else {
-                jsonString = trimmedResponse;
-              }
-            } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
-              // 単一のJSONオブジェクトの場合
-              jsonString = trimmedResponse;
+    try {
+      let jsonString = null;
+      const jsonMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
+
+      if (jsonMatch && jsonMatch[1]) {
+        jsonString = jsonMatch[1];
+      } else {
+        const trimmedResponse = rawResponse.trim();
+        if (trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) {
+          jsonString = trimmedResponse;
+        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
+          jsonString = `[${trimmedResponse}]`; // 単一オブジェクトの場合も配列として扱う
+        }
+      }
+
+      if (jsonString) {
+        const parsed = JSON.parse(jsonString);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
+              results.set(item.originalRowIndex, item.headline);
             }
-          }
-    
-                if (jsonString) {
-                  // JSON文字列の末尾が不完全な場合に強制的に閉じる処理を追加
-                  if (!jsonString.endsWith(']') && !jsonString.endsWith('}')) {
-                    // 最後の文字が引用符でなければ、引用符を追加
-                    if (!jsonString.endsWith('\"')) {
-                      jsonString += '\"';
-                    }
-                    // 配列の閉じ括弧を追加
-                    jsonString += ']';
-                    _logError("_getDailyHeadlinesInBatch", new Error("Incomplete JSON string, forced close"), "AIからのレスポンスのJSON文字列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
-                  }
-                  const parsed = JSON.parse(jsonString);
-                  if (Array.isArray(parsed)) {
-                    parsed.forEach(item => {
-                      if (typeof item.originalRowIndex === 'number' && typeof item.headline === 'string') {
-                        results.set(item.originalRowIndex, item.headline);
-                      }
-                    });
-                  }
-                } else {
-                  _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-                }
-                            } catch (e) {
-                              _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-                            }
-                            Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-                        return results;
-                      }
+          });
+        }
+      } else {
+        _logError("_getDailyHeadlinesInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+      }
+    } catch (e) {
+      _logError("_getDailyHeadlinesInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+    }
+  } // forループの閉じ括弧
+  return results;
+}
 /**
  * 【週次・バッチ用】複数記事の重要度とTL;DRをAIで一括生成
  */
@@ -714,6 +701,7 @@ function getAiScoresAndTldrsInBatch(articles) {
     ].join("\n");
 
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
 
     try {
       let jsonString = null;
@@ -723,43 +711,28 @@ function getAiScoresAndTldrsInBatch(articles) {
         jsonString = jsonMatch[1];
       } else {
         const trimmedResponse = rawResponse.trim();
-        if (trimmedResponse.startsWith('[')) {
-          if (!trimmedResponse.endsWith(']')) {
-            jsonString = trimmedResponse + ']';
-            _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON array, forced close"), "AIからのレスポンスのJSON配列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
-          } else {
-            jsonString = trimmedResponse;
-          }
-        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
+        if (trimmedResponse.startsWith('[') && trimmedResponse.endsWith(']')) {
           jsonString = trimmedResponse;
+        } else if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
+          jsonString = `[${trimmedResponse}]`; // 単一オブジェクトの場合も配列として扱う
         }
       }
 
-          if (jsonString) {
-            // JSON文字列の末尾が不完全な場合に強制的に閉じる処理を追加
-            if (!jsonString.endsWith(']') && !jsonString.endsWith('}')) {
-              // 最後の文字が引用符でなければ、引用符を追加
-              if (!jsonString.endsWith('\"')) {
-                jsonString += '\"';
-              }
-              // 配列の閉じ括弧を追加
-              jsonString += ']';
-              _logError("getAiScoresAndTldrsInBatch", new Error("Incomplete JSON string, forced close"), "AIからのレスポンスのJSON文字列が不完全だったため、強制的に閉じました。Response: " + rawResponse);
+      if (jsonString) {
+        const parsed = JSON.parse(jsonString);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
+              results.set(item.url, { score: item.score, tldr: item.tldr });
             }
-            const parsed = JSON.parse(jsonString);
-            if (Array.isArray(parsed)) {
-              parsed.forEach(item => {
-                if (item.url && typeof item.score === 'number' && typeof item.tldr === 'string') {
-                  results.set(item.url, { score: item.score, tldr: item.tldr });
-                }
-              });
-            }
-          } else {
-            _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-          }
-        } catch (e) {
-          _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
-        }    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+          });
+        }
+      } else {
+        _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+      }
+    } catch (e) {
+      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse);
+    }
   }
   return results;
 }
