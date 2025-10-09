@@ -419,7 +419,7 @@ function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
       { role: "user",   content: userPrompt }
     ],
     temperature: 0.2,
-    max_completion_tokens: 1024
+    max_completion_tokens: 2048
   };
   const options = {
     method: "post",
@@ -463,7 +463,7 @@ function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }
     ],
-    max_tokens: 1024
+    max_tokens: 2048
   };
   const options = {
     method: "post",
@@ -505,7 +505,7 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
   const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
   const payload = {
     contents: [{ parts: [{ text: PROMPT }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+    generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
   };
   const options = {
     method: "post",
