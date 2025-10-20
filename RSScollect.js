@@ -718,17 +718,25 @@ function _llmMakeTrendSections(articles, numTrends, linksPerTrend) {
  */
 function _composeTopPicksSection(articles, topN, TLDR_MIN, TLDR_MAX) {
   const picks = articles.slice(0, Math.min(topN, articles.length));
+  
+  // 箇条書き（- ）、記事ごとに水平線（---）で区切る
   const lines = picks.map((p, k) => {
-    const num = (k + 1) + ". ";
-    const head = (p.headline || p.title || "").trim();
-    const link = p.url ? ` | [記事](${p.url})` : "";
-    const tldr = (p.tldr && String(p.tldr).trim()) ? `*TL;DR:* ${String(p.tldr).trim()}` : "";
-    return num + head + link + "\n" + tldr;
+    // リンクを []() 形式で作成
+    const link = p.url ? ` [記事](${p.url})` : ""; 
+    
+    // TL;DRの内容を取得（太字強調なし）
+    let tldrContent = '';
+    if (p.tldr && String(p.tldr).trim()) {
+      tldrContent = `${String(p.tldr).trim()}`; 
+    }
+
+    // 箇条書きリストとして整形（要約とリンクのみ）
+    return `- ${tldrContent}${link}`;
   });
 
-  return lines.join("\n"); // 項目間の改行を1つに修正
+  // 記事間を水平線（---）で区切る
+  return lines.join("\n\n---\n\n"); 
 }
-
 
 // =================================================================
 // ✉️ 5. Notification Handlers (通知関連)
