@@ -258,7 +258,7 @@ function processSummarization() {
         if (result && result.tldr) {
           values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = result.tldr; // E列にTL;DRを書き込む
           values[article.originalRowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = result.score; // G列にAIスコアを書き込む
-          values[article.originalRowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = result.tldr; // H列にもTL;DRを書き込む
+          // values[article.originalRowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = result.tldr; // H列にもTL;DRを書き込む
         }
       }
     });
@@ -390,17 +390,13 @@ function writeBackAiResults(aiScoredItems) {
         values[rowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = a.aiScore;
         updatedCount++;
       }
-      if (a.tldr) {
-        values[rowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = a.tldr;
-        updatedCount++;
-      }
     }
   });
 
   if (updatedCount > 0) {
     // 更新されたデータ配列をシートに一括書き込み
     dataRange.setValues(values);
-    Logger.log(`${updatedCount} 件のAIスコア/TL;DRをシートに書き戻しました。`);
+    Logger.log(`${updatedCount} 件のAIスコアをシートに書き戻しました。`);
   }
 }
 
@@ -946,7 +942,7 @@ function getArticlesInDateWindow(start, end) {
           headline: String(headline).trim(),
           source: r[5] ? String(r[5]) : "",
           aiScore: (typeof r[6] === 'number' && isFinite(r[6])) ? r[6] : null,
-          tldr: r[7] ? String(r[7]) : ""
+          tldr: String(headline).trim() || "" // <-- E列 (headline = r[4]) を参照
         });
       }
     }
