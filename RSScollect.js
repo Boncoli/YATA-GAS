@@ -871,6 +871,33 @@ function createAdaptiveCardJSON(reportBody, otherArticles) {
 // 🛠️ 6. Utilities & Helpers (ユーティリティ)
 // =================================================================
 
+// 直近N日以内か判定する関数（例：7日間）
+function isRecentArticle(pubDate, daysLimit = 7) {
+  if (!pubDate || !(pubDate instanceof Date)) return false;
+  const now = new Date();
+  const daysOld = Math.floor((now - pubDate) / (1000 * 60 * 60 * 24));
+  return daysOld <= daysLimit;
+}
+
+/**
+ * 「Keywords」シートからキーワードと優先度（High/Low/空欄）を取得し、重み付きリストを返す
+ */
+function getWeightedKeywords(sheetName = "Keywords") {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  // 1行目はヘッダー（A:キーワード, B:優先度）
+  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  return values.map(([keyword, priority]) => {
+    let weight = 5; // デフォルト（無印）
+    if (String(priority).toLowerCase() === "high") weight = 10;
+    if (String(priority).toLowerCase() === "low") weight = 2;
+    return { keyword: String(keyword).trim(), weight };
+  }).filter(obj => obj.keyword);
+}
+
 /**
  * 週次ダイジェストの設定をスクリプトプロパティから読み込む
  */
@@ -890,38 +917,50 @@ function _getDigestConfig() {
 }
 
 /**
- * ルールベースの重要度スコア（0-100）を計算
+ * ルールベースの重要度スコア（0-100）を計算（キーワード重みは「Keywords」シートから取得）
  */
 function computeHeuristicScore(article) {
   const now = new Date();
   const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
+  const weightedKeywords = getWeightedKeywords(); // ←ここが新しくなる
 
-  const SOURCE_WEIGHTS = {
-    "Nature NEWS": 1.0, "Nature: 臨床診療と研究": 1.0, "GEN(Genetic Engineering and Biotechnology News)": 0.9,
-    "BioWorld (AI分野)": 0.9, "BioWorld (遺伝子治療)": 0.9, "BioWorld (細胞治療)": 0.9, "Medical Xpress": 0.7,
-    "Medscape Medical News": 0.8, "bioRxiv (Genomics)": 0.6, "bioRxiv(Molecular Biology)": 0.6,
-    "bioRxiv(Bioengineering)": 0.6, "bioRxiv(Cancer Biology)": 0.6, "BioPharma Dive": 0.8, "Fierce Biotech": 0.8,
-    "Labiotech.eu": 0.7, "MobiHealthNews": 0.6, "Clinical Lab Products": 0.7, "CBnews(医療)": 0.7,
-    "CBnews(薬事)": 0.7, "Health & Medicine News": 0.6, "UMIN 臨床試験登録情報 (CTR)": 0.8
-  };
-
-  const KEYWORD_WEIGHTS = {
-    "臨床検査": 10, "診断": 8, "検査薬": 8, "体外診断": 8, "AI": 7, "機械学習": 7, "ゲノム": 7, "遺伝子": 6,
-    "RNA": 5, "タンパク質": 5, "シーケンシング": 6, "治療": 5, "創薬": 6, "バイオ": 5, "免疫": 5, "細胞": 5,
-    "プレシジョン": 4, "リアルワールド": 4, "規制": 4, "薬事": 4
-  };
-
+  // キーワード加点
   const txt = `${article.title || ""} ${article.abstractText || ""} ${article.headline || ""}`;
   let keywordScore = 0;
-  Object.keys(KEYWORD_WEIGHTS).forEach(k => {
-    if (txt.includes(k)) keywordScore += KEYWORD_WEIGHTS[k];
+  weightedKeywords.forEach(obj => {
+    if (txt.includes(obj.keyword)) keywordScore += obj.weight;
   });
 
-  const sourceWeight = SOURCE_WEIGHTS[article.source] || 0.6;
+  const SOURCE_WEIGHTS = {
+    "Nature: 臨床診療と研究": 1.0,
+    "Nature NEWS": 1.0,
+    "BioWorld (Omics分野)": 0.9,
+    "GEN(Genetic Engineering and Biotechnology News)": 0.9,
+    "BioWorld (AI分野)": 0.9,
+    "BioWorld (遺伝子治療)": 0.9,
+    "BioWorld (細胞治療)": 0.9,
+    "UMIN 臨床試験登録情報 (CTR)": 0.8,
+    "BioPharma Dive": 0.8,
+    "Fierce Biotech": 0.8,
+    "Labiotech.eu": 0.7,
+    "Medical Daily": 0.7,
+    "Medical Xpress": 0.7,
+    "CBnews(医療)": 0.7,
+    "CBnews(薬事)": 0.7,
+    "bioRxiv(Bioengineering)": 0.6,
+    "bioRxiv(Cancer Biology)": 0.6,
+    "bioRxiv(Molecular Biology)": 0.6,
+    "bioRxiv (Genomics)": 0.6,
+    "Health & Medicine News": 0.6,
+    "Medscape Medical News": 0.7,
+    "MobiHealthNews": 0.6,
+    "Clinical Lab Products": 0.7
+  };
+
+  const sourceWeight = SOURCE_WEIGHTS[article.source] || 0.6; // 未定義は0.6（補助的扱い）
   const freshness = Math.exp(-daysOld / 7);
   const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
   const abstractBonus = hasAbstract ? Math.min(10, String(article.abstractText).length / 200) : 0;
-
   const raw = (keywordScore) + (sourceWeight * 30) + (freshness * 40) + abstractBonus;
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
@@ -1044,7 +1083,7 @@ function parseRss2Feed(root, siteName, existingUrls) {
       const pubDate = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || "";
       const description = (item.getChild("description") && item.getChild("description").getText()) || "";
 
-      if (link && !existingUrls.has(link) && title) {
+      if (link && !existingUrls.has(link) && title && isRecentArticle(pubDate, 7)) {
         rssArticles.push([
           pubDate ? new Date(pubDate) : new Date(),
           title.trim(),
@@ -1085,7 +1124,7 @@ function parseAtomFeed(root, siteName, existingUrls) {
     const contentEl = entry.getChild("content", ATOM_NS);
     const summary = (summaryEl && summaryEl.getText()) || (contentEl && contentEl.getText()) || "";
 
-    if (link && !existingUrls.has(link) && title) {
+    if (link && !existingUrls.has(link) && title && isRecentArticle(pubDate, 7)) {
       atomArticles.push([
         pubDate ? new Date(pubDate) : new Date(),
         title.trim(),
