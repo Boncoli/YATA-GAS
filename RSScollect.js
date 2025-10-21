@@ -1080,12 +1080,15 @@ function parseRss2Feed(root, siteName, existingUrls) {
     items.forEach(item => {
       const title = (item.getChild("title") && item.getChild("title").getText()) || "";
       const link  = (item.getChild("link") && item.getChild("link").getText()) || "";
-      const pubDate = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || "";
+      const pubDateStr = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || ""; // ⬅️ 日付文字列を取得
       const description = (item.getChild("description") && item.getChild("description").getText()) || "";
 
-      if (link && !existingUrls.has(link) && title && isRecentArticle(pubDate, 7)) {
+      // 🌟 修正点：pubDateStrをDateオブジェクトに変換
+      const articleDate = pubDateStr ? new Date(pubDateStr) : new Date(0); // 無効な日付は過去（エポック）として扱う
+
+      if (link && !existingUrls.has(link) && title && isRecentArticle(articleDate, 7)) { // ⬅️ 修正：articleDateを使って判定
         rssArticles.push([
-          pubDate ? new Date(pubDate) : new Date(),
+          articleDate, // ⬅️ 修正：Dateオブジェクトを格納
           title.trim(),
           link.trim(),
           stripHtml(description) || Config.Llm.NO_ABSTRACT_TEXT,
@@ -1119,14 +1122,17 @@ function parseAtomFeed(root, siteName, existingUrls) {
     }
     const updatedEl = entry.getChild("updated", ATOM_NS);
     const publishedEl = entry.getChild("published", ATOM_NS);
-    const pubDate = (updatedEl && updatedEl.getText()) || (publishedEl && publishedEl.getText()) || "";
+    const pubDateStr = (updatedEl && updatedEl.getText()) || (publishedEl && publishedEl.getText()) || ""; // ⬅️ 日付文字列を取得
     const summaryEl = entry.getChild("summary", ATOM_NS);
     const contentEl = entry.getChild("content", ATOM_NS);
     const summary = (summaryEl && summaryEl.getText()) || (contentEl && contentEl.getText()) || "";
 
-    if (link && !existingUrls.has(link) && title && isRecentArticle(pubDate, 7)) {
+    // 🌟 修正点：pubDateStrをDateオブジェクトに変換
+    const articleDate = pubDateStr ? new Date(pubDateStr) : new Date(0); // 無効な日付は過去（エポック）として扱う
+
+    if (link && !existingUrls.has(link) && title && isRecentArticle(articleDate, 7)) { // ⬅️ 修正：articleDateを使って判定
       atomArticles.push([
-        pubDate ? new Date(pubDate) : new Date(),
+        articleDate, // ⬅️ 修正：Dateオブジェクトを格納
         title.trim(),
         link.trim(),
         stripHtml(summary) || Config.Llm.NO_ABSTRACT_TEXT,
