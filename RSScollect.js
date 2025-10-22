@@ -1,15 +1,16 @@
 /**
  * @file RSScollect.js
  * @description RSSフィードを収集し、AIで見出しと週次ダイジェストを生成するGoogle Apps Script
- * @version 2.1.0
- * @date 2025-10-08
+ * @version 2.5.0
+ * @date 2025-10-22
  */
 
 // =================================================================
-// 📌【運用方針メモ 2025/10/08 改訂】
+// 📌【運用方針メモ 2025/10/22 改訂】
 // =================================================================
 // - **配信形式**: 週次ダイジェストはHTMLメールを正とし、Teams通知は運用停止。
-// - **ロジック維持**: Markdown生成ロジックやTeams関連関数は、将来的な再利用を想定しコード内に残す。
+// - **キーワード選定**: Keywordsシートの「有効」フラグ（Y/N）に基づき、Weeklyダイジェストの記事を選定。
+// - **リファクタリング**: 未使用のTeams通知関連関数および_parseWeeklyReportOutput関数を削除。Keywordsシートの優先度による重み付けを廃止。CollectシートのG列(AIスコア)とH列(AI TL;DR)を削除。rankAndSelectArticles関数における1ソースあたりの最大採用数制限を解除。
 // - **AIモデル**: 日次・週次で `OPENAI_MODEL_DAILY` と `OPENAI_MODEL_WEEKLY` を使い分ける。
 // - **AI評価**: 週次ダイジェストのスコア・要約評価は、効率的なバッチ処理を基本とする。
 // =================================================================
@@ -27,10 +28,8 @@ const Config = {
     Columns: {
       URL: 3,
       ABSTRACT: 4,
-      SUMMARY: 5,
-      SOURCE: 6,
-      AI_SCORE: 7,
-      AI_TLDR: 8,
+      SUMMARY: 5, // E列
+      SOURCE: 6,  // F列
     },
     DataRange: {
       START_ROW: 2,
@@ -83,56 +82,79 @@ function weeklyDigestJob() {
 
   if (allItems.length === 0) {
     Logger.log("週間ダイジェスト：対象期間に記事なし");
+    const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+    const reportBody = "今週のダイジェスト対象となる記事はありませんでした。";
+    if (config.notifyChannel === "email" || config.notifyChannel === "both") {
+      sendWeeklyDigestEmail(headerLine, reportBody);
+    }
     return;
   }
+  Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
-  // 関連性フィルタ（専門キーワード）
-  const THEME_KEYWORDS = [
-    "臨床検査","体外診断","IVD","検査室","診断","スクリーニング","バイオマーカー",
-    "ゲノム","遺伝子","DNA","RNA","転写","タンパク質","プロテオーム","メタボローム",
-    "シーケンシング","NGS","PCR","デジタルPCR","マイクロ流体","バイオセンサー",
-    "AI","機械学習","深層学習","画像診断","自動化","ワークフロー",
-    "規制","薬事","PMDA","FDA","承認","CE","品質管理","精度管理",
-    "免疫","細胞","遺伝子治療","細胞治療","ゲノム編集","CRISPR",
-    "biomarker","sequencing","genomics","proteomics","metabolomics",
-    "diagnostic","in vitro diagnostic","assay","clinical lab","IVD",
-    "machine learning","deep learning","automation"
-  ];
+  // Keywordsシートから有効なキーワードを取得
+  const activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
 
   const relevantArticles = [];
+  const keywordHitCounts = {};
+  const articleKeywordMap = new Map(); // 各記事がヒットしたキーワードを記録
+
+  // activeKeywords を正規表現オブジェクトの配列に変換
+  const keywordRegexes = activeKeywords.map(k => ({
+    original: k,
+    regex: new RegExp(k.replace(/[.*+?^${}()|[\\]/g, '\\$&'), 'gi') // 大文字小文字を区別せず、グローバルに検索
+  }));
+
   allItems.forEach(article => {
     const text = `${article.title} ${article.abstractText} ${article.headline}`;
-    if (THEME_KEYWORDS.some(k => text.includes(k))) {
+    let articleHasHitKeyword = false;
+    const hitKeywordsForArticle = []; // この記事がヒットしたキーワード
+    keywordRegexes.forEach(kwObj => {
+      if (kwObj.regex.test(text)) {
+        articleHasHitKeyword = true;
+        hitKeywordsForArticle.push(kwObj.original);
+        keywordHitCounts[kwObj.original] = (keywordHitCounts[kwObj.original] || 0) + 1;
+      }
+    });
+    if (articleHasHitKeyword) {
       relevantArticles.push(article);
+      articleKeywordMap.set(article.url, hitKeywordsForArticle); // 記事URLとヒットキーワードを紐付け
     }
   });
 
-  // AI評価と最終選抜
-  const { selectedTopN, aiScoredItems } = rankAndSelectArticles(relevantArticles, config);
+  // keywordHitCounts を配列に変換し、件数が多い順にソート
+  const hitKeywordsWithCount = Object.entries(keywordHitCounts)
+    .map(([keyword, count]) => ({ keyword, count }))
+    .sort((a, b) => b.count - a.count);
 
-  // AIスコア/TL;DRをスプレッドシートに書き戻し
-  try {
-    writeBackAiResults(aiScoredItems);
-  } catch (e) {
-    _logError("weeklyDigestJob/writeBack", e, "AIスコア/TL;DRの書き戻しに失敗");
+  // relevantArticlesが空の場合のガード節を修正（メール送信を削除）
+  if (relevantArticles.length === 0) {
+    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
+    return; // メール送信を削除
   }
+  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+
+  // キーワードスコアに基づき記事を選抜
+  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config);
+  Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
+
+  // キーワードごとの記事グループを作成 (selectedTopN の記事のみを対象とする)
+  const articlesGroupedByKeyword = {};
+  hitKeywordsWithCount.forEach(kwItem => {
+    articlesGroupedByKeyword[kwItem.keyword] = selectedTopN.filter(article => { // relevantArticles -> selectedTopN に変更
+      const keywords = articleKeywordMap.get(article.url);
+      return keywords && keywords.includes(kwItem.keyword);
+    });
+  });
 
   // 週次レポート本文を生成
-  const { reportBody } = generateWeeklyReportWithLLM(selectedTopN);
+  // generateWeeklyReportWithLLM の呼び出しを変更
+  const { reportBody } = generateWeeklyReportWithLLM(selectedTopN, hitKeywordsWithCount, articlesGroupedByKeyword);
 
   // メール配信
   const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendWeeklyDigestEmail(headerLine, reportBody);
+    sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount);
   }
-
-  // 2025/10/08 Teams通知は運用停止（ユーザー要望によりコメントアウト）
-  // const nonRelevantArticles = allItems.filter(item => !relevantArticles.includes(item));
-  // const otherArticles = rankAndSelectArticles(relevantArticles, config).others;
-  // const combinedOtherArticles = nonRelevantArticles.concat(otherArticles).concat(llmOtherArticles);
-  // if (config.notifyChannel === "teams" || config.notifyChannel === "both") {
-  //   sendWeeklyDigestTeams(headerLine, reportBody, combinedOtherArticles);
-  // }
 }
 
 
@@ -242,23 +264,22 @@ function processSummarization() {
 
   let apiCallCount = 0;
   if (articlesToSummarize.length > 0) {
-    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIスコアとTL;DR生成を試行します。`);
-    // 各記事に対して個別にgetAiScoresAndTldrsInBatchを呼び出す
+    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによるTL;DR生成を試行します。`);
+    // 各記事に対して個別にgetAiTldrsInBatchを呼び出す
     articlesToSummarize.forEach(article => {
       const singleArticleForLlm = {
         url: values[article.originalRowIndex][Config.CollectSheet.Columns.URL - 1], // C列のURLを渡す
         headline: article.title,
         abstractText: article.abstractText
       };
-      const aiResultMap = getAiScoresAndTldrsInBatch([singleArticleForLlm]); // 1記事のみ処理
+      const aiResultMap = getAiTldrsInBatch([singleArticleForLlm]); // 1記事のみ処理
       apiCallCount++; // 1記事につき1コール
 
       if (aiResultMap.size > 0) {
         const result = aiResultMap.values().next().value; // 最初の結果を取得
         if (result && result.tldr) {
-          values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = result.tldr; // E列にTL;DRを書き込む
-          values[article.originalRowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = result.score; // G列にAIスコアを書き込む
-          // values[article.originalRowIndex][Config.CollectSheet.Columns.AI_TLDR - 1] = result.tldr; // H列にもTL;DRを書き込む
+          // E列(見出し)にAI生成のTL;DRを設定
+          values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = result.tldr; // E列
         }
       }
     });
@@ -266,7 +287,9 @@ function processSummarization() {
 
   // 更新されたデータ配列をシートに一括書き込み
   if (articlesToSummarize.length > 0 || values.some(row => row[Config.CollectSheet.Columns.SUMMARY - 1] !== '')) { // 何らかの更新があった場合
-    dataRange.setValues(values);
+    // 読み込み範囲をConfig.CollectSheet.Columns.SOURCEまでとする
+    const newDataRange = trendDataSheet.getRange(2, 1, lastRow - 1, Config.CollectSheet.Columns.SOURCE);
+    newDataRange.setValues(values.map(row => row.slice(0, Config.CollectSheet.Columns.SOURCE))); // 必要な列のみを書き戻す
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
   } else {
     Logger.log("見出し生成が必要な記事は見つかりませんでした。");
@@ -279,56 +302,35 @@ function processSummarization() {
 // =================================================================
 
 /**
- * ヒューリスティックとAIバッチスコアで記事を選抜・整列し、上位記事リストを返す
+ * キーワードベースのヒューリスティックスコアで記事を選抜・整列し、上位記事リストを返す
  */
 function rankAndSelectArticles(relevantArticles, config) {
-  const w_h = 0.4; // ルールベーススコアの重み
-  const w_ai = 0.6; // AIスコアの重み
   const topN = config.topN || 20;
-  const aiCandidates = Math.min(config.aiCandidates || 50, relevantArticles.length);
-  const perSourceCap = 3; // 1ソースあたりの最大採用数
+  // const perSourceCap = 3; // 1ソースあたりの最大採用数 - ユーザーの要望により削除
 
-  // ① ヒューリスティックで仮スコアリング
-  const withHeu = relevantArticles
+  // ① ヒューリスティックスコアを計算してソート
+  const scoredArticles = relevantArticles
     .map(a => ({
       ...a,
-      heuristicScore: computeHeuristicScore(a),
-      aiScore: (typeof a.aiScore === 'number' && isFinite(a.aiScore)) ? a.aiScore : null,
-      tldr: a.tldr || ""
+      heuristicScore: computeHeuristicScore(a)
     }))
     .sort((a, b) => b.heuristicScore - a.heuristicScore);
 
-  // ② AI評価 (useAiRankがYの場合)
-  // AIスコアはヒューリスティックを優先し、TL;DRは既存のものを利用
-  let aiScoredItems = []; // この配列は主にwriteBackAiResultsに渡すためのもの
-  if (config.useAiRank) {
-    // AIスコアはcomputeHeuristicScoreで既に計算済み
-    // TL;DRはスプレッドシートから読み込まれた既存のものを利用
-    // ここではAIによる追加の評価は行わないため、LLM呼び出しは不要
-    Logger.log(`[AI Evaluation] AIスコアはヒューリスティック、TL;DRは既存のものを利用します。`);
-    aiScoredItems = withHeu.filter(a => a.aiScore !== null || a.tldr !== ""); // AIスコアまたはTL;DRがあるものを対象とする
-  }
-
-  // ③ 複合スコアを計算
-  withHeu.forEach(item => {
-    item.finalScore = Math.round(w_h * item.heuristicScore + w_ai * (item.aiScore !== null ? item.aiScore : item.heuristicScore));
-  });
-
-  // ④ 最終ソート
-  withHeu.sort((a, b) => b.finalScore - a.finalScore);
-
-  // ⑤ ソースの偏りを抑制しつつ上位N件を選抜
+  // ② 上位N件を選抜（ソースの偏り抑制は行わない）
   const picked = [];
-  const perSourceCount = {};
-  for (const item of withHeu) {
-    const src = item.source || "unknown";
-    perSourceCount[src] = (perSourceCount[src] || 0);
-    if (perSourceCount[src] < perSourceCap) {
+  // const perSourceCount = {}; // 不要になったため削除
+  for (const item of scoredArticles) {
+    // const src = item.source || "unknown"; // 不要になったため削除
+    // perSourceCount[src] = (perSourceCount[src] || 0); // 不要になったため削除
+    // if (perSourceCount[src] < perSourceCap) { // 制限を解除
       picked.push(item);
-      perSourceCount[src]++;
-    }
+      // perSourceCount[src]++; // 不要になったため削除
+    // }
     if (picked.length >= topN) break;
   }
+
+  // ③ AIスコアの書き戻しは不要になったため、空の配列を返す
+  const aiScoredItems = [];
 
   return { selectedTopN: picked, aiScoredItems: aiScoredItems };
 }
@@ -336,29 +338,35 @@ function rankAndSelectArticles(relevantArticles, config) {
 /**
  * AIを使い、選抜された記事からダイジェストの本文(Markdown)を生成する
  */
-function generateWeeklyReportWithLLM(articles) {
+function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword) {
   const NUM_TRENDS = 3;
   const LINKS_PER_TREND = 3;
-  const TOP_PICKS_N = Math.min(5, articles.length);
-  const TLDR_MIN = 50;
-  const TLDR_MAX = 100;
+  // const TOP_PICKS_N = Math.min(5, articles.length); // 廃止
+  // const TLDR_MIN = 50; // 廃止
+  // const TLDR_MAX = 100; // 廃止
 
-  const highlights = _llmMakeHighlights(articles);
-  const trends = _llmMakeTrendSections(articles, NUM_TRENDS, LINKS_PER_TREND);
-  const topPicksMd = _composeTopPicksSection(articles, TOP_PICKS_N, TLDR_MIN, TLDR_MAX);
+  // ハイライトの生成と出力は廃止
+  // const highlights = _llmMakeHighlights(articles);
+
+  // アクティブなキーワードを取得 (ここでは hitKeywordsWithCount を利用)
+  const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
+
+  // _llmMakeTrendSections の呼び出しを変更
+  // const trends = _llmMakeTrendSections(articles, NUM_TRENDS, LINKS_PER_TREND, hitKeywords); // 変更前
+  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords); // 変更後 (numTrends は不要になる)
+
+  // const topPicksMd = _composeTopPicksSection(articles, TOP_PICKS_N, TLDR_MIN, TLDR_MAX); // 廃止
 
   const body = [
-    "### 今週のハイライト",
-    highlights.join("\n"),
-    "\n---\n",
-    trends,
-    "\n---\n",
-    "**Top Picks（要点付き）**\n" + topPicksMd
-  ].join("\n");
+    // ハイライトセクションを削除
+    // "### 今週のハイライト",
+    // highlights.join("\\n"),
+    // "\\n---\n",
+    trends // トレンドセクションのみ
+    // "\\n---\n", // 廃止
+    // "**Top Picks（要点付き）**\n" + topPicksMd // 廃止
+  ].join("\n"); // join の引数も調整
 
-  // Teams通知停止中のため、otherArticlesの処理は現在未使用。将来的な復活を想定し、コードは残す。
-  // const parsed = _parseWeeklyReportOutput(body, articles);
-  // return { reportBody: body, otherArticles: parsed.otherArticles };
   return { reportBody: body };
 }
 
@@ -593,9 +601,9 @@ function summarizeWithLLM(articleText) {
 
 
 /**
- * 【週次・バッチ用】複数記事の重要度とTL;DRをAIで一括生成
+ * 【日次・バッチ用】複数記事のTL;DRをAIで一括生成
  */
-function getAiScoresAndTldrsInBatch(articles) {
+function getAiTldrsInBatch(articles) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano"; // Dailyモデルを使用
 
@@ -606,16 +614,15 @@ function getAiScoresAndTldrsInBatch(articles) {
   articles.forEach(article => {
     const systemPrompt = "あなたは臨床検査・バイオ技術の専門ニュースエディターです。";
     const userPrompt = [
-      "以下の記事について、臨床検査・医療・バイオ要素技術の観点での重要度を0〜100の数値で評価し、",
-      "日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
-      "結果は以下のJSON形式で出力してください。`url`, `score`, `tldr` の3つのキーのみを含めてください。",
+      "以下の記事について、日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
+      "結果は以下のJSON形式で出力してください。`tldr` のキーのみを含めてください。",
       "**重要:** 出力は必ず完全なJSON形式で終了してください。途中で途切れたり、JSONの後に余計なテキストを含めたりしないでください。",
       "",
       "【出力フォーマット】",
-      "{ \"url\": \"記事URL\", \"score\": 85, \"tldr\": \"要約...\" }",
+      `{ "tldr": "要約..." }`,
       "",
       "【評価対象記事】",
-      `Headline: ${article.headline}\nAbstract: ${article.abstractText}` // URLはプロンプトに含めない
+      `Headline: ${article.headline}\nAbstract: ${article.abstractText}`
     ].join("\n");
 
     const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
@@ -635,17 +642,17 @@ function getAiScoresAndTldrsInBatch(articles) {
 
       if (jsonString) {
         const parsed = JSON.parse(jsonString);
-        // ここでparsed.urlはAIが生成したものではなく、元のarticle.urlを使用する
-        if (typeof parsed.score === 'number' && typeof parsed.tldr === 'string') {
-          results.set(article.url, { score: parsed.score, tldr: parsed.tldr }); // 元のarticle.urlをキーにする
+        if (typeof parsed.tldr === 'string') {
+          results.set(article.url, { tldr: parsed.tldr }); // 元のarticle.urlをキーにする
         } else {
-          _logError("getAiScoresAndTldrsInBatch", new Error("Parsed JSON does not match expected structure"), "AIからのレスポンスのJSON構造が期待と異なりました。Response: " + rawResponse);
+          _logError("getAiTldrsInBatch", new Error("Parsed JSON does not match expected structure"), "AIからのレスポンスのJSON構造が期待と異なりました。Response: " + rawResponse);
         }
-      } else {
-        _logError("getAiScoresAndTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
+      }
+       else {
+        _logError("getAiTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
       }
     } catch (e) {
-      _logError("getAiScoresAndTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse + " Error: " + e.message);
+      _logError("getAiTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse + " Error: " + e.message);
     }
   });
   return results;
@@ -656,7 +663,7 @@ function getAiScoresAndTldrsInBatch(articles) {
  */
 function _llmMakeHighlights(articles) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
+  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
   var system = "あなたは週次ダイジェスト編集者。斜め読みで動向を掴める3つの要旨を作成する。";
   var list = articles.map(function(a){ return "- " + a.headline + "（" + (a.source||"") + ": " + a.url + "）"; }).join("\n");
   var user = [
@@ -683,34 +690,57 @@ function _llmMakeHighlights(articles) {
 /**
  * 【週次・サブルーチン】主要トレンドセクションを生成
  */
-function _llmMakeTrendSections(articles, numTrends, linksPerTrend) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
-  var system = "あなたは週次ダイジェスト編集者。見出し群から主要トレンドを短く構造化する。";
-  var list = articles.map(function(a){ return "- " + a.headline + "（" + (a.source||"") + ": " + a.url + "）"; }).join("\n");
-  var user = [
-    "以下の記事見出しから、主要トレンドを " + numTrends + " 群に分類してください。",
-    "各群は次の順序で出力：",
-    "1) **太字見出し**（15〜20字、名詞止め）",
-    "2) 要点（日本語120〜180字、事実ベース、名詞止め、箇条書き禁止）",
-    "3) 代表記事リンクのみ（" + linksPerTrend + "本、各行 '・[記事タイトル' のMarkdown、本文要約は禁止）",
-    "各群の区切りに必ず '---' を入れること。それ以外の装飾・前書き・後書きは禁止。",
-    list
-  ].join("\n");
+function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
 
-  var txt = callLlmWithFallback(system, user, model);
-  // フォールバック：簡易に見出しだけ3群
-  if (!txt || !txt.trim()) {
-    var fallback = [];
-    for (var i=0;i<numTrends;i++){
-      var idx = i % Math.max(1, articles.length);
-      fallback.push("**トレンド" + (i+1) + "**\n" +
-                    articles[idx].headline + "\n" +
-                    "・[" + articles[idx].title + "](" + articles[idx].url + ")\n---");
+  const props = PropertiesService.getScriptProperties();
+  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
+  var system = "あなたは、臨床検査・バイオ技術分野の専門アナリストです。提供されたキーワードと、そのキーワードに関連する記事群を基に、業界の重要な動向を抽出し、分類し、読者に分かりやすく解説する役割を担います。"; // systemプロンプトも調整
+
+  const allTrends = [];
+
+  // キーワードごとにトレンドを生成
+  for (const keyword of hitKeywords) { // hitKeywords をループ
+    const articlesForKeyword = articlesGroupedByKeyword[keyword];
+
+    if (!articlesForKeyword || articlesForKeyword.length === 0) {
+      continue; // そのキーワードに関連する記事がない場合はスキップ
     }
-    return fallback.join("\n");
+
+    var articleListForLlm = articlesForKeyword.map(function(a){
+      return `- 見出し: ${a.headline}\n  要約: ${a.tldr}\n  URL: ${a.url}`;
+    }).join("\n");
+
+    var user = [
+      `以下のキーワードに関連する記事リストを分析し、このキーワードに関する主要な技術・市場トレンドを1つに分類してください。`, // プロンプト変更
+      `キーワード: ${keyword}`,
+      "",
+      "各トレンドについて、以下の厳密なMarkdown形式で出力してください。",
+      "",
+      "1. 15〜25字程度のキャッチーなトレンド名称を太字で記述してください。",
+      "2. 150〜200字程度で、なぜ今このトレンドが重要なのか、背景、具体的な進展、将来の展望などを、複数の記事から得られた情報を統合・要約して記述してください。**この解説文には、キーワードを自然に含めてください。** 箇条書きは使用しないでください。",
+      "3. そのトレンドを最もよく表している記事を${linksPerTrend}つまで、`・[記事の見出し](記事のURL)` の形式で記述してください。",
+      "",
+      "前書きや後書きは一切不要です。",
+      "",
+      "【記事リスト】",
+      articleListForLlm
+    ].join("\n");
+
+    var txt = callLlmWithFallback(system, user, model);
+    if (txt && txt.trim()) {
+      allTrends.push(txt.trim());
+    } else {
+      // フォールバック処理（キーワードごとのフォールバック）
+      if (articlesForKeyword.length > 0) {
+        allTrends.push(
+          `**${keyword}関連のトレンド**\n` +
+          `このキーワードに関するトレンドは生成できませんでした。関連する記事をいくつか紹介します。\n` +
+          articlesForKeyword.slice(0, linksPerTrend).map(a => `・[${a.title}](${a.url})`).join("\n")
+        );
+      }
+    }
   }
-  return txt.trim();
+  return allTrends.join("\n\n---\n\n"); // 各トレンドを二重改行と区切り線で結合
 }
 
 /**
@@ -742,10 +772,7 @@ function _composeTopPicksSection(articles, topN, TLDR_MIN, TLDR_MAX) {
 // ✉️ 5. Notification Handlers (通知関連)
 // =================================================================
 
-/**
- * 週次ダイジェストをHTMLメールで送信
- */
-function sendWeeklyDigestEmail(headerLine, mdBody) {
+function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
   const props = PropertiesService.getScriptProperties();
   const to = props.getProperty("MAIL_TO");
   if (!to) { Logger.log("MAIL_TO未設定のためメール送信せず。"); return; }
@@ -755,7 +782,17 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   const today         = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl      = props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)";
 
-  const fullMdBody = mdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
+  // キーワード情報をメール本文に追加
+  let keywordSection = "";
+  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
+    keywordSection = "\n\n### 今週の注目キーワード\n";
+    hitKeywordsWithCount.forEach(item => {
+      keywordSection += `- **${item.keyword}** (${item.count}件)\n`;
+    });
+    keywordSection += "\n\n---\n\n"; // 区切り線と前後の改行を追加
+  }
+
+  const fullMdBody = keywordSection + mdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`; // 順序を入れ替え
   const textBody = headerLine + "\n\n" + fullMdBody;
   const finalSubject = subjectPrefix + today;
 
@@ -773,99 +810,6 @@ function sendWeeklyDigestEmail(headerLine, mdBody) {
   });
   Logger.log("メール送信（HTML形式）完了: " + to);
 }
-
-/**
- * （未使用）週次ダイジェストをTeamsにアダプティブカードで送信
- */
-function sendWeeklyDigestTeams(headerLine, mdBody, combinedOtherArticles) {
-  const props = PropertiesService.getScriptProperties();
-  const webhookUrl = props.getProperty("TEAMS_WEBHOOK_URL");
-  if (!webhookUrl) {
-    Logger.log("TeamsのWebhook URLが設定されていません。");
-    return;
-  }
-
-  const payload = createAdaptiveCardJSON(mdBody, combinedOtherArticles);
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const res = UrlFetchApp.fetch(webhookUrl, options);
-    const responseCode = res.getResponseCode();
-    if (responseCode >= 200 && responseCode < 300) {
-      Logger.log("Teams送信完了");
-    } else {
-      const errorText = res.getContentText();
-      _logError("sendWeeklyDigestTeams", new Error(errorText), `Teams送信失敗。ステータスコード: ${responseCode}`);
-    }
-  } catch (e) {
-    _logError("sendWeeklyDigestTeams", e, "Teams送信中に例外が発生しました。");
-  }
-}
-
-/**
- * （未使用）Teams用のアダプティブカードJSONを生成
- */
-function createAdaptiveCardJSON(reportBody, otherArticles) {
-  const cardTitle = `今週の臨床検査・バイオ技術トレンド Weekly Digest (${fmtDate(new Date())}週)`;
-  const sections = reportBody.split('\n---\n').map(s => s.trim()).filter(Boolean);
-  const cardBody = [];
-
-  cardBody.push({ type: "TextBlock", text: cardTitle, weight: "Bolder", size: "Large", wrap: true });
-
-  sections.forEach((sec, idx) => {
-    if (idx > 0) cardBody.push({ type: "TextBlock", text: " ", separator: true });
-
-    const isTopPicks = /^\*\*.*Top Picks.*\*\*$/m.test(sec);
-    if (isTopPicks) {
-      const lines = sec.split('\n').filter(l => l.trim() !== '');
-      const heading = lines[0].replace(/\*\*/g, '');
-      const itemsMd = lines.slice(1).join('\n');
-
-      cardBody.push({ type: "TextBlock", text: `**${heading}**`, weight: "Bolder", size: "Medium", wrap: true });
-      cardBody.push({
-        type: "Container",
-        items: [
-          { type: "ActionSet", actions: [{ type: "Action.ToggleVisibility", title: "🔎 Top Picks を表示／非表示", targetElements: ["topPicksContainer"] }] },
-          { type: "Container", id: "topPicksContainer", isVisible: false, items: [{ type: "TextBlock", text: itemsMd, wrap: true }] }
-        ]
-      });
-    } else {
-      cardBody.push({ type: "TextBlock", text: sec, wrap: true });
-    }
-  });
-
-  if (otherArticles && otherArticles.length > 0) {
-    cardBody.push({ type: "TextBlock", text: " ", separator: true });
-    const otherMd = otherArticles.map(a => `- ${a.title}`).join('\n');
-    cardBody.push({
-      type: "Container",
-      items: [
-        { type: "ActionSet", actions: [{ type: "Action.ToggleVisibility", title: `📚 その他の注目記事 (${otherArticles.length}件) を表示／非表示`, targetElements: ["otherArticlesContainer"] }] },
-        { type: "Container", id: "otherArticlesContainer", isVisible: false, items: [{ type: "TextBlock", text: otherMd, wrap: true }] }
-      ]
-    });
-  }
-
-  return {
-    type: "message",
-    attachments: [{
-      contentType: "application/vnd.microsoft.card.adaptive",
-      content: {
-        $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
-        type: "AdaptiveCard",
-        version: "1.2",
-        body: cardBody,
-        msteams: { width: "full" }
-      }
-    }]
-  };
-}
-
 
 // =================================================================
 // 🛠️ 6. Utilities & Helpers (ユーティリティ)
@@ -888,13 +832,13 @@ function getWeightedKeywords(sheetName = "Keywords") {
   if (!sheet) return [];
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  // 1行目はヘッダー（A:キーワード, B:優先度）
-  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
-  return values.map(([keyword, priority]) => {
-    let weight = 5; // デフォルト（無印）
-    if (String(priority).toLowerCase() === "high") weight = 10;
-    if (String(priority).toLowerCase() === "low") weight = 2;
-    return { keyword: String(keyword).trim(), weight };
+  // 1行目はヘッダー（A:キーワード, B:有効フラグ）
+  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues(); // 2列目まで読み込む
+  return values.map(([keyword, activeFlag]) => {
+    return {
+      keyword: String(keyword).trim(),
+      active: String(activeFlag).toUpperCase() === "Y" // "Y"の場合にtrue
+    };
   }).filter(obj => obj.keyword);
 }
 
@@ -922,14 +866,7 @@ function _getDigestConfig() {
 function computeHeuristicScore(article) {
   const now = new Date();
   const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
-  const weightedKeywords = getWeightedKeywords(); // ←ここが新しくなる
-
-  // キーワード加点
-  const txt = `${article.title || ""} ${article.abstractText || ""} ${article.headline || ""}`;
-  let keywordScore = 0;
-  weightedKeywords.forEach(obj => {
-    if (txt.includes(obj.keyword)) keywordScore += obj.weight;
-  });
+  // キーワードによる加点は廃止。有効なキーワードにマッチした記事はピックアップ段階で選定済み。
 
   const SOURCE_WEIGHTS = {
     "Nature: 臨床診療と研究": 1.0,
@@ -961,7 +898,7 @@ function computeHeuristicScore(article) {
   const freshness = Math.exp(-daysOld / 7);
   const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
   const abstractBonus = hasAbstract ? Math.min(10, String(article.abstractText).length / 200) : 0;
-  const raw = (keywordScore) + (sourceWeight * 30) + (freshness * 40) + abstractBonus;
+  const raw = (sourceWeight * 30) + (freshness * 40) + abstractBonus;
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
@@ -972,14 +909,13 @@ function getArticlesInDateWindow(start, end) {
   const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return [];
-  const lastCol = sh.getLastColumn();
 
-  const vals = sh.getRange(2, 1, lastRow - 1, Math.min(lastCol, 8)).getValues(); // A..H
+  const vals = sh.getRange(2, 1, lastRow - 1, Config.CollectSheet.Columns.SOURCE).getValues(); // A..F
   const out = [];
   for (const r of vals) {
     const date = r[0];
     if ((date instanceof Date) && date >= start && date < end) {
-      const headline = r[4];
+      const headline = r[4]; // E列
       if (headline && String(headline).trim() !== "" && String(headline).indexOf("API Error") === -1) {
         out.push({
           date: date,
@@ -988,8 +924,7 @@ function getArticlesInDateWindow(start, end) {
           abstractText: r[3],
           headline: String(headline).trim(),
           source: r[5] ? String(r[5]) : "",
-          aiScore: (typeof r[6] === 'number' && isFinite(r[6])) ? r[6] : null,
-          tldr: String(headline).trim() || "" // <-- E列 (headline = r[4]) を参照
+          tldr: String(headline).trim(), // headlineをtldrにも設定
         });
       }
     }
@@ -998,18 +933,7 @@ function getArticlesInDateWindow(start, end) {
   return out;
 }
 
-/**
- * （未使用）LLMの出力からレポート本文と「その他の記事」を分離
- */
-function _parseWeeklyReportOutput(reportText, originalArticles) {
-  const includedUrls = new Set();
-  (reportText.match(/[\[\]\(]([^\]\)]+?)[\(](https?:\/\/[^\s\)]+?)[\)]/g) || []).forEach(link => {
-    const url = link.match(/\((.*?)\)/)[1];
-    includedUrls.add(url);
-  });
 
-  return originalArticles.filter(article => !includedUrls.has(article.url));
-}
 
 /**
  * collectシートを日付の降順でソート
