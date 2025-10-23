@@ -100,25 +100,57 @@ function weeklyDigestJob() {
   const articleKeywordMap = new Map(); // 各記事がヒットしたキーワードを記録
 
   // activeKeywords を正規表現オブジェクトの配列に変換
-  const keywordRegexes = activeKeywords.map(k => ({
+
+  function parseKeywordCondition(keywordCell) {
+    // "A and B" → {type: "and", words: ["A", "B"]}
+    // "A or B" → {type: "or", words: ["A", "B"]}
+    // "A" → {type: "single", words: ["A"]}
+    const lower = keywordCell.toLowerCase();
+    if (lower.includes(' and ')) {
+      return { type: 'and', words: keywordCell.split(/ and /i).map(w => w.trim()) };
+    } else if (lower.includes(' or ')) {
+      return { type: 'or', words: keywordCell.split(/ or /i).map(w => w.trim()) };
+    } else {
+      return { type: 'single', words: [keywordCell.trim()] };
+    }
+  }
+
+  const keywordConditions = activeKeywords.map(k => ({
     original: k,
-    regex: new RegExp(k.replace(/[.*+?^${}()|[\\]/g, '\\$&'), 'gi') // 大文字小文字を区別せず、グローバルに検索
+    ...parseKeywordCondition(k)
   }));
 
   allItems.forEach(article => {
     const text = `${article.title} ${article.abstractText} ${article.headline}`;
     let articleHasHitKeyword = false;
-    const hitKeywordsForArticle = []; // この記事がヒットしたキーワード
-    keywordRegexes.forEach(kwObj => {
-      if (kwObj.regex.test(text)) {
-        articleHasHitKeyword = true;
-        hitKeywordsForArticle.push(kwObj.original);
-        keywordHitCounts[kwObj.original] = (keywordHitCounts[kwObj.original] || 0) + 1;
+    const hitKeywordsForArticle = [];
+    keywordConditions.forEach(cond => {
+      if (cond.type === 'and') {
+        // すべての単語が含まれているか
+        if (cond.words.every(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) {
+          articleHasHitKeyword = true;
+          hitKeywordsForArticle.push(cond.original);
+          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
+        }
+      } else if (cond.type === 'or') {
+        // いずれかの単語が含まれているか
+        if (cond.words.some(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) {
+          articleHasHitKeyword = true;
+          hitKeywordsForArticle.push(cond.original);
+          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
+        }
+      } else {
+        // 単独キーワード
+        if (new RegExp(cond.words[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text)) {
+          articleHasHitKeyword = true;
+          hitKeywordsForArticle.push(cond.original);
+          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
+        }
       }
     });
     if (articleHasHitKeyword) {
       relevantArticles.push(article);
-      articleKeywordMap.set(article.url, hitKeywordsForArticle); // 記事URLとヒットキーワードを紐付け
+      articleKeywordMap.set(article.url, hitKeywordsForArticle);
     }
   });
 
@@ -677,7 +709,7 @@ function getAiTldrsInBatch(articles) {
  */
 function _llmMakeHighlights(articles) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
+  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
   var system = "あなたは週次ダイジェスト編集者。斜め読みで動向を掴める3つの要旨を作成する。";
   var list = articles.map(function(a){ return "- " + a.headline + "（" + (a.source||"") + ": " + a.url + "）"; }).join("\n");
   var user = [
@@ -707,7 +739,7 @@ function _llmMakeHighlights(articles) {
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
 
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
+  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
   const azureWeeklyUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY")
   
   const SYSTEM = getPromptConfig("TREND_SYSTEM");
@@ -863,7 +895,7 @@ function getWeightedKeywords(sheetName = "Keywords") {
   return values.map(([keyword, activeFlag]) => {
     return {
       keyword: String(keyword).trim(),
-      active: String(activeFlag).toUpperCase() === "Y" // "Y"の場合にtrue
+      active: String(activeFlag).trim() !== "" // 空欄以外ならtrue
     };
   }).filter(obj => obj.keyword);
 }
