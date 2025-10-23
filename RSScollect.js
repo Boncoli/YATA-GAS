@@ -23,6 +23,7 @@ const Config = {
   SheetNames: {
     RSS_LIST: "RSS",
     TREND_DATA: "collect",
+    PROMPT_CONFIG: "prompt", // 👈 追加
   },
   CollectSheet: {
     Columns: {
@@ -132,6 +133,12 @@ function weeklyDigestJob() {
     return; // メール送信を削除
   }
   Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+
+  let hitLog = "【キーワード別ヒット件数】\n";
+  hitKeywordsWithCount.forEach(item => {
+    hitLog += `- ${item.keyword}: ${item.count}件\n`;
+  });
+  Logger.log(hitLog.trim());
 
   // キーワードスコアに基づき記事を選抜
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config);
@@ -581,15 +588,16 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
 function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
-  const SYSTEM = "あなたはプロのニュース編集者です。臨床検査・バイオ要素技術の専門性を保ちつつ、一般読者にも伝わる日本語の見出しを作るアシスタントです。常に簡潔・具体・キャッチーに出力します。";
-  const USER = [
-    "以下の記事内容を、ネットニュースの見出しのように、キャッチーで簡潔な日本語タイトルとして**1行**で作成してください。",
-    "要件:",
-    " - 語尾は名詞止めを優先（例：〜が加速、〜の実用化）",
-    " - 専門用語は噛み砕く（難語は短く）",
-    " - 誇張や断定は避け事実ベースで",
-    " - 目安は全角20〜35字（オーバー可）",
-    "例：『AIが血液検査を高度化、迅速診断の精度向上』",
+  
+  const SYSTEM = getPromptConfig("DAILY_SYSTEM");
+  const USER_TEMPLATE = getPromptConfig("DAILY_USER");
+
+  if (!SYSTEM || !USER_TEMPLATE) {
+    return "エラー: DAILYプロンプト設定が見つかりません。";
+  }
+  
+  // テンプレートに記事内容を挿入
+  const USER = USER_TEMPLATE + [
     "",
     "記事: ---",
     articleText,
@@ -611,10 +619,16 @@ function getAiTldrsInBatch(articles) {
 
   const results = new Map();
 
+  // テンプレートをシートから取得 (ループの外で一度だけ取得する)
+  const systemPrompt = getPromptConfig("BATCH_SYSTEM") || "あなたは臨床検査・バイオ技術の専門ニュースエディターです。"; // 👈 これをループの外に残す
+  const userTemplate = getPromptConfig("BATCH_USER_TEMPLATE") || "以下の記事について、日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。";
+
   articles.forEach(article => {
-    const systemPrompt = "あなたは臨床検査・バイオ技術の専門ニュースエディターです。";
+    // ⬇️ 削除: ここにあった systemPrompt の再定義を削除しました。
+    
+    // ユーザープロンプトを構築
     const userPrompt = [
-      "以下の記事について、日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。",
+      userTemplate, // シートから取得したユーザープロンプトの本文
       "結果は以下のJSON形式で出力してください。`tldr` のキーのみを含めてください。",
       "**重要:** 出力は必ず完全なJSON形式で終了してください。途中で途切れたり、JSONの後に余計なテキストを含めたりしないでください。",
       "",
@@ -625,7 +639,7 @@ function getAiTldrsInBatch(articles) {
       `Headline: ${article.headline}\nAbstract: ${article.abstractText}`
     ].join("\n");
 
-    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model);
+    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model); // 👈 外側で定義した systemPrompt を使用
     Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
 
     try {
@@ -694,7 +708,15 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
 
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
-  var system = "あなたは、臨床検査・バイオ技術分野の専門アナリストです。提供されたキーワードと、そのキーワードに関連する記事群を基に、業界の重要な動向を抽出し、分類し、読者に分かりやすく解説する役割を担います。"; // systemプロンプトも調整
+  
+  const SYSTEM = getPromptConfig("TREND_SYSTEM");
+  const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
+
+  if (!SYSTEM || !USER_TEMPLATE) {
+    Logger.log("エラー: WEEKLYトレンドプロンプト設定が見つかりません。");
+    return "今週のトレンドは生成できませんでした。";
+  }
+  var system = SYSTEM; // 変数名をSYSTEMに変更
 
   const allTrends = [];
 
@@ -706,12 +728,14 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
       continue; // そのキーワードに関連する記事がない場合はスキップ
     }
 
+    const keywordHeader = `キーワード「${keyword}」\n`;
+
     var articleListForLlm = articlesForKeyword.map(function(a){
       return `- 見出し: ${a.headline}\n  要約: ${a.tldr}\n  URL: ${a.url}`;
     }).join("\n");
 
     var user = [
-      `以下のキーワードに関連する記事リストを分析し、このキーワードに関する主要な技術・市場トレンドを1つに分類してください。`, // プロンプト変更
+      USER_TEMPLATE, // ⬇️ 修正: テンプレートを使用
       `キーワード: ${keyword}`,
       "",
       "各トレンドについて、以下の厳密なMarkdown形式で出力してください。",
@@ -728,11 +752,12 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
 
     var txt = callLlmWithFallback(system, user, model);
     if (txt && txt.trim()) {
-      allTrends.push(txt.trim());
+      allTrends.push(keywordHeader + txt.trim());
     } else {
       // フォールバック処理（キーワードごとのフォールバック）
       if (articlesForKeyword.length > 0) {
         allTrends.push(
+          keywordHeader +
           `**${keyword}関連のトレンド**\n` +
           `このキーワードに関するトレンドは生成できませんでした。関連する記事をいくつか紹介します。\n` +
           articlesForKeyword.slice(0, linksPerTrend).map(a => `・[${a.title}](${a.url})`).join("\n")
@@ -840,6 +865,34 @@ function getWeightedKeywords(sheetName = "Keywords") {
       active: String(activeFlag).toUpperCase() === "Y" // "Y"の場合にtrue
     };
   }).filter(obj => obj.keyword);
+}
+
+function getPromptConfig(key) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(Config.SheetNames.PROMPT_CONFIG);
+  if (!sheet) {
+    Logger.log(`エラー: promptシートが見つかりません。キー: ${key}`);
+    return null;
+  }
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+
+  // A列とB列のデータを取得
+  const values = sheet.getRange(1, 1, lastRow, 2).getValues();
+
+  // マップに変換して検索
+  const promptMap = new Map(values.map(row => [String(row[0]).trim(), row[1]]));
+
+  const content = promptMap.get(key);
+
+  if (!content) {
+    Logger.log(`警告: promptシートにキー ${key} が見つかりませんでした。`);
+    return null;
+  }
+
+  // 取得した内容を文字列としてトリムして返す
+  return String(content).trim();
 }
 
 /**
@@ -960,9 +1013,11 @@ function getExistingUrls(sheet) {
 function fetchAndParseRss(rssUrl, siteName, existingUrls) {
   let articles = [];
   try {
-    const options = {
+      const options = {
       'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        // 現在のUser-Agentを維持
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8'
       },
       'muteHttpExceptions': true
     };
