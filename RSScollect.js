@@ -708,6 +708,7 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
 
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4o-mini";
+  const azureWeeklyUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY")
   
   const SYSTEM = getPromptConfig("TREND_SYSTEM");
   const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
@@ -750,7 +751,7 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
       articleListForLlm
     ].join("\n");
 
-    var txt = callLlmWithFallback(system, user, model);
+    var txt = callLlmWithFallback(system, user, model, azureWeeklyUrl);
     if (txt && txt.trim()) {
       allTrends.push(keywordHeader + txt.trim());
     } else {
@@ -985,8 +986,6 @@ function getArticlesInDateWindow(start, end) {
   out.sort((a, b) => a.date - b.date);
   return out;
 }
-
-
 
 /**
  * collectシートを日付の降順でソート
