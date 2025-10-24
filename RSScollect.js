@@ -6,13 +6,17 @@
  */
 
 // =================================================================
-// 📌【運用方針メモ 2025/10/22 改訂】
+// 📌【運用方針メモ 2025/10/24 改訂】
 // =================================================================
-// - **配信形式**: 週次ダイジェストはHTMLメールを正とし、Teams通知は運用停止。
-// - **キーワード選定**: Keywordsシートの「有効」フラグ（Y/N）に基づき、Weeklyダイジェストの記事を選定。
-// - **リファクタリング**: 未使用のTeams通知関連関数および_parseWeeklyReportOutput関数を削除。Keywordsシートの優先度による重み付けを廃止。CollectシートのG列(AIスコア)とH列(AI TL;DR)を削除。rankAndSelectArticles関数における1ソースあたりの最大採用数制限を解除。
-// - **AIモデル**: 日次・週次で `OPENAI_MODEL_DAILY` と `OPENAI_MODEL_WEEKLY` を使い分ける。
-// - **AI評価**: 週次ダイジェストのスコア・要約評価は、効率的なバッチ処理を基本とする。
+// - **配信形式**: 週次ダイジェストはHTMLメール形式で配信。
+// - **キーワード選定**: `Keywords`シートの有効フラグ（B列が空でない）に基づき、週次ダイジェストの記事を選定。
+// - **記事選抜ロジック**: 週次ダイジェストの記事は、ソースの信頼性ではなく、「キーワードのマッチ数」「鮮度」「抜粋の有無」を組み合わせたスコアで選抜。
+// - **コード構造**: `weeklyDigestJob`は責務ごとにプライベート関数に分割され、可読性とメンテナンス性を向上。
+// - **AIモデル**: 日次・週次処理で `OPENAI_MODEL_DAILY` と `OPENAI_MODEL_WEEKLY` を使い分ける設定は維持。
+// - **廃止機能**:
+//   - Teams通知機能
+//   - 記事ごとのAIスコアリング（`collect`シートのG列）
+//   - 週次ダイジェストのハイライト、Top Picksセクション
 // =================================================================
 
 
@@ -52,10 +56,6 @@ const Config = {
     MISSING_ABSTRACT_TEXT: "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。",
     SHORT_JA_SKIP_TEXT: "記事が短く、日本語のため見出し生成をスキップしました。",
   },
-  Digest: {
-    DEFAULT_USE_AI_RANK: "N",
-    DEFAULT_AI_CANDIDATES: 50,
-  },
 };
 
 
@@ -82,117 +82,119 @@ function weeklyDigestJob() {
   const allItems = getArticlesInDateWindow(start, end);
 
   if (allItems.length === 0) {
-    Logger.log("週間ダイジェスト：対象期間に記事なし");
-    const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-    const reportBody = "今週のダイジェスト対象となる記事はありませんでした。";
-    if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-      sendWeeklyDigestEmail(headerLine, reportBody);
-    }
+    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
     return;
   }
   Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
-  // Keywordsシートから有効なキーワードを取得
-  const activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
+  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems);
 
+  if (relevantArticles.length === 0) {
+    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
+    return;
+  }
+  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+
+  _logKeywordHitCounts(hitKeywordsWithCount);
+
+  _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end);
+}
+
+/**
+ * @private
+ * キーワードに基づいて記事をフィルタリングし、関連情報を返す
+ */
+function _filterRelevantArticles(allItems) {
+  const activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
   const relevantArticles = [];
   const keywordHitCounts = {};
-  const articleKeywordMap = new Map(); // 各記事がヒットしたキーワードを記録
-
-  // activeKeywords を正規表現オブジェクトの配列に変換
+  const articleKeywordMap = new Map();
 
   function parseKeywordCondition(keywordCell) {
-    // "A and B" → {type: "and", words: ["A", "B"]}
-    // "A or B" → {type: "or", words: ["A", "B"]}
-    // "A" → {type: "single", words: ["A"]}
     const lower = keywordCell.toLowerCase();
-    if (lower.includes(' and ')) {
-      return { type: 'and', words: keywordCell.split(/ and /i).map(w => w.trim()) };
-    } else if (lower.includes(' or ')) {
-      return { type: 'or', words: keywordCell.split(/ or /i).map(w => w.trim()) };
-    } else {
-      return { type: 'single', words: [keywordCell.trim()] };
-    }
+    if (lower.includes(' and ')) return { type: 'and', words: keywordCell.split(/ and /i).map(w => w.trim()) };
+    if (lower.includes(' or ')) return { type: 'or', words: keywordCell.split(/ or /i).map(w => w.trim()) };
+    return { type: 'single', words: [keywordCell.trim()] };
   }
 
-  const keywordConditions = activeKeywords.map(k => ({
-    original: k,
-    ...parseKeywordCondition(k)
-  }));
+  const keywordConditions = activeKeywords.map(k => ({ original: k, ...parseKeywordCondition(k) }));
 
   allItems.forEach(article => {
     const text = `${article.title} ${article.abstractText} ${article.headline}`;
-    let articleHasHitKeyword = false;
-    const hitKeywordsForArticle = [];
+    const hitKeywordsForArticle = new Set();
+
     keywordConditions.forEach(cond => {
-      if (cond.type === 'and') {
-        // すべての単語が含まれているか
-        if (cond.words.every(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) {
-          articleHasHitKeyword = true;
-          hitKeywordsForArticle.push(cond.original);
-          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
-        }
-      } else if (cond.type === 'or') {
-        // いずれかの単語が含まれているか
-        if (cond.words.some(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) {
-          articleHasHitKeyword = true;
-          hitKeywordsForArticle.push(cond.original);
-          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
-        }
-      } else {
-        // 単独キーワード
-        if (new RegExp(cond.words[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text)) {
-          articleHasHitKeyword = true;
-          hitKeywordsForArticle.push(cond.original);
-          keywordHitCounts[cond.original] = (keywordHitCounts[cond.original] || 0) + 1;
-        }
+      const isMatch = (cond.type === 'and' && cond.words.every(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) ||
+                      (cond.type === 'or' && cond.words.some(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) ||
+                      (cond.type === 'single' && new RegExp(cond.words[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text));
+      
+      if (isMatch) {
+        hitKeywordsForArticle.add(cond.original);
       }
     });
-    if (articleHasHitKeyword) {
+
+    if (hitKeywordsForArticle.size > 0) {
       relevantArticles.push(article);
-      articleKeywordMap.set(article.url, hitKeywordsForArticle);
+      articleKeywordMap.set(article.url, Array.from(hitKeywordsForArticle));
+      hitKeywordsForArticle.forEach(keyword => {
+        keywordHitCounts[keyword] = (keywordHitCounts[keyword] || 0) + 1;
+      });
     }
   });
 
-  // keywordHitCounts を配列に変換し、件数が多い順にソート
   const hitKeywordsWithCount = Object.entries(keywordHitCounts)
     .map(([keyword, count]) => ({ keyword, count }))
     .sort((a, b) => b.count - a.count);
 
-  // relevantArticlesが空の場合のガード節を修正（メール送信を削除）
-  if (relevantArticles.length === 0) {
-    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
-    return; // メール送信を削除
-  }
-  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+  return { relevantArticles, hitKeywordsWithCount, articleKeywordMap };
+}
 
+/**
+ * @private
+ * キーワードごとのヒット件数をログに出力する
+ */
+function _logKeywordHitCounts(hitKeywordsWithCount) {
   let hitLog = "【キーワード別ヒット件数】\n";
   hitKeywordsWithCount.forEach(item => {
     hitLog += `- ${item.keyword}: ${item.count}件\n`;
   });
   Logger.log(hitLog.trim());
+}
 
-  // キーワードスコアに基づき記事を選抜
-  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config);
+/**
+ * @private
+ * ダイジェストを生成し、メールで送信する
+ */
+function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end) {
+  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
 
-  // キーワードごとの記事グループを作成 (selectedTopN の記事のみを対象とする)
   const articlesGroupedByKeyword = {};
   hitKeywordsWithCount.forEach(kwItem => {
-    articlesGroupedByKeyword[kwItem.keyword] = selectedTopN.filter(article => { // relevantArticles -> selectedTopN に変更
+    articlesGroupedByKeyword[kwItem.keyword] = selectedTopN.filter(article => {
       const keywords = articleKeywordMap.get(article.url);
       return keywords && keywords.includes(kwItem.keyword);
     });
   });
 
-  // 週次レポート本文を生成
-  // generateWeeklyReportWithLLM の呼び出しを変更
   const { reportBody } = generateWeeklyReportWithLLM(selectedTopN, hitKeywordsWithCount, articlesGroupedByKeyword);
 
-  // メール配信
   const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
     sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount);
+  }
+}
+
+/**
+ * @private
+ * 対象記事がなかった場合の通知処理
+ */
+function _handleNoArticlesFound(config, start, end, message) {
+  Logger.log(`週間ダイジェスト：${message}`);
+  const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+  const reportBody = "今週のダイジェスト対象となる記事はありませんでした。";
+  if (config.notifyChannel === "email" || config.notifyChannel === "both") {
+    sendWeeklyDigestEmail(headerLine, reportBody);
   }
 }
 
@@ -303,32 +305,26 @@ function processSummarization() {
 
   let apiCallCount = 0;
   if (articlesToSummarize.length > 0) {
-    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによるTL;DR生成を試行します。`);
-    // 各記事に対して個別にgetAiTldrsInBatchを呼び出す
+    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
     articlesToSummarize.forEach(article => {
-      const singleArticleForLlm = {
-        url: values[article.originalRowIndex][Config.CollectSheet.Columns.URL - 1], // C列のURLを渡す
-        headline: article.title,
-        abstractText: article.abstractText
-      };
-      const aiResultMap = getAiTldrsInBatch([singleArticleForLlm]); // 1記事のみ処理
-      apiCallCount++; // 1記事につき1コール
+      const articleText = `Title: ${article.title}\nAbstract: ${article.abstractText}`;
+      const newHeadline = summarizeWithLLM(articleText);
+      apiCallCount++;
 
-      if (aiResultMap.size > 0) {
-        const result = aiResultMap.values().next().value; // 最初の結果を取得
-        if (result && result.tldr) {
-          // E列(見出し)にAI生成のTL;DRを設定
-          values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = result.tldr; // E列
-        }
+      // APIエラーでない場合のみ書き込む
+      if (newHeadline && !newHeadline.includes("エラー") && !newHeadline.includes("いずれのLLMでも")) {
+        values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
+      } else {
+        Logger.log(`見出し生成失敗 (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
+      Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
     });
   }
 
   // 更新されたデータ配列をシートに一括書き込み
-  if (articlesToSummarize.length > 0 || values.some(row => row[Config.CollectSheet.Columns.SUMMARY - 1] !== '')) { // 何らかの更新があった場合
-    // 読み込み範囲をConfig.CollectSheet.Columns.SOURCEまでとする
+  if (articlesToSummarize.length > 0) { // AI処理が行われた場合のみ書き戻す
     const newDataRange = trendDataSheet.getRange(2, 1, lastRow - 1, Config.CollectSheet.Columns.SOURCE);
-    newDataRange.setValues(values.map(row => row.slice(0, Config.CollectSheet.Columns.SOURCE))); // 必要な列のみを書き戻す
+    newDataRange.setValues(values.map(row => row.slice(0, Config.CollectSheet.Columns.SOURCE)));
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
   } else {
     Logger.log("見出し生成が必要な記事は見つかりませんでした。");
@@ -343,15 +339,14 @@ function processSummarization() {
 /**
  * キーワードベースのヒューリスティックスコアで記事を選抜・整列し、上位記事リストを返す
  */
-function rankAndSelectArticles(relevantArticles, config) {
+function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
   const topN = config.topN || 20;
-  // const perSourceCap = 3; // 1ソースあたりの最大採用数 - ユーザーの要望により削除
 
   // ① ヒューリスティックスコアを計算してソート
   const scoredArticles = relevantArticles
     .map(a => ({
       ...a,
-      heuristicScore: computeHeuristicScore(a)
+      heuristicScore: computeHeuristicScore(a, articleKeywordMap)
     }))
     .sort((a, b) => b.heuristicScore - a.heuristicScore);
 
@@ -368,84 +363,27 @@ function rankAndSelectArticles(relevantArticles, config) {
     if (picked.length >= topN) break;
   }
 
-  // ③ AIスコアの書き戻しは不要になったため、空の配列を返す
-  const aiScoredItems = [];
-
-  return { selectedTopN: picked, aiScoredItems: aiScoredItems };
+  // ③ 上位記事を選抜して返す
+  return { selectedTopN: picked };
 }
 
 /**
  * AIを使い、選抜された記事からダイジェストの本文(Markdown)を生成する
  */
 function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword) {
-  const NUM_TRENDS = 3;
   const LINKS_PER_TREND = 3;
-  // const TOP_PICKS_N = Math.min(5, articles.length); // 廃止
-  // const TLDR_MIN = 50; // 廃止
-  // const TLDR_MAX = 100; // 廃止
 
-  // ハイライトの生成と出力は廃止
-  // const highlights = _llmMakeHighlights(articles);
-
-  // アクティブなキーワードを取得 (ここでは hitKeywordsWithCount を利用)
+  // アクティブなキーワードを取得
   const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
 
-  // _llmMakeTrendSections の呼び出しを変更
-  // const trends = _llmMakeTrendSections(articles, NUM_TRENDS, LINKS_PER_TREND, hitKeywords); // 変更前
-  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords); // 変更後 (numTrends は不要になる)
+  // キーワードごとのトレンドセクションを生成
+  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords);
 
-  // const topPicksMd = _composeTopPicksSection(articles, TOP_PICKS_N, TLDR_MIN, TLDR_MAX); // 廃止
-
-  const body = [
-    // ハイライトセクションを削除
-    // "### 今週のハイライト",
-    // highlights.join("\\n"),
-    // "\\n---\n",
-    trends // トレンドセクションのみ
-    // "\\n---\n", // 廃止
-    // "**Top Picks（要点付き）**\n" + topPicksMd // 廃止
-  ].join("\n"); // join の引数も調整
-
-  return { reportBody: body };
+  // 生成されたトレンドレポート本文を返す
+  return { reportBody: trends };
 }
 
-/**
- * AIスコアとTL;DRをスプレッドシートのG列・H列に書き戻す
- */
-function writeBackAiResults(aiScoredItems) {
-  if (!aiScoredItems || aiScoredItems.length === 0) return;
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sh = ss.getSheetByName(Config.SheetNames.TREND_DATA);
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return;
-
-  // シートの全データを一度に読み込む
-  const dataRange = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn());
-  const values = dataRange.getValues();
-
-  const urlToRowIndex = new Map(); // URLをキーに、values配列のインデックスをマップ
-  for (let i = 0; i < values.length; i++) {
-    urlToRowIndex.set(values[i][Config.CollectSheet.Columns.URL - 1], i); // C列(URL)は0-indexedで2
-  }
-
-  let updatedCount = 0;
-  aiScoredItems.forEach(a => {
-    const rowIndex = urlToRowIndex.get(a.url);
-    if (rowIndex !== undefined) {
-      if (a.aiScore !== null) {
-        values[rowIndex][Config.CollectSheet.Columns.AI_SCORE - 1] = a.aiScore;
-        updatedCount++;
-      }
-    }
-  });
-
-  if (updatedCount > 0) {
-    // 更新されたデータ配列をシートに一括書き込み
-    dataRange.setValues(values);
-    Logger.log(`${updatedCount} 件のAIスコアをシートに書き戻しました。`);
-  }
-}
 
 
 // =================================================================
@@ -621,11 +559,11 @@ function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
   
-  const SYSTEM = getPromptConfig("DAILY_SYSTEM");
-  const USER_TEMPLATE = getPromptConfig("DAILY_USER");
+  const SYSTEM = getPromptConfig("BATCH_SYSTEM");
+  const USER_TEMPLATE = getPromptConfig("BATCH_USER_TEMPLATE");
 
   if (!SYSTEM || !USER_TEMPLATE) {
-    return "エラー: DAILYプロンプト設定が見つかりません。";
+    return "エラー: BATCHプロンプト設定が見つかりません。";
   }
   
   // テンプレートに記事内容を挿入
@@ -640,98 +578,9 @@ function summarizeWithLLM(articleText) {
 }
 
 
-/**
- * 【日次・バッチ用】複数記事のTL;DRをAIで一括生成
- */
-function getAiTldrsInBatch(articles) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano"; // Dailyモデルを使用
 
-  if (!articles || articles.length === 0) return new Map();
 
-  const results = new Map();
 
-  // テンプレートをシートから取得 (ループの外で一度だけ取得する)
-  const systemPrompt = getPromptConfig("BATCH_SYSTEM") || "あなたは臨床検査・バイオ技術の専門ニュースエディターです。"; // 👈 これをループの外に残す
-  const userTemplate = getPromptConfig("BATCH_USER_TEMPLATE") || "以下の記事について、日本語で90〜120字程度のTL;DR（名詞止め優先、誇張なし、事実ベース）を生成してください。";
-
-  articles.forEach(article => {
-    // ⬇️ 削除: ここにあった systemPrompt の再定義を削除しました。
-    
-    // ユーザープロンプトを構築
-    const userPrompt = [
-      userTemplate, // シートから取得したユーザープロンプトの本文
-      "結果は以下のJSON形式で出力してください。`tldr` のキーのみを含めてください。",
-      "**重要:** 出力は必ず完全なJSON形式で終了してください。途中で途切れたり、JSONの後に余計なテキストを含めたりしないでください。",
-      "",
-      "【出力フォーマット】",
-      `{ "tldr": "要約..." }`,
-      "",
-      "【評価対象記事】",
-      `Headline: ${article.headline}\nAbstract: ${article.abstractText}`
-    ].join("\n");
-
-    const rawResponse = callLlmWithFallback(systemPrompt, userPrompt, model); // 👈 外側で定義した systemPrompt を使用
-    Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
-
-    try {
-      let jsonString = null;
-      const codeBlockMatch = rawResponse.match(/```json\n([\s\S]*?)\n```/);
-      if (codeBlockMatch && codeBlockMatch[1]) {
-        jsonString = codeBlockMatch[1];
-      } else {
-        const trimmedResponse = rawResponse.trim();
-        if (trimmedResponse.startsWith('{') && trimmedResponse.endsWith('}')) {
-          jsonString = trimmedResponse;
-        }
-      }
-
-      if (jsonString) {
-        const parsed = JSON.parse(jsonString);
-        if (typeof parsed.tldr === 'string') {
-          results.set(article.url, { tldr: parsed.tldr }); // 元のarticle.urlをキーにする
-        } else {
-          _logError("getAiTldrsInBatch", new Error("Parsed JSON does not match expected structure"), "AIからのレスポンスのJSON構造が期待と異なりました。Response: " + rawResponse);
-        }
-      }
-       else {
-        _logError("getAiTldrsInBatch", new Error("No valid JSON found in response"), "AIからのレスポンスに有効なJSONが見つかりませんでした。Response: " + rawResponse);
-      }
-    } catch (e) {
-      _logError("getAiTldrsInBatch", e, "AIからのJSONレスポンスの解析に失敗しました。Response: " + rawResponse + " Error: " + e.message);
-    }
-  });
-  return results;
-}
-
-/**
- * 【週次・サブルーチン】ハイライト3行を生成
- */
-function _llmMakeHighlights(articles) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
-  var system = "あなたは週次ダイジェスト編集者。斜め読みで動向を掴める3つの要旨を作成する。";
-  var list = articles.map(function(a){ return "- " + a.headline + "（" + (a.source||"") + ": " + a.url + "）"; }).join("\n");
-  var user = [
-    "以下の記事見出しリストから、今週のハイライトを3点だけ、日本語で45〜60字の箇条書きにしてください。",
-    "誇張なし、事実ベース、名詞止め優先。出力は '- ' で始まる3行のみ。他の文字や説明を一切書かないこと。",
-    list
-  ].join("\n");
-
-  var txt = callLlmWithFallback(system, user, model);
-  // 最低限のフォールバック（LLM途切れ時は上位3見出しをそのまま採用）
-  if (!txt || !txt.trim()) {
-    return articles.slice(0,3).map(function(a){ return "- " + a.headline; });
-  }
-  // 不要行を削除して3行に丸める
-  var lines = txt.split(/\r?\n/).filter(function(l){ return /^\s*-\s+/.test(l); }).slice(0,3);
-  if (lines.length < 3) {
-    while(lines.length < 3 && lines.length < articles.length) {
-      lines.push("- " + articles[lines.length].headline);
-    }
-  }
-  return lines;
-}
 
 /**
  * 【週次・サブルーチン】主要トレンドセクションを生成
@@ -801,30 +650,7 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
   return allTrends.join("\n\n---\n\n"); // 各トレンドを二重改行と区切り線で結合
 }
 
-/**
- * 【週次・サブルーチン】Top Picksセクションを生成
- */
-function _composeTopPicksSection(articles, topN, TLDR_MIN, TLDR_MAX) {
-  const picks = articles.slice(0, Math.min(topN, articles.length));
-  
-  // 箇条書き（- ）、記事ごとに水平線（---）で区切る
-  const lines = picks.map((p, k) => {
-    // リンクを []() 形式で作成
-    const link = p.url ? ` [記事](${p.url})` : ""; 
-    
-    // TL;DRの内容を取得（太字強調なし）
-    let tldrContent = '';
-    if (p.tldr && String(p.tldr).trim()) {
-      tldrContent = `${String(p.tldr).trim()}`; 
-    }
 
-    // 箇条書きリストとして整形（要約とリンクのみ）
-    return `- ${tldrContent}${link}`;
-  });
-
-  // 記事間を水平線（---）で区切る
-  return lines.join("\n\n---\n\n"); 
-}
 
 // =================================================================
 // ✉️ 5. Notification Handlers (通知関連)
@@ -936,10 +762,7 @@ function _getDigestConfig() {
   return {
     days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
     topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
-    useAiRank: (props.getProperty("DIGEST_USE_AI_RANK") || Config.Digest.DEFAULT_USE_AI_RANK).toUpperCase() === "Y",
-    aiCandidates: parseInt(props.getProperty("DIGEST_AI_CANDIDATES") || String(Config.Digest.DEFAULT_AI_CANDIDATES), 10),
     notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
-    teamsWebhookUrl: props.getProperty("TEAMS_WEBHOOK_URL"),
     mailTo: props.getProperty("MAIL_TO"),
     mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】",
     mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
@@ -947,45 +770,28 @@ function _getDigestConfig() {
 }
 
 /**
- * ルールベースの重要度スコア（0-100）を計算（キーワード重みは「Keywords」シートから取得）
+ * ルールベースの重要度スコア（0-100）を計算
+ * @param {object} article - 記事オブジェクト
+ * @param {Map<string, string[]>} articleKeywordMap - 記事URLとマッチしたキーワードリストのマップ
+ * @returns {number} 0から100のスコア
  */
-function computeHeuristicScore(article) {
+function computeHeuristicScore(article, articleKeywordMap) {
   const now = new Date();
   const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
-  // キーワードによる加点は廃止。有効なキーワードにマッチした記事はピックアップ段階で選定済み。
 
-  const SOURCE_WEIGHTS = {
-    "Nature: 臨床診療と研究": 1.0,
-    "Nature NEWS": 1.0,
-    "BioWorld (Omics分野)": 0.9,
-    "GEN(Genetic Engineering and Biotechnology News)": 0.9,
-    "BioWorld (AI分野)": 0.9,
-    "BioWorld (遺伝子治療)": 0.9,
-    "BioWorld (細胞治療)": 0.9,
-    "UMIN 臨床試験登録情報 (CTR)": 0.8,
-    "BioPharma Dive": 0.8,
-    "Fierce Biotech": 0.8,
-    "Labiotech.eu": 0.7,
-    "Medical Daily": 0.7,
-    "Medical Xpress": 0.7,
-    "CBnews(医療)": 0.7,
-    "CBnews(薬事)": 0.7,
-    "bioRxiv(Bioengineering)": 0.6,
-    "bioRxiv(Cancer Biology)": 0.6,
-    "bioRxiv(Molecular Biology)": 0.6,
-    "bioRxiv (Genomics)": 0.6,
-    "Health & Medicine News": 0.6,
-    "Medscape Medical News": 0.7,
-    "MobiHealthNews": 0.6,
-    "Clinical Lab Products": 0.7
-  };
+  // 1. キーワードスコア (40点満点): マッチしたキーワードの数に基づいてスコアを算出
+  const matchedKeywords = articleKeywordMap.get(article.url) || [];
+  const keywordScore = Math.min(40, matchedKeywords.length * 8); // 1キーワードあたり8点、最大40点
 
-  const sourceWeight = SOURCE_WEIGHTS[article.source] || 0.6; // 未定義は0.6（補助的扱い）
-  const freshness = Math.exp(-daysOld / 7);
+  // 2. 鮮度スコア (40点満点): 記事の鮮度を指数関数的に評価
+  const freshnessScore = 40 * Math.exp(-daysOld / 7);
+
+  // 3. 抜粋ボーナス (20点満点): 抜粋の有無と長さに応じてボーナス
   const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
-  const abstractBonus = hasAbstract ? Math.min(10, String(article.abstractText).length / 200) : 0;
-  const raw = (sourceWeight * 30) + (freshness * 40) + abstractBonus;
-  return Math.max(0, Math.min(100, Math.round(raw)));
+  const abstractBonus = hasAbstract ? Math.min(20, String(article.abstractText).length / 100) : 0;
+
+  const rawScore = keywordScore + freshnessScore + abstractBonus;
+  return Math.max(0, Math.min(100, Math.round(rawScore)));
 }
 
 /**
@@ -1211,15 +1017,3 @@ function getDateWindow(days) {
   return { start, end };
 }
 
-
-// =================================================================
-// 🛠️ 7. Debug (デバッグ用)
-// =================================================================
-
-function debugTopPicksLink() {
-  const cfg = _getDigestConfig();
-  const { start, end } = getDateWindow(cfg.days || 7);
-  const arts = getArticlesInDateWindow(start, end).slice(0, cfg.topN || 30);
-  const md = _composeTopPicksSection(arts, 5, 90, 120);
-  Logger.log("--- Top Picks Markdown ---\n" + md);
-}
