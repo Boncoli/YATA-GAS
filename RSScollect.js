@@ -308,16 +308,38 @@ function processSummarization() {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
     articlesToSummarize.forEach(article => {
       const articleText = `Title: ${article.title}\nAbstract: ${article.abstractText}`;
-      const newHeadline = summarizeWithLLM(articleText);
+      const jsonString = summarizeWithLLM(articleText);
       apiCallCount++;
 
-      // APIエラーでない場合のみ書き込む
-      if (newHeadline && !newHeadline.includes("エラー") && !newHeadline.includes("いずれのLLMでも")) {
+      let newHeadline = null;
+
+      if (jsonString && !jsonString.includes("エラー") && !jsonString.includes("いずれのLLMでも")) {
+        try {
+          const parsedJson = JSON.parse(jsonString);
+          // tldrキーまたはsummaryキーの値を抽出
+          newHeadline = parsedJson.tldr || parsedJson.summary;
+
+          if (!newHeadline) {
+            // キーが見つからない場合は、JSON文字列をそのまま使用
+            newHeadline = String(jsonString).trim();
+          }
+        } catch (e) {
+          // パース失敗時は、元の文字列をそのまま使用
+          Logger.log(`JSONパース失敗 (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
+          newHeadline = String(jsonString).trim();
+        }
+      } else {
+        Logger.log(`見出し生成失敗 (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
+      }
+
+      // newHeadlineが有効な値であり、エラーテキストを含まない場合にのみシートに書き込む
+      if (newHeadline && String(newHeadline).trim() !== "" && String(newHeadline).indexOf("エラー") === -1) {
         values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
-        Logger.log(`見出し生成失敗 (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
+        Logger.log(`見出し生成結果が空またはエラーのためスキップ (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
-      Utilities.sleep(Config.Llm.DELAY_MS); // APIレート制限対策
+      
+      Utilities.sleep(Config.Llm.DELAY_MS);
     });
   }
 
