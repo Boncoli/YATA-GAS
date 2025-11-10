@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <title>キーワード実行ツール</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    input[type="text"] { width: 300px; padding: 8px; margin-bottom: 10px; }
+    button { padding: 10px 15px; cursor: pointer; }
+    #output { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9; }
+    .loading { color: #888; }
+  </style>
+</head>
+<body>
+  <h2>RSS ダイジェスト実行</h2>
+
+  <label for="keyword">キーワード:</label><br>
+  <input type="text" id="keyword" name="keyword" placeholder="検索キーワードを入力してください"><br><br>
+
+  <button onclick="runDigestJob()">実行</button>
+
+  <div id="output">ステータス: 待機中</div>
+
+  <script>
+    function runDigestJob() {
+      const keyword = document.getElementById('keyword').value;
+      const output = document.getElementById('output');
+
+      if (!keyword.trim()) {
+        output.innerHTML = 'ステータス: 待機中<br>キーワードを入力してください。';
+        return;
+      }
+
+      output.innerHTML = '<span class="loading">ステータス: 実行中...</span>';
+
+      // サーバーサイドのGAS関数 (executeWeeklyDigest) を呼び出す
+      google.script.run
+        .withSuccessHandler(function(result) {
+          output.innerHTML = 'ステータス: 完了<br>' + (result || '<div>該当記事がありませんでした。</div>');
+        })
+        .withFailureHandler(function(error) {
+          const msg = (error && error.message) ? error.message : String(error);
+          output.innerHTML = 'ステータス: エラー<br>' + msg;
+        })
+        .executeWeeklyDigest(keyword); // GAS関数名
+    }
+  </script>
+</body>
+</html>

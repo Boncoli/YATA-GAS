@@ -75,8 +75,9 @@ function mainAutomationFlow() {
 
 /**
  * 【週次実行】週次ダイジェストを作成し、設定に応じて配信
+ * @param {string|null} webUiKeyword - Web UIから入力されたキーワード (オプション)
  */
-function weeklyDigestJob() {
+function weeklyDigestJob(webUiKeyword = null) {
   const config = _getDigestConfig();
   const { start, end } = getDateWindow(config.days);
   const allItems = getArticlesInDateWindow(start, end);
@@ -87,7 +88,8 @@ function weeklyDigestJob() {
   }
   Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
-  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems);
+  // Web UIのキーワードを優先してフィルタリング
+  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
 
   if (relevantArticles.length === 0) {
     Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
@@ -103,9 +105,22 @@ function weeklyDigestJob() {
 /**
  * @private
  * キーワードに基づいて記事をフィルタリングし、関連情報を返す
+ * @param {Array<Object>} allItems - 全ての記事オブジェクト
+ * @param {string|null} webUiKeyword - Web UIから入力されたキーワード (オプション)
  */
-function _filterRelevantArticles(allItems) {
-  const activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
+function _filterRelevantArticles(allItems, webUiKeyword = null) {
+  let activeKeywords = [];
+  
+  if (webUiKeyword && String(webUiKeyword).trim() !== "") {
+    // 1. Web UIからのキーワードを優先
+    activeKeywords = [String(webUiKeyword).trim()];
+    Logger.log(`フィルタリング: Web UIのキーワード「${activeKeywords[0]}」を使用します。`);
+  } else {
+    // 2. Web UIのキーワードがない場合は、シートの有効なキーワードを使用
+    activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
+    Logger.log(`フィルタリング: シートから ${activeKeywords.length} 件のキーワードを使用します。`);
+  }
+  
   const relevantArticles = [];
   const keywordHitCounts = {};
   const articleKeywordMap = new Map();
@@ -124,6 +139,7 @@ function _filterRelevantArticles(allItems) {
     const hitKeywordsForArticle = new Set();
 
     keywordConditions.forEach(cond => {
+      // 正規表現パターンを生成し、エスケープ処理を行う
       const isMatch = (cond.type === 'and' && cond.words.every(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) ||
                       (cond.type === 'or' && cond.words.some(word => new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))) ||
                       (cond.type === 'single' && new RegExp(cond.words[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text));
@@ -1039,3 +1055,38 @@ function getDateWindow(days) {
   return { start, end };
 }
 
+// =================================================================
+// 7. WEB UI
+// =================================================================
+/**
+ * Web アプリのエントリポイント
+ * @returns {HtmlOutput} HTML サービスによるページ
+ */
+function doGet() {
+  return HtmlService.createTemplateFromFile('Index')
+      .evaluate()
+      .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+      .setTitle('RSSキーワード検索ツール');
+}
+
+/**
+ * 週間ダイジェスト処理を実行する関数
+ * @param {string} keyword - ユーザーがWeb UIから入力したキーワード
+ * @returns {string} 生成されたHTML本文、またはエラーメッセージ
+ */
+function executeWeeklyDigest(keyword) {
+  try {
+    const trimmedKeyword = String(keyword || "").trim();
+    Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
+
+    // weeklyDigestJobにキーワードと、HTMLのみを返すフラグ(true)を渡す
+    const htmlContent = weeklyDigestJob(trimmedKeyword, true); 
+
+    // HTML本文をそのまま返す
+    return htmlContent;
+  } catch (e) {
+    Logger.log(`エラーが発生しました: ${e.toString()}`);
+    // エラー時は、Web UIが扱える文字列を返す
+    return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
+  }
+}
