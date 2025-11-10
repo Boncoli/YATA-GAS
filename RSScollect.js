@@ -73,33 +73,53 @@ function mainAutomationFlow() {
   Logger.log("--- 自動化フロー完了 ---");
 }
 
-/**
- * 【週次実行】週次ダイジェストを作成し、設定に応じて配信
- * @param {string|null} webUiKeyword - Web UIから入力されたキーワード (オプション)
- */
-function weeklyDigestJob(webUiKeyword = null) {
+// 【週次実行】週次ダイジェストを作成し、設定に応じて配信 or HTML返却
+// @param {string|null} webUiKeyword - Web UIから入力されたキーワード（オプション）
+// @param {boolean} returnHtmlOnly  - true の場合はメール送信せず HTML を返す
+function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
   const config = _getDigestConfig();
   const { start, end } = getDateWindow(config.days);
   const allItems = getArticlesInDateWindow(start, end);
 
   if (allItems.length === 0) {
-    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
-    return;
+    Logger.log("週間ダイジェスト：対象期間に記事がありませんでした。");
+    if (returnHtmlOnly) {
+      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+      const htmlContent = markdownToHtml("今週のダイジェスト対象となる記事はありませんでした。");
+      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlContent}</div>`;
+    } else {
+      _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
+      return;
+    }
   }
+
   Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
   // Web UIのキーワードを優先してフィルタリング
-  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
+  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } =
+    _filterRelevantArticles(allItems, webUiKeyword);
 
   if (relevantArticles.length === 0) {
     Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
-    return;
+    if (returnHtmlOnly) {
+      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+      const msgMd =
+        `### 今週の注目キーワード\n- **${webUiKeyword || ''}** (0件)\n\n---\n\n該当記事がありませんでした。`;
+      const htmlBody = markdownToHtml(msgMd);
+      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlBody}</div>`;
+    } else {
+      return;
+    }
   }
-  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
 
+  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
   _logKeywordHitCounts(hitKeywordsWithCount);
 
-  _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end);
+  // ★ WebUIモードでは HTML を返す／メールは送らない
+  const result = _generateAndSendDigest(
+    relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly
+  );
+  if (returnHtmlOnly) return result;
 }
 
 /**
@@ -177,11 +197,11 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
   Logger.log(hitLog.trim());
 }
 
-/**
- * @private
- * ダイジェストを生成し、メールで送信する
- */
-function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end) {
+// @private ダイジェストを生成し、メール送信 or HTML返却
+// @param {boolean} returnHtmlOnly - true のときメール送信せず HTML を返す
+function _generateAndSendDigest(
+  relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false
+) {
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
 
@@ -193,13 +213,42 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
     });
   });
 
-  const { reportBody } = generateWeeklyReportWithLLM(selectedTopN, hitKeywordsWithCount, articlesGroupedByKeyword);
+  const { reportBody } =
+    generateWeeklyReportWithLLM(selectedTopN, hitKeywordsWithCount, articlesGroupedByKeyword);
 
   const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+
+  // 画面表示用：キーワード情報をメール本文と同様に前置し、Markdown→HTMLに変換
+  let keywordSection = "";
+  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
+    keywordSection = "\n\n### 今週の注目キーワード\n";
+    hitKeywordsWithCount.forEach(item => {
+      keywordSection += `- **${item.keyword}** (${item.count}件)\n`;
+    });
+    keywordSection += "\n\n---\n\n";
+  }
+
+  const fullMdBody = keywordSection + reportBody;
+  const htmlHeader = headerLine.replace(/\n/g, '<br>');
+  const htmlContent = markdownToHtml(fullMdBody);
+  const fullHtmlBody = `
+    <div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">
+      ${htmlHeader}<br><br>
+      ${htmlContent}
+    </div>
+  `;
+
+  if (returnHtmlOnly) {
+    // ★ WebUI 用：HTMLを返すだけ
+    return fullHtmlBody;
+  }
+
+  // 既存どおりメール送信
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
     sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount);
   }
 }
+
 
 /**
  * @private
@@ -1070,7 +1119,7 @@ function doGet() {
 }
 
 /**
- * 週間ダイジェスト処理を実行する関数
+ * 週間ダイジェスト処理を実行する（Web UIから呼ばれる）
  * @param {string} keyword - ユーザーがWeb UIから入力したキーワード
  * @returns {string} 生成されたHTML本文、またはエラーメッセージ
  */
@@ -1078,15 +1127,14 @@ function executeWeeklyDigest(keyword) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
     Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
-
-    // weeklyDigestJobにキーワードと、HTMLのみを返すフラグ(true)を渡す
-    const htmlContent = weeklyDigestJob(trimmedKeyword, true); 
-
-    // HTML本文をそのまま返す
-    return htmlContent;
+    // weeklyDigestJob に キーワード と HTMLのみを返すフラグ(true)を渡す
+    const htmlContent = weeklyDigestJob(trimmedKeyword, /*returnHtmlOnly=*/true);
+    // HTML本文をそのまま返す（未ヒット時のフォールバックも用意）
+    return htmlContent || "<div>該当記事がありませんでした。</div>";
   } catch (e) {
     Logger.log(`エラーが発生しました: ${e.toString()}`);
     // エラー時は、Web UIが扱える文字列を返す
     return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
   }
 }
+
