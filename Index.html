@@ -10,6 +10,29 @@
     button { padding: 10px 15px; cursor: pointer; }
     #output { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9; }
     .loading { color: #888; }
+    /* ローディングスピナーのスタイル */
+    .spinner {
+      border: 4px solid rgba(0, 0, 0, .1);
+      border-left-color: #09f;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: inline-block; /* テキストと並べるため */
+      vertical-align: middle; /* テキストと中央揃え */
+      margin-left: 10px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* 無効化されたボタンのスタイル */
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -18,14 +41,17 @@
   <label for="keyword">キーワード:</label><br>
   <input type="text" id="keyword" name="keyword" placeholder="検索キーワードを入力してください"><br><br>
 
-  <button onclick="runDigestJob()">実行</button>
+  <button id="runButton" onclick="runDigestJob()">実行</button>
 
   <div id="output">ステータス: 待機中</div>
+  <div id="loadingSpinner" class="spinner" style="display: none;"></div>
 
   <script>
     function runDigestJob() {
       const keyword = document.getElementById('keyword').value;
       const output = document.getElementById('output');
+      const runButton = document.getElementById('runButton'); // ボタン要素を取得
+      const loadingSpinner = document.getElementById('loadingSpinner'); // スピナー要素を取得
 
       if (!keyword.trim()) {
         output.innerHTML = 'ステータス: 待機中<br>キーワードを入力してください。';
@@ -33,15 +59,21 @@
       }
 
       output.innerHTML = '<span class="loading">ステータス: 実行中...</span>';
+      runButton.disabled = true; // ボタンを無効化
+      loadingSpinner.style.display = 'block'; // スピナーを表示
 
       // サーバーサイドのGAS関数 (executeWeeklyDigest) を呼び出す
       google.script.run
         .withSuccessHandler(function(result) {
           output.innerHTML = 'ステータス: 完了<br>' + (result || '<div>該当記事がありませんでした。</div>');
+          runButton.disabled = false; // ボタンを有効化
+          loadingSpinner.style.display = 'none'; // スピナーを非表示
         })
         .withFailureHandler(function(error) {
           const msg = (error && error.message) ? error.message : String(error);
           output.innerHTML = 'ステータス: エラー<br>' + msg;
+          runButton.disabled = false; // ボタンを有効化
+          loadingSpinner.style.display = 'none'; // スピナーを非表示
         })
         .executeWeeklyDigest(keyword); // GAS関数名
     }
