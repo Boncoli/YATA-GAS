@@ -112,7 +112,7 @@ function markdownToHtml(md) {
     .replace(/>/g, '&gt;')
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/\[([^\]]+)\]\\(([^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" style=\"color: #0066cc; text-decoration: none;\">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
     .replace(/^\s*---\s*$/gm, '<hr style="border: none; border-top: 1px solid #eee;">')
     .replace(/^- (.*$)/gim, '&bull; $1')
     .replace(/\n/g, '<br>\n');
