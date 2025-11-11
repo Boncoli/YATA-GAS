@@ -107,8 +107,6 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 }
 
 // =================================================================
-// DailyProcessor.gs: 日次で実行される処理
-// =================================================================
 
 /**
  * processSummarization
