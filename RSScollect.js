@@ -427,77 +427,71 @@ function getArticlesForTrendAnalysis(days) {
 }
 /**
  * getHistoricalTrendData
- * `Trends` シートから過去 N 日分のキーワード出現履歴を集計して返す。
+ * `Trends` シートから過去 N 日分のキーワード一覧を取得し、
+ * 本日のキーワードとの一致判定に用いる。
+ * 過去のカウント集計は不要（変化率計算は不要）。
+ * 返り値: Map<keyword, true> （キーワードの存在確認用）
  */
 function getHistoricalTrendData(days = 7) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
   if (!sheet || sheet.getLastRow() < 2) return new Map();
-  const historicalData = new Map();
+  
+  const historicalKeywords = new Map();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const startDate = new Date(today);
   startDate.setDate(today.getDate() - days);
-  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+  
+  // B列（キーワード）のみを取得
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
   for (const row of data) {
     const date = new Date(row[0]);
     date.setHours(0, 0, 0, 0);
-    const keyword = row[1];
-    const count = parseInt(row[2], 10);
-    if (date >= startDate && date < today) {
-      if (!historicalData.has(keyword)) {
-        historicalData.set(keyword, { totalCount: 0, dates: new Set() });
-      }
-      const entry = historicalData.get(keyword);
-      entry.totalCount += count;
-      entry.dates.add(date.toDateString());
+    const keyword = String(row[1]).trim();
+    
+    if (date >= startDate && date < today && keyword) {
+      historicalKeywords.set(keyword, true);  // キーワードの存在を記録
     }
   }
-  return historicalData;
+  
+  return historicalKeywords;
 }
 /**
  * calculateTrendScores
- * 本日の抽出キーワードと過去履歴を比べ、変化率とフラグ（isHot）を計算する。
- * 変化率は可視化用に矢印付きで表示（📈上昇、📉下降、🆕新規）。
+ * 本日のキーワードと過去7日分のキーワード一覧を照合し、
+ * 既出キーワードなら「ホット」フラグを立てる。
+ * 新規キーワードまたは出現回数が少ないものは「通常」扱い。
+ * 変化率表示: 🆕 New（新規）または ✓ 既出キーワード
  */
-function calculateTrendScores(todayKeywords, historicalData) {
+function calculateTrendScores(todayKeywords, historicalKeywords) {
   const todayCounts = new Map();
   todayKeywords.forEach(kw => {
     todayCounts.set(kw, (todayCounts.get(kw) || 0) + 1);
   });
+  
   const trends = [];
   for (const [keyword, count] of todayCounts.entries()) {
-    const history = historicalData.get(keyword);
-    let changeRate = "New";
     let changeRateDisplay = "🆕 New";
     let isHot = false;
     
-    if (history && history.dates.size > 0) {
-      const avgCount = history.totalCount / history.dates.size;
-      if (avgCount > 0) {
-        changeRate = (count - avgCount) / avgCount;
-        // 視覚的に傾向を矢印で表示
-        if (changeRate >= 2.0) {
-          changeRateDisplay = `📈 +${Math.round(changeRate * 100)}%`; // 2倍以上の上昇
-        } else if (changeRate >= 0.5) {
-          changeRateDisplay = `📈 +${Math.round(changeRate * 100)}%`; // 50%以上の上昇
-        } else if (changeRate >= 0) {
-          changeRateDisplay = `➡️ ${Math.round(changeRate * 100)}%`; // わずかな上昇またはほぼ同等
-        } else if (changeRate >= -0.5) {
-          changeRateDisplay = `📉 ${Math.round(changeRate * 100)}%`; // 50%未満の下降
-        } else {
-          changeRateDisplay = `📉 ${Math.round(changeRate * 100)}%`; // 50%以上の下降
-        }
-      }
-    }
+    // 過去7日分のキーワード一覧にこのキーワードが存在するかチェック
+    const isRecurring = historicalKeywords.has(keyword);
     
-    const isNewAndHot = changeRate === "New" && count >= 2;
-    const isTrendingUp = typeof changeRate === 'number' && changeRate >= 2.0 && count >= 2;
-    isHot = isNewAndHot || isTrendingUp;
+    if (isRecurring) {
+      changeRateDisplay = "✓ 既出";
+      // 既出かつ出現回数が2回以上ならホット
+      isHot = count >= 2;
+    } else {
+      // 新規キーワード
+      changeRateDisplay = "🆕 New";
+      // 新規で出現回数が2回以上ならホット
+      isHot = count >= 2;
+    }
     
     trends.push({
       keyword: keyword,
       count: count,
-      changeRate: changeRateDisplay,  // 可視化済みの変化率を使用
+      changeRate: changeRateDisplay,  // 既出/新規の区別
       relatedArticles: count,
       summary: "",
       isHot: isHot
@@ -509,7 +503,9 @@ function calculateTrendScores(todayKeywords, historicalData) {
 /**
  * writeTrendsToSheet
  * 検出されたトレンド情報を `Trends` シートへ書き込む。
- * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率（矢印付き）, F: 関連記事数, G: 要約
+ * 本日のキーワードが既に存在する場合は出現回数を更新し、
+ * 新規キーワードの場合は新規行を追加する。
+ * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
  * 書き込み後、D列（出現回数）を降順でソートして視覚的に傾向を把握しやすくする。
  */
 function writeTrendsToSheet(trends) {
@@ -518,24 +514,70 @@ function writeTrendsToSheet(trends) {
     Logger.log("エラー: Trendsシートが見つかりません。");
     return;
   }
-  // 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
-  const rows = trends.map((t, i) => {
-    const rowIndex = i + 2; // 挿入後のシート行番号（データは2行目から始まる）
-    const formula = `=IF(B${rowIndex}="","",GOOGLETRANSLATE(B${rowIndex},"en","ja"))`;
-    return [new Date(), t.keyword, formula, t.count, t.changeRate, t.relatedArticles, t.summary];
-  });
-  if (rows.length > 0) {
-    sheet.insertRowsAfter(1, rows.length);
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-    Logger.log(`${rows.length} 件のトレンドをシートに書き込みました。`);
-    
-    // D列（出現回数）を降順でソートして、頻出度が高い順に表示する
-    const lastRow = sheet.getLastRow();
-    if (lastRow > 2) {
-      sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).sort({ column: 4, ascending: false });
-      Logger.log("Trendsシートを出現回数（D列）の降順でソートしました。");
+  
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayTimeMs = today.getTime();
+  
+  const lastRow = sheet.getLastRow();
+  
+  // 本日の日付で既に存在するキーワード行を取得
+  const todayData = new Map();
+  if (lastRow >= 2) {
+    const existingData = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+    for (let i = 0; i < existingData.length; i++) {
+      let date = existingData[i][0];
+      // Date オブジェクトではなく、シリアル値の場合はそのまま使用
+      if (!(date instanceof Date)) {
+        date = new Date(date);
+      }
+      date.setHours(0, 0, 0, 0);
+      const keyword = String(existingData[i][1]).trim();
+      
+      if (date.getTime() === todayTimeMs) {
+        todayData.set(keyword, i + 2); // シート行番号（1-indexed）
+      }
     }
   }
+  
+  // 新規キーワードと既存キーワードを分類
+  const newKeywords = [];
+  const updateKeywords = [];
+  for (const trend of trends) {
+    if (todayData.has(trend.keyword)) {
+      updateKeywords.push({ trend, rowIndex: todayData.get(trend.keyword) });
+    } else {
+      newKeywords.push(trend);
+    }
+  }
+  
+  // 既存キーワードの出現回数を更新
+  for (const { trend, rowIndex } of updateKeywords) {
+    const currentCount = sheet.getRange(rowIndex, 4).getValue();
+    const newCount = currentCount + trend.count;
+    sheet.getRange(rowIndex, 4).setValue(newCount);  // D列（出現回数）を加算
+    sheet.getRange(rowIndex, 5).setValue(trend.changeRate);  // E列（変化率）を更新
+  }
+  
+  // 新規キーワードを追加
+  if (newKeywords.length > 0) {
+    const newRows = newKeywords.map((t, i) => {
+      const rowIndex = lastRow + i + 1;
+      const formula = `=IF(B${rowIndex}="","",GOOGLETRANSLATE(B${rowIndex},"en","ja"))`;
+      return [new Date(), t.keyword, formula, t.count, t.changeRate, t.relatedArticles, t.summary];
+    });
+    sheet.insertRowsAfter(lastRow, newRows.length);
+    sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+  
+  // D列（出現回数）を降順でソートして、頻出度が高い順に表示する
+  const finalLastRow = sheet.getLastRow();
+  if (finalLastRow > 2) {
+    sheet.getRange(2, 1, finalLastRow - 1, sheet.getLastColumn()).sort({ column: 4, ascending: false });
+  }
+  
+  // 処理完了ログ（サマリーのみ）
+  Logger.log(`トレンド追記完了: 新規${newKeywords.length}件、更新${updateKeywords.length}件`);
 }
 // LLM service: LLM 呼び出しラッパー
 
