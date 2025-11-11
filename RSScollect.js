@@ -46,101 +46,64 @@ const Config = {
   },
 };
 
-// 🛠️ Utilities & Helpers (ユーティリティ)
-
-function getWeightedKeywords(sheetName = "Keywords") {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return [];
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
-  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
-  return values.map(([keyword, activeFlag]) => ({
-    keyword: String(keyword).trim(),
-    active: String(activeFlag).trim() !== ""
-  })).filter(obj => obj.keyword);
+// =================================================================
+// Triggers (エントリポイント) - トリガーはここに集約しています
+// =================================================================
+/**
+ * mainAutomationFlow
+ * 日次トリガー用のエントリポイント。
+ * - RSSの収集
+ * - 見出し生成（AI or シート関数）
+ * - トレンド検出の実行
+ * これらを順に実行する軽量なワークフローです。
+ * 呼び出し元: time-driven トリガー（daily）や手動実行
+ */
+function mainAutomationFlow() {
+  Logger.log("--- 自動化フロー開始（収集→見出し生成のみ） ---");
+  collectRssFeeds();
+  processSummarization();
+  detectAndRecordTrends();
+  Logger.log("--- 自動化フロー完了 ---");
 }
 
-function getPromptConfig(key) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(Config.SheetNames.PROMPT_CONFIG);
-  if (!sheet) {
-    Logger.log(`エラー: promptシートが見つかりません。キー: ${key}`);
-    return null;
+/**
+ * weeklyDigestJob
+ * 週次ダイジェストを生成・送信するエントリポイント。
+ * 引数:
+ *  - webUiKeyword: Web UI 経由で単発にキーワードを指定する場合に使用
+ *  - returnHtmlOnly: true を指定すると HTML 本文のみを返す（テスト用）
+ * 内部で記事抽出、フィルタリング、LLM 呼び出し、メール送信を行います。
+ */
+function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
+  const config = _getDigestConfig();
+  const { start, end } = getDateWindow(config.days);
+  const allItems = getArticlesInDateWindow(start, end);
+  if (allItems.length === 0) {
+    Logger.log("週間ダイジェスト：対象期間に記事がありませんでした。");
+    if (returnHtmlOnly) {
+      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+      const htmlContent = markdownToHtml("今週のダイジェスト対象となる記事はありませんでした。");
+      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlContent}</div>`;
+    }
+    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
+    return;
   }
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return null;
-  const values = sheet.getRange(1, 1, lastRow, 2).getValues();
-  const promptMap = new Map(values.map(row => [String(row[0]).trim(), row[1]]));
-  const content = promptMap.get(key);
-  if (!content) {
-    Logger.log(`警告: promptシートにキー ${key} が見つかりませんでした。`);
-    return null;
+  Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
+  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
+  if (relevantArticles.length === 0) {
+    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
+    if (returnHtmlOnly) {
+      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+      const msgMd = `### 今週の注目キーワード\n- **${webUiKeyword || ''}** (0件)\n\n---\n\n該当記事がありませんでした。`;
+      const htmlBody = markdownToHtml(msgMd);
+      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlBody}</div>`;
+    }
+    return;
   }
-  return String(content).trim();
-}
-
-function _getDigestConfig() {
-  const props = PropertiesService.getScriptProperties();
-  return {
-    days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
-    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
-    notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
-    mailTo: props.getProperty("MAIL_TO"),
-    mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】",
-    mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
-  };
-}
-
-function computeHeuristicScore(article, articleKeywordMap) {
-  const now = new Date();
-  const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
-  const matchedKeywords = articleKeywordMap.get(article.url) || [];
-  const keywordScore = Math.min(40, matchedKeywords.length * 8);
-  const freshnessScore = 40 * Math.exp(-daysOld / 7);
-  const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
-  const abstractBonus = hasAbstract ? Math.min(20, String(article.abstractText).length / 100) : 0;
-  const rawScore = keywordScore + freshnessScore + abstractBonus;
-  return Math.max(0, Math.min(100, Math.round(rawScore)));
-}
-
-function markdownToHtml(md) {
-  if (!md) return "";
-  let html = md
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
-    .replace(/^\s*---\s*$/gm, '<hr style="border: none; border-top: 1px solid #eee;">')
-    .replace(/^- (.*$)/gim, '&bull; $1')
-    .replace(/\n/g, '<br>\n');
-  return html;
-}
-
-function stripHtml(html) {
-  return html ? html.replace(/<[^>]*>?/gm, '') : '';
-}
-
-function isLikelyEnglish(text) {
-  return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
-}
-
-function fmtDate(d) {
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
-}
-
-function _logError(functionName, error, message = "") {
-  Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
-}
-
-function getDateWindow(days) {
-  const end = new Date();
-  end.setHours(24, 0, 0, 0);
-  const start = new Date(end);
-  start.setDate(start.getDate() - Math.max(1, days));
-  return { start, end };
+  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+  _logKeywordHitCounts(hitKeywordsWithCount);
+  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly);
+  if (returnHtmlOnly) return result;
 }
 
 // =================================================================
@@ -155,6 +118,14 @@ function mainAutomationFlow() {
   Logger.log("--- 自動化フロー完了 ---");
 }
 
+/**
+ * processSummarization
+ * 日次処理内で未生成の見出し（E列）をチェックし、
+ * - 抜粋が短い／ない場合はシートの翻訳関数（=GOOGLETRANSLATE）やフォールバック文を設定
+ * - 抜粋が十分な場合は LLM に投げて見出し（JSON形式）を取得してE列に書き込む
+ * 入力: `collect` シートの行データ
+ * 副作用: シートの E列（見出し）を更新、LLM 呼び出し数はログ出力
+ */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
@@ -227,39 +198,11 @@ function processSummarization() {
 
 // =================================================================
 // WeeklyDigest.gs: 週次ダイジェストの作成と配信
+// -----------------------------------------------------------------
+// NOTE: `weeklyDigestJob` はファイル上部の "Triggers" セクションに
+// 移動しました。週次トリガーのエントリポイントとしてそちらを参照
+// してください。
 // =================================================================
-
-function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
-  const config = _getDigestConfig();
-  const { start, end } = getDateWindow(config.days);
-  const allItems = getArticlesInDateWindow(start, end);
-  if (allItems.length === 0) {
-    Logger.log("週間ダイジェスト：対象期間に記事がありませんでした。");
-    if (returnHtmlOnly) {
-      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-      const htmlContent = markdownToHtml("今週のダイジェスト対象となる記事はありませんでした。");
-      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlContent}</div>`;
-    }
-    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
-    return;
-  }
-  Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
-  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
-  if (relevantArticles.length === 0) {
-    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
-    if (returnHtmlOnly) {
-      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-      const msgMd = `### 今週の注目キーワード\n- **${webUiKeyword || ''}** (0件)\n\n---\n\n該当記事がありませんでした。`;
-      const htmlBody = markdownToHtml(msgMd);
-      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlBody}</div>`;
-    }
-    return;
-  }
-  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
-  _logKeywordHitCounts(hitKeywordsWithCount);
-  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly);
-  if (returnHtmlOnly) return result;
-}
 
 function _filterRelevantArticles(allItems, webUiKeyword = null) {
   let activeKeywords = [];
@@ -415,6 +358,14 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
 // TrendDetector.gs: 記事のトレンド検出
 // =================================================================
 
+/**
+ * detectAndRecordTrends
+ * 日次トレンド検出のエントリポイント。
+ * - 過去1日分の記事タイトルを集め、LLMで重要キーワードを抽出
+ * - 過去の `Trends` シートから履歴を取得し、変化率を計算
+ * - 検出されたトレンドを `Trends` シートに記録
+ * 副作用: `Trends` シートに行を追加
+ */
 function detectAndRecordTrends() {
   const props = PropertiesService.getScriptProperties();
   const isEnabled = props.getProperty("TREND_DETECTION_ENABLED");
@@ -525,7 +476,12 @@ function writeTrendsToSheet(trends) {
     Logger.log("エラー: Trendsシートが見つかりません。");
     return;
   }
-  const rows = trends.map(t => [new Date(), t.keyword, t.count, t.changeRate, t.relatedArticles, t.summary]);
+  // 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
+  const rows = trends.map((t, i) => {
+    const rowIndex = i + 2; // 挿入後のシート行番号（データは2行目から始まる）
+    const formula = `=IF(B${rowIndex}="","",GOOGLETRANSLATE(B${rowIndex},"en","ja"))`;
+    return [new Date(), t.keyword, formula, t.count, t.changeRate, t.relatedArticles, t.summary];
+  });
   if (rows.length > 0) {
     sheet.insertRowsAfter(1, rows.length);
     sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
@@ -684,9 +640,120 @@ function extractKeywordsWithLLM(text) {
 }
 
 // =================================================================
+// Utilities & Helpers (ユーティリティ) - 移動済み（ファイル末尾）
+// -----------------------------------------------------------------
+// 以下は以前ファイル先頭にあったユーティリティ群です。可視性向上のため
+// ファイル末尾に移動しました。関数定義はホイスティングされるため、ロジック上
+// の問題は発生しません（ただし `Config` はファイル先頭に残しています）。
+// =================================================================
+
+function getWeightedKeywords(sheetName = "Keywords") {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  return values.map(([keyword, activeFlag]) => ({
+    keyword: String(keyword).trim(),
+    active: String(activeFlag).trim() !== ""
+  })).filter(obj => obj.keyword);
+}
+
+function getPromptConfig(key) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(Config.SheetNames.PROMPT_CONFIG);
+  if (!sheet) {
+    Logger.log(`エラー: promptシートが見つかりません。キー: ${key}`);
+    return null;
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  const values = sheet.getRange(1, 1, lastRow, 2).getValues();
+  const promptMap = new Map(values.map(row => [String(row[0]).trim(), row[1]]));
+  const content = promptMap.get(key);
+  if (!content) {
+    Logger.log(`警告: promptシートにキー ${key} が見つかりませんでした。`);
+    return null;
+  }
+  return String(content).trim();
+}
+
+function _getDigestConfig() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
+    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
+    notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
+    mailTo: props.getProperty("MAIL_TO"),
+    mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】",
+    mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
+  };
+}
+
+function computeHeuristicScore(article, articleKeywordMap) {
+  const now = new Date();
+  const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
+  const matchedKeywords = articleKeywordMap.get(article.url) || [];
+  const keywordScore = Math.min(40, matchedKeywords.length * 8);
+  const freshnessScore = 40 * Math.exp(-daysOld / 7);
+  const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
+  const abstractBonus = hasAbstract ? Math.min(20, String(article.abstractText).length / 100) : 0;
+  const rawScore = keywordScore + freshnessScore + abstractBonus;
+  return Math.max(0, Math.min(100, Math.round(rawScore)));
+}
+
+function markdownToHtml(md) {
+  if (!md) return "";
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
+    .replace(/^\s*---\s*$/gm, '<hr style="border: none; border-top: 1px solid #eee;">')
+    .replace(/^- (.*$)/gim, '&bull; $1')
+    .replace(/\n/g, '<br>\n');
+  return html;
+}
+
+function stripHtml(html) {
+  return html ? html.replace(/<[^>]*>?/gm, '') : '';
+}
+
+function isLikelyEnglish(text) {
+  return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
+}
+
+function fmtDate(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
+}
+
+function _logError(functionName, error, message = "") {
+  Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
+}
+
+function getDateWindow(days) {
+  const end = new Date();
+  end.setHours(24, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - Math.max(1, days));
+  return { start, end };
+}
+
+
+// =================================================================
 // RssCollector.gs: RSSフィードの収集と解析
 // =================================================================
 
+/**
+ * collectRssFeeds
+ * RSSリスト (`RSS` シート) に登録されたフィードを巡回し、
+ * 新着記事を `collect` シートに追記する処理。
+ * 重複チェックや日付フィルタを行い、必要に応じて抜粋のHTML除去やソース名の付与を行う。
+ * 副作用: `collect` シートの更新
+ */
 function collectRssFeeds() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const rssListSheet = ss.getSheetByName(Config.SheetNames.RSS_LIST);
@@ -834,3 +901,45 @@ function executeWeeklyDigest(keyword) {
     return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
   }
 }
+
+/**
+ * _callAzureLlm
+ * Azure OpenAI (Azure OpenAI Service) に対して chat completion 相当のリクエストを送り、
+ * 応答テキストを返します。失敗時は null を返す。
+ */
+
+/**
+ * _callOpenAiLlm
+ * OpenAI の HTTP API を呼び出して chat/completions を実行します。
+ * 成功時はテキスト応答、失敗時は null を返します。
+ */
+
+/**
+ * _callGeminiLlm
+ * Google Generative Language API（Gemini）を呼び出して応答テキストを取得します。
+ * コード内では Gemini を最終フォールバックとして利用します。
+ */
+
+/**
+ * callLlmWithFallback
+ * 指定されたプロンプトを順に Azure -> OpenAI -> Gemini の順で呼び出し、最初に成功した応答を返します。
+ * いずれも失敗した場合はエラーメッセージを返します。
+ */
+
+/**
+ * summarizeWithLLM
+ * 記事テキストを LLM に投げて要約（JSON 形式を期待）を受け取るためのラッパーです。
+ * 内部でプロンプトテンプレート（promptシート）を取得して呼び出します。
+ */
+
+/**
+ * _llmMakeTrendSections
+ * キーワードごとの代表記事群を LLM に渡し、Markdown 形式のトレンド解説セクションを生成します。
+ * 週次ダイジェストの本文生成に使用されます。
+ */
+
+/**
+ * extractKeywordsWithLLM
+ * テキスト群を LLM に渡して名詞ベースの重要キーワード一覧を抽出します。
+ * 戻り値: キーワードの文字列配列、失敗時は null
+ */
