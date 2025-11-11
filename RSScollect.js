@@ -493,6 +493,7 @@ function calculateTrendScores(todayKeywords, historicalData) {
  * writeTrendsToSheet
  * 検出されたトレンド情報を `Trends` シートへ書き込む。
  * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
+ * 書き込み後、D列（出現回数）を降順でソートして視覚的に傾向を把握しやすくする。
  */
 function writeTrendsToSheet(trends) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
@@ -510,6 +511,13 @@ function writeTrendsToSheet(trends) {
     sheet.insertRowsAfter(1, rows.length);
     sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
     Logger.log(`${rows.length} 件のトレンドをシートに書き込みました。`);
+    
+    // D列（出現回数）を降順でソートして、頻出度が高い順に表示する
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 2) {
+      sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).sort({ column: 4, ascending: false });
+      Logger.log("Trendsシートを出現回数（D列）の降順でソートしました。");
+    }
   }
 }
 // LLM service: LLM 呼び出しラッパー
