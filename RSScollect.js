@@ -5,9 +5,7 @@
  * @date 2025-11-10
  */
 
-// =================================================================
-// Core.gs: プロジェクト全体で利用する共通の定数やユーティリティ関数
-// =================================================================
+// Core: 全体設定と定数
 
 // 📌 Constants (定数定義)
 const Config = {
@@ -46,9 +44,7 @@ const Config = {
   },
 };
 
-// =================================================================
-// Triggers (エントリポイント) - トリガーはここに集約しています
-// =================================================================
+// Triggers: スクリプトのエントリポイント（タイムトリガーなどから呼び出す）
 /**
  * mainAutomationFlow
  * 日次トリガー用のエントリポイント。
@@ -107,7 +103,6 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 }
 
 // =================================================================
-
 /**
  * processSummarization
  * 日次処理内で未生成の見出し（E列）をチェックし、
@@ -186,14 +181,14 @@ function processSummarization() {
   }
 }
 
-// =================================================================
-// WeeklyDigest.gs: 週次ダイジェストの作成と配信
-// -----------------------------------------------------------------
-// NOTE: `weeklyDigestJob` はファイル上部の "Triggers" セクションに
-// 移動しました。週次トリガーのエントリポイントとしてそちらを参照
-// してください。
-// =================================================================
+// Weekly digest: 週次ダイジェストの作成・送信ロジック
 
+/**
+ * _filterRelevantArticles
+ * 指定したキーワードに合致する記事を抽出し、キーワード毎のヒット数を集計する。
+ * 入力: 全記事配列、（オプション）単発キーワード
+ * 出力: { relevantArticles, hitKeywordsWithCount, articleKeywordMap }
+ */
 function _filterRelevantArticles(allItems, webUiKeyword = null) {
   let activeKeywords = [];
   if (webUiKeyword && String(webUiKeyword).trim() !== "") {
@@ -234,6 +229,10 @@ function _filterRelevantArticles(allItems, webUiKeyword = null) {
   return { relevantArticles, hitKeywordsWithCount, articleKeywordMap };
 }
 
+/**
+ * _logKeywordHitCounts
+ * コンソールにキーワード別ヒット数を整形して出力するヘルパー。
+ */
 function _logKeywordHitCounts(hitKeywordsWithCount) {
   let hitLog = "【キーワード別ヒット件数】\n";
   hitKeywordsWithCount.forEach(item => {
@@ -242,6 +241,11 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
   Logger.log(hitLog.trim());
 }
 
+/**
+ * _generateAndSendDigest
+ * 週次ダイジェストの本文を生成し、設定に応じてメール送信する。
+ * returnHtmlOnly=true の場合は HTML を返す（WebUI 用/テスト用）。
+ */
 function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false) {
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
@@ -272,6 +276,10 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
   }
 }
 
+/**
+ * _handleNoArticlesFound
+ * 対象記事が無い場合の通知処理（メール送信など）。
+ */
 function _handleNoArticlesFound(config, start, end, message) {
   Logger.log(`週間ダイジェスト：${message}`);
   const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
@@ -281,6 +289,10 @@ function _handleNoArticlesFound(config, start, end, message) {
   }
 }
 
+/**
+ * rankAndSelectArticles
+ * 記事をヒューリスティックでスコア付けし、上位 N 件を選抜する。
+ */
 function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
   const topN = config.topN || 20;
   const scoredArticles = relevantArticles.map(a => ({ ...a, heuristicScore: computeHeuristicScore(a, articleKeywordMap) })).sort((a, b) => b.heuristicScore - a.heuristicScore);
@@ -292,6 +304,10 @@ function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
   return { selectedTopN: picked };
 }
 
+/**
+ * generateWeeklyReportWithLLM
+ * LLM を用いてトレンドセクションを生成するラッパー。
+ */
 function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword) {
   const LINKS_PER_TREND = 3;
   const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
@@ -299,6 +315,10 @@ function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGro
   return { reportBody: trends };
 }
 
+/**
+ * getArticlesInDateWindow
+ * 指定した期間に該当する `collect` シート上の記事を取得する。
+ */
 function getArticlesInDateWindow(start, end) {
   const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
   const lastRow = sh.getLastRow();
@@ -318,6 +338,10 @@ function getArticlesInDateWindow(start, end) {
   return out;
 }
 
+/**
+ * sendWeeklyDigestEmail
+ * 週次ダイジェストを HTML メールで送信する。
+ */
 function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
   const props = PropertiesService.getScriptProperties();
   const to = props.getProperty("MAIL_TO");
@@ -344,9 +368,7 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
   Logger.log("メール送信（HTML形式）完了: " + to);
 }
 
-// =================================================================
-// TrendDetector.gs: 記事のトレンド検出
-// =================================================================
+// Trend detector: トレンド検出関連の関数群
 
 /**
  * detectAndRecordTrends
@@ -386,7 +408,10 @@ function detectAndRecordTrends() {
   writeTrendsToSheet(trends);
   Logger.log("--- トレンド検出処理完了 ---");
 }
-
+/**
+ * getArticlesForTrendAnalysis
+ * トレンド解析対象となる期間内（days）の記事タイトルを取得する。
+ */
 function getArticlesForTrendAnalysis(days) {
   const { start, end } = getDateWindow(days);
   const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
@@ -402,7 +427,10 @@ function getArticlesForTrendAnalysis(days) {
   }
   return out;
 }
-
+/**
+ * getHistoricalTrendData
+ * `Trends` シートから過去 N 日分のキーワード出現履歴を集計して返す。
+ */
 function getHistoricalTrendData(days = 7) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
   if (!sheet || sheet.getLastRow() < 2) return new Map();
@@ -428,7 +456,10 @@ function getHistoricalTrendData(days = 7) {
   }
   return historicalData;
 }
-
+/**
+ * calculateTrendScores
+ * 本日の抽出キーワードと過去履歴を比べ、変化率とフラグ（isHot）を計算する。
+ */
 function calculateTrendScores(todayKeywords, historicalData) {
   const todayCounts = new Map();
   todayKeywords.forEach(kw => {
@@ -460,6 +491,11 @@ function calculateTrendScores(todayKeywords, historicalData) {
   return trends;
 }
 
+/**
+ * writeTrendsToSheet
+ * 検出されたトレンド情報を `Trends` シートへ書き込む。
+ * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
+ */
 function writeTrendsToSheet(trends) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
   if (!sheet) {
@@ -478,11 +514,12 @@ function writeTrendsToSheet(trends) {
     Logger.log(`${rows.length} 件のトレンドをシートに書き込みました。`);
   }
 }
+// LLM service: LLM 呼び出しラッパー
 
-// =================================================================
-// LlmService.gs: LLM（大規模言語モデル）の呼び出し
-// =================================================================
-
+/**
+ * _callAzureLlm
+ * Azure OpenAI (Chat Completions) を呼び出す。失敗時は null を返す。
+ */
 function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
   Logger.log("Azure OpenAIを試行中...");
   const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: 0.2, max_completion_tokens: 2048 };
@@ -506,7 +543,10 @@ function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
     return null;
   }
 }
-
+/**
+ * _callOpenAiLlm
+ * OpenAI Chat Completions API を呼び出す。
+ */
 function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
   Logger.log("OpenAI APIを試行中...");
   const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048 };
@@ -530,7 +570,10 @@ function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
     return null;
   }
 }
-
+/**
+ * _callGeminiLlm
+ * Google Generative Language (Gemini) を呼び出すラッパー。
+ */
 function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
   Logger.log("Gemini APIを試行中...");
   const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
@@ -552,7 +595,10 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
     return null;
   }
 }
-
+/**
+ * callLlmWithFallback
+ * Azure/OpenAI/Gemini の順で呼び出し、成功した結果を返す。全て失敗した場合はエラーメッセージを返す。
+ */
 function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null) {
   const props = PropertiesService.getScriptProperties();
   const azureUrl = azureUrlOverride || props.getProperty("AZURE_ENDPOINT_URL");
@@ -578,6 +624,10 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   return "いずれのLLMでも見出しを生成できませんでした。";
 }
 
+/**
+ * summarizeWithLLM
+ * 記事テキストを LLM に投げて要約（JSON等）を取得する。
+ */
 function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
@@ -588,6 +638,10 @@ function summarizeWithLLM(articleText) {
   return callLlmWithFallback(SYSTEM, USER, model);
 }
 
+/**
+ * _llmMakeTrendSections
+ * トレンドごとのセクションを LLM で生成する。
+ */
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
@@ -617,6 +671,10 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
   return allTrends.join("\n\n---\n\n");
 }
 
+/**
+ * extractKeywordsWithLLM
+ * テキスト群を LLM に投げて重要キーワードを抽出する。
+ */
 function extractKeywordsWithLLM(text) {
   const props = PropertiesService.getScriptProperties();
   const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
@@ -628,14 +686,7 @@ function extractKeywordsWithLLM(text) {
   }
   return null;
 }
-
-// =================================================================
-// Utilities & Helpers (ユーティリティ) - 移動済み（ファイル末尾）
-// -----------------------------------------------------------------
-// 以下は以前ファイル先頭にあったユーティリティ群です。可視性向上のため
-// ファイル末尾に移動しました。関数定義はホイスティングされるため、ロジック上
-// の問題は発生しません（ただし `Config` はファイル先頭に残しています）。
-// =================================================================
+// Utilities: 補助関数群（ファイル下部にまとめています）
 
 function getWeightedKeywords(sheetName = "Keywords") {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
