@@ -7,7 +7,6 @@
 
 // Core: 全体設定と定数
 
-// 📌 Constants (定数定義)
 const Config = {
   SheetNames: {
     RSS_LIST: "RSS",
@@ -102,7 +101,6 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
   if (returnHtmlOnly) return result;
 }
 
-// =================================================================
 /**
  * processSummarization
  * 日次処理内で未生成の見出し（E列）をチェックし、
@@ -688,6 +686,10 @@ function extractKeywordsWithLLM(text) {
 }
 // Utilities: 補助関数群（ファイル下部にまとめています）
 
+/**
+ * getWeightedKeywords
+ * Keywords シートから、有効フラグが立っているキーワードのリストを取得する。
+ */
 function getWeightedKeywords(sheetName = "Keywords") {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
@@ -701,6 +703,10 @@ function getWeightedKeywords(sheetName = "Keywords") {
   })).filter(obj => obj.keyword);
 }
 
+/**
+ * getPromptConfig
+ * prompt シートから LLM プロンプトテンプレートを取得する。
+ */
 function getPromptConfig(key) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(Config.SheetNames.PROMPT_CONFIG);
@@ -720,6 +726,10 @@ function getPromptConfig(key) {
   return String(content).trim();
 }
 
+/**
+ * _getDigestConfig
+ * スクリプトプロパティから週次ダイジェスト設定を読み込む。
+ */
 function _getDigestConfig() {
   const props = PropertiesService.getScriptProperties();
   return {
@@ -732,6 +742,10 @@ function _getDigestConfig() {
   };
 }
 
+/**
+ * computeHeuristicScore
+ * 記事のキーワードマッチ、新しさ、抜粋長に基づいてスコア（0-100）を計算する。
+ */
 function computeHeuristicScore(article, articleKeywordMap) {
   const now = new Date();
   const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
@@ -744,6 +758,10 @@ function computeHeuristicScore(article, articleKeywordMap) {
   return Math.max(0, Math.min(100, Math.round(rawScore)));
 }
 
+/**
+ * markdownToHtml
+ * Markdown テキストを HTML に変換する。
+ */
 function markdownToHtml(md) {
   if (!md) return "";
   let html = md
@@ -759,22 +777,42 @@ function markdownToHtml(md) {
   return html;
 }
 
+/**
+ * stripHtml
+ * HTML タグを除去してテキストのみを抽出する。
+ */
 function stripHtml(html) {
   return html ? html.replace(/<[^>]*>?/gm, '') : '';
 }
 
+/**
+ * isLikelyEnglish
+ * テキストに日本語文字（ひらがな、カタカナ、漢字）が含まれているかチェックする。
+ */
 function isLikelyEnglish(text) {
   return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
 }
 
+/**
+ * fmtDate
+ * Date オブジェクトを "yyyy/MM/dd" 形式の文字列にフォーマットする。
+ */
 function fmtDate(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
 }
 
+/**
+ * _logError
+ * エラー情報をコンソールに整形して出力する。
+ */
 function _logError(functionName, error, message = "") {
   Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
 }
 
+/**
+ * getDateWindow
+ * 指定日数前から現在までの日付範囲 { start, end } を計算する。
+ */
 function getDateWindow(days) {
   const end = new Date();
   end.setHours(24, 0, 0, 0);
@@ -784,10 +822,7 @@ function getDateWindow(days) {
 }
 
 
-// =================================================================
-// RssCollector.gs: RSSフィードの収集と解析
-// =================================================================
-
+// RSS collector: RSSフィードの収集と解析
 /**
  * collectRssFeeds
  * RSSリスト (`RSS` シート) に登録されたフィードを巡回し、
@@ -830,11 +865,19 @@ function collectRssFeeds() {
   }
 }
 
+/**
+ * getExistingUrls
+ * `collect` シートに既に存在する記事の URL を Set で取得する。
+ */
 function getExistingUrls(sheet) {
   if (sheet.getLastRow() < 2) return new Set();
   return new Set(sheet.getRange(2, Config.CollectSheet.Columns.URL, sheet.getLastRow() - 1, 1).getValues().flat());
 }
 
+/**
+ * fetchAndParseRss
+ * 指定 URL の RSS/Atom フィードを取得し、記事情報を抽出する。
+ */
 function fetchAndParseRss(rssUrl, siteName, existingUrls) {
   let articles = [];
   try {
@@ -859,6 +902,10 @@ function fetchAndParseRss(rssUrl, siteName, existingUrls) {
   return articles;
 }
 
+/**
+ * parseRss2Feed
+ * RSS 2.0 形式の `<item>` 要素を解析し、記事行データの配列を返す。
+ */
 function parseRss2Feed(root, siteName, existingUrls) {
   const rssArticles = [];
   const channel = root.getChild("channel");
@@ -878,6 +925,10 @@ function parseRss2Feed(root, siteName, existingUrls) {
   return rssArticles;
 }
 
+/**
+ * parseAtomFeed
+ * Atom 1.0 形式の `<entry>` 要素を解析し、記事行データの配列を返す。
+ */
 function parseAtomFeed(root, siteName, existingUrls) {
   const atomArticles = [];
   const ATOM_NS = XmlService.getNamespace("http://www.w3.org/2005/Atom");
@@ -908,6 +959,10 @@ function parseAtomFeed(root, siteName, existingUrls) {
   return atomArticles;
 }
 
+/**
+ * isRecentArticle
+ * 記事の公開日が指定日数以内かチェックする。
+ */
 function isRecentArticle(pubDate, daysLimit = 7) {
   if (!pubDate || !(pubDate instanceof Date)) return false;
   const now = new Date();
@@ -915,6 +970,10 @@ function isRecentArticle(pubDate, daysLimit = 7) {
   return daysOld <= daysLimit;
 }
 
+/**
+ * sortCollectByDateAsc
+ * `collect` シートを記事日付で降順にソートする。
+ */
 function sortCollectByDateAsc() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
   if (sheet.getLastRow() > 1) {
@@ -923,14 +982,20 @@ function sortCollectByDateAsc() {
   }
 }
 
-// =================================================================
-// WebUI.gs: WebアプリケーションのUI関連
-// =================================================================
+// Web UI: Web アプリケーション UI
 
+/**
+ * doGet
+ * Web アプリのエントリポイント。HTML テンプレート (Index) を評価して返す。
+ */
 function doGet() {
   return HtmlService.createTemplateFromFile('Index').evaluate().setSandboxMode(HtmlService.SandboxMode.IFRAME).setTitle('RSSキーワード検索ツール');
 }
 
+/**
+ * executeWeeklyDigest
+ * Web UI から指定されたキーワードで週次ダイジェストを生成し HTML を返す。
+ */
 function executeWeeklyDigest(keyword) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
