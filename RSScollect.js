@@ -457,6 +457,7 @@ function getHistoricalTrendData(days = 7) {
 /**
  * calculateTrendScores
  * 本日の抽出キーワードと過去履歴を比べ、変化率とフラグ（isHot）を計算する。
+ * 変化率は可視化用に矢印付きで表示（📈上昇、📉下降、🆕新規）。
  */
 function calculateTrendScores(todayKeywords, historicalData) {
   const todayCounts = new Map();
@@ -467,20 +468,36 @@ function calculateTrendScores(todayKeywords, historicalData) {
   for (const [keyword, count] of todayCounts.entries()) {
     const history = historicalData.get(keyword);
     let changeRate = "New";
+    let changeRateDisplay = "🆕 New";
     let isHot = false;
+    
     if (history && history.dates.size > 0) {
       const avgCount = history.totalCount / history.dates.size;
       if (avgCount > 0) {
         changeRate = (count - avgCount) / avgCount;
+        // 視覚的に傾向を矢印で表示
+        if (changeRate >= 2.0) {
+          changeRateDisplay = `📈 +${Math.round(changeRate * 100)}%`; // 2倍以上の上昇
+        } else if (changeRate >= 0.5) {
+          changeRateDisplay = `📈 +${Math.round(changeRate * 100)}%`; // 50%以上の上昇
+        } else if (changeRate >= 0) {
+          changeRateDisplay = `➡️ ${Math.round(changeRate * 100)}%`; // わずかな上昇またはほぼ同等
+        } else if (changeRate >= -0.5) {
+          changeRateDisplay = `📉 ${Math.round(changeRate * 100)}%`; // 50%未満の下降
+        } else {
+          changeRateDisplay = `📉 ${Math.round(changeRate * 100)}%`; // 50%以上の下降
+        }
       }
     }
+    
     const isNewAndHot = changeRate === "New" && count >= 2;
     const isTrendingUp = typeof changeRate === 'number' && changeRate >= 2.0 && count >= 2;
     isHot = isNewAndHot || isTrendingUp;
+    
     trends.push({
       keyword: keyword,
       count: count,
-      changeRate: (typeof changeRate === 'number') ? `${Math.round(changeRate * 100)}%` : changeRate,
+      changeRate: changeRateDisplay,  // 可視化済みの変化率を使用
       relatedArticles: count,
       summary: "",
       isHot: isHot
@@ -492,7 +509,7 @@ function calculateTrendScores(todayKeywords, historicalData) {
 /**
  * writeTrendsToSheet
  * 検出されたトレンド情報を `Trends` シートへ書き込む。
- * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
+ * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率（矢印付き）, F: 関連記事数, G: 要約
  * 書き込み後、D列（出現回数）を降順でソートして視覚的に傾向を把握しやすくする。
  */
 function writeTrendsToSheet(trends) {
