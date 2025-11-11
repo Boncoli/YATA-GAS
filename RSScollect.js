@@ -110,14 +110,6 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 // DailyProcessor.gs: 日次で実行される処理
 // =================================================================
 
-function mainAutomationFlow() {
-  Logger.log("--- 自動化フロー開始（収集→見出し生成のみ） ---");
-  collectRssFeeds();
-  processSummarization();
-  detectAndRecordTrends();
-  Logger.log("--- 自動化フロー完了 ---");
-}
-
 /**
  * processSummarization
  * 日次処理内で未生成の見出し（E列）をチェックし、
@@ -901,45 +893,3 @@ function executeWeeklyDigest(keyword) {
     return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
   }
 }
-
-/**
- * _callAzureLlm
- * Azure OpenAI (Azure OpenAI Service) に対して chat completion 相当のリクエストを送り、
- * 応答テキストを返します。失敗時は null を返す。
- */
-
-/**
- * _callOpenAiLlm
- * OpenAI の HTTP API を呼び出して chat/completions を実行します。
- * 成功時はテキスト応答、失敗時は null を返します。
- */
-
-/**
- * _callGeminiLlm
- * Google Generative Language API（Gemini）を呼び出して応答テキストを取得します。
- * コード内では Gemini を最終フォールバックとして利用します。
- */
-
-/**
- * callLlmWithFallback
- * 指定されたプロンプトを順に Azure -> OpenAI -> Gemini の順で呼び出し、最初に成功した応答を返します。
- * いずれも失敗した場合はエラーメッセージを返します。
- */
-
-/**
- * summarizeWithLLM
- * 記事テキストを LLM に投げて要約（JSON 形式を期待）を受け取るためのラッパーです。
- * 内部でプロンプトテンプレート（promptシート）を取得して呼び出します。
- */
-
-/**
- * _llmMakeTrendSections
- * キーワードごとの代表記事群を LLM に渡し、Markdown 形式のトレンド解説セクションを生成します。
- * 週次ダイジェストの本文生成に使用されます。
- */
-
-/**
- * extractKeywordsWithLLM
- * テキスト群を LLM に渡して名詞ベースの重要キーワード一覧を抽出します。
- * 戻り値: キーワードの文字列配列、失敗時は null
- */
