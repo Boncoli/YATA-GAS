@@ -103,11 +103,8 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 
 /**
  * processSummarization
- * 日次処理内で未生成の見出し（E列）をチェックし、
- * - 抜粋が短い／ない場合はシートの翻訳関数（=GOOGLETRANSLATE）やフォールバック文を設定
- * - 抜粋が十分な場合は LLM に投げて見出し（JSON形式）を取得してE列に書き込む
- * 入力: `collect` シートの行データ
- * 副作用: シートの E列（見出し）を更新、LLM 呼び出し数はログ出力
+ * 日次処理内で未生成の見出し（E列）をチェックし、AIで見出しを生成する。
+ * 【改善】5分経過したらタイムアウトを回避するために処理を中断し、そこまでの結果を保存する機能を追加
  */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -118,38 +115,65 @@ function processSummarization() {
   }
   const lastRow = trendDataSheet.getLastRow();
   if (lastRow < 2) return;
+
+  // --- 改善点: 実行開始時刻を記録 ---
+  const startTime = new Date().getTime();
+  const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分（GASの制限6分に対し余裕を持たせる）
+
   const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, trendDataSheet.getLastColumn());
   const values = dataRange.getValues();
   const articlesToSummarize = [];
+
+  // 1. まず全行をスキャンして、要約が必要な記事を特定する（ここは高速なのでそのまま）
   values.forEach((row, index) => {
     const currentHeadline = row[Config.CollectSheet.Columns.SUMMARY - 1];
+    // 見出しが空の場合のみ処理
     if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[Config.CollectSheet.Columns.URL - 2];
+      const title = row[Config.CollectSheet.Columns.URL - 2]; // C列の左隣(B列)がタイトルと仮定
       const abstractText = row[Config.CollectSheet.Columns.ABSTRACT - 1];
+      
+      // 記事が短すぎる、または「抜粋なし」の場合はAIを使わず簡易処理
       const isShort = (abstractText === Config.Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < Config.Llm.MIN_SUMMARY_LENGTH);
+      
       if (isShort) {
         let newHeadline;
         const sheetRowNumber = index + 2;
         if (title && String(title).trim() !== "") {
+          // タイトルがあればそれを使う（英語なら翻訳）
           newHeadline = isLikelyEnglish(String(title)) ? `=GOOGLETRANSLATE(B${sheetRowNumber},"auto","ja")` : String(title).trim();
         } else if (abstractText && abstractText !== Config.Llm.NO_ABSTRACT_TEXT) {
           newHeadline = isLikelyEnglish(String(abstractText)) ? `=GOOGLETRANSLATE(D${sheetRowNumber},"auto","ja")` : String(abstractText).trim();
         } else {
           newHeadline = Config.Llm.MISSING_ABSTRACT_TEXT;
         }
+        // 即座に配列を更新
         values[index][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
+        // AI要約対象としてリストに追加
         articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
       }
     }
   });
+
   let apiCallCount = 0;
+
+  // 2. AI要約の実行（ここが一番重いので制限時間をチェックする）
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
-    articlesToSummarize.forEach(article => {
+    
+    // forEachではなく for...of を使用して break できるように変更
+    for (const article of articlesToSummarize) {
+      
+      // --- 改善点: 制限時間をチェック ---
+      if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
+        Logger.log(`タイムアウト回避のため、処理を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。残りは次回実行されます。`);
+        break; // ループを抜けて保存処理へ移行
+      }
+
       const articleText = `Title: ${article.title}\nAbstract: ${article.abstractText}`;
       const jsonString = summarizeWithLLM(articleText);
       apiCallCount++;
+
       let newHeadline = null;
       if (jsonString && !jsonString.includes("エラー") && !jsonString.includes("いずれのLLMでも")) {
         try {
@@ -163,14 +187,18 @@ function processSummarization() {
       } else {
         Logger.log(`見出し生成失敗 (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
       }
+
       if (newHeadline && String(newHeadline).trim() !== "" && String(newHeadline).indexOf("エラー") === -1) {
         values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
         Logger.log(`見出し生成結果が空またはエラーのためスキップ (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
+      
       Utilities.sleep(Config.Llm.DELAY_MS);
-    });
+    }
   }
+
+  // 3. 結果をシートに書き戻す（途中終了した場合も、そこまでの進捗は保存される）
   if (lastRow > 1) {
     dataRange.setValues(values);
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
@@ -934,39 +962,88 @@ function collectRssFeeds() {
 
 /**
  * getExistingUrls
- * `collect` シートに既に存在する記事の URL を Set で取得する。
+ * collect シートに既に存在する記事の URL を Set で取得する。
+ * 【改善】全行ではなく直近の一定数（3000件）のみをチェックすることで高速化
  */
 function getExistingUrls(sheet) {
-  if (sheet.getLastRow() < 2) return new Set();
-  return new Set(sheet.getRange(2, Config.CollectSheet.Columns.URL, sheet.getLastRow() - 1, 1).getValues().flat());
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return new Set();
+
+  // 直近N件のみチェック（RSSの性質上、数ヶ月以上前の記事が再送されることは稀なため）
+  const CHECK_LIMIT = 3000;
+  
+  // データ開始位置を計算（最終行から遡って最大3000件、ただし2行目より前には行かない）
+  const startRow = Math.max(2, lastRow - CHECK_LIMIT + 1);
+  const numRows = lastRow - startRow + 1;
+  
+  // 対象範囲のURLのみを取得してフラット化
+  const urls = sheet.getRange(startRow, Config.CollectSheet.Columns.URL, numRows, 1).getValues().flat();
+  return new Set(urls);
 }
 
 /**
  * fetchAndParseRss
- * 指定 URL の RSS/Atom フィードを取得し、記事情報を抽出する。
+ * 指定された URL から RSS/Atom フィードを取得し、パースして Document オブジェクトを返す。
+ * 【改善】厳格なXMLパースでエラーが出る場合、不正なタグを除去して再試行するロジックを追加
  */
-function fetchAndParseRss(rssUrl, siteName, existingUrls) {
-  let articles = [];
+function fetchAndParseRss(url) {
   try {
-    const options = { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept': 'text/xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8' }, muteHttpExceptions: true };
-    const response = UrlFetchApp.fetch(rssUrl, options);
-    const code = response.getResponseCode();
-    if (code !== 200) throw new Error(`HTTP Error Code: ${code}. Check if the URL is accessible or if the server blocks automated requests.`);
-    let preprocessedXml = response.getContentText();
-    if (preprocessedXml.includes('atom:link') && !preprocessedXml.includes('xmlns:atom')) {
-      preprocessedXml = preprocessedXml.replace(/<rss([^>]*)>/i, '<rss$1 xmlns:atom="http://www.w3.org/2005/Atom">');
+    // 1. テキストとして取得
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`[ERROR] RSS取得失敗 (${response.getResponseCode()}): ${url}`);
+      return null;
     }
-    const document = XmlService.parse(preprocessedXml);
-    const root = document.getRootElement();
-    if (root.getChild("channel")) {
-      articles = parseRss2Feed(root, siteName, existingUrls);
-    } else {
-      articles = parseAtomFeed(root, siteName, existingUrls);
+    let xmlText = response.getContentText();
+
+    // 2. まずはそのままパースを試みる
+    try {
+      return XmlService.parse(xmlText);
+    } catch (e) {
+      // 3. エラーが出たら「汚いXML」を掃除（サニタイズ）して再トライ
+      Logger.log(`[WARN] 標準パース失敗。サニタイズして再試行します: ${url} / Error: ${e.message}`);
+      
+      const cleanXmlText = sanitizeXml(xmlText);
+      return XmlService.parse(cleanXmlText);
     }
+
   } catch (e) {
-    _logError("fetchAndParseRss", e, `RSS/Atomフィードの取得またはパース中にエラーが発生しました。URL: ${rssUrl}`);
+    Logger.log(`[ERROR] fetchAndParseRss: RSS/Atomフィードの取得またはパース中にエラーが発生しました。URL: ${url} Exception: ${e.toString()}`);
+    return null;
   }
-  return articles;
+}
+
+/**
+ * sanitizeXml
+ * XMLパースエラーの原因になりやすいHTMLタグや特殊文字を除去・置換するヘルパー関数
+ */
+function sanitizeXml(text) {
+  let cleanText = text;
+
+  // 1. 今回のエラー原因である <sup>, <sub> タグを削除（中身は残す）
+  // 例: <sup>123</sup> -> 123
+  cleanText = cleanText.replace(/<\/?sup[^>]*>/gi, "");
+  cleanText = cleanText.replace(/<\/?sub[^>]*>/gi, "");
+
+  // 2. その他、RSSによく混入するがXMLでエラーになりやすいタグを削除
+  // <font>, <span>, <div>, <style>, <script> など
+  cleanText = cleanText.replace(/<\/?font[^>]*>/gi, "");
+  cleanText = cleanText.replace(/<\/?span[^>]*>/gi, "");
+  cleanText = cleanText.replace(/<\/?div[^>]*>/gi, "");
+  
+  // 3. <br> や <img> が閉じられていない場合への対応 ( <br> -> <br/> )
+  // ※ 単純な置換だと副作用があるため、頻出パターンのみ対応
+  cleanText = cleanText.replace(/<br>/gi, "<br/>");
+  cleanText = cleanText.replace(/<hr>/gi, "<hr/>");
+
+  // 4. XMLで未定義の実体参照エラー（&nbsp;など）を回避
+  // &amp; 以外の & はそのままにするとエラーになることがあるが、まずは &nbsp; だけ潰す
+  cleanText = cleanText.replace(/&nbsp;/g, " ");
+
+  // 5. 制御文字の削除 (たまに含まれていてエラーになる)
+  // cleanText = cleanText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+
+  return cleanText;
 }
 
 /**
@@ -1072,5 +1149,199 @@ function executeWeeklyDigest(keyword) {
   } catch (e) {
     Logger.log(`エラーが発生しました: ${e.toString()}`);
     return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
+  }
+}
+
+/**
+ * searchAndAnalyzeKeyword
+ * Web UIから呼び出される関数。
+ * 指定されたキーワードで collect シートを検索し、高度なプロンプトで分析させる。
+ * 【改善】キーワードをスペース区切りで AND 検索に対応
+ */
+function searchAndAnalyzeKeyword(keyword) {
+  if (!keyword) return "キーワードが入力されていません。";
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return "データが存在しません。";
+
+  // 1. キーワードをスペースで分割し、検索語句の配列を作成
+  const searchTerms = keyword.toLowerCase().trim().split(/\s+/).filter(term => term.length > 0);
+  if (searchTerms.length === 0) return "有効な検索キーワードが入力されていません。";
+
+  // データの取得
+  const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  const values = range.getValues();
+
+  // 2. キーワードでフィルタリング（AND条件）
+  const relevantArticles = values.filter(row => {
+    const title = String(row[1] || "").toLowerCase();
+    const summary = String(row[Config.CollectSheet.Columns.SUMMARY - 1] || "").toLowerCase();
+
+    // 全ての検索語句がタイトルまたは要約に含まれているかチェック（AND条件）
+    return searchTerms.every(term => {
+      return title.includes(term) || summary.includes(term);
+    });
+  });
+
+  if (relevantArticles.length === 0) {
+    return `<p>キーワード「<strong>${keyword}</strong>」に関連する記事は見つかりませんでした。</p>`;
+  }
+
+  // 3. AIに渡すテキストを作成（直近30件に絞る）
+  const limit = 30;
+  const targetArticles = relevantArticles.slice(0, limit); 
+  
+  let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
+  targetArticles.forEach((row, i) => {
+    const date = row[0]; 
+    const title = row[1]; // B列（元の記事タイトル）
+    const summary = row[Config.CollectSheet.Columns.SUMMARY - 1]; // E列（日本語見出し/要約）
+    const url = row[Config.CollectSheet.Columns.URL - 1]; // C列（URL）
+
+    // AIの出力テキストを日本語リンクにするため、タイトル部分に日本語見出しを使用
+    contextText += `[${i+1}] 日付:${date} / タイトル:${summary} / URL:${url}\n---\n`;
+  });
+
+  // 4. プロンプトの作成（変更なし）
+  const systemPrompt = `
+あなたは、臨床検査・バイオ技術分野の専門アナリストです。
+提供されたキーワードと、そのキーワードに関連する記事群を基に、業界の重要な動向を抽出し、分類し、**客観的な事実**と**価値あるインサイト**をもって読者に分かりやすく解説する役割を担います。
+
+【指示】
+以下のキーワードに関連する記事リストを分析し、主要な技術・市場トレンドを**記事群のテーマに応じて最低1つ、最大2つ**に分類してください。
+記事が少ない場合（3記事以下など）は、1つにまとめてください。
+
+出力は**HTML形式**のみで行ってください（Markdownは使用しないでください）。
+以下のフォーマットに従ってください：
+
+<div class="trend-section">
+  <h3>【トレンド名】（15〜25文字のキャッチーな名称）</h3>
+  <p>
+    （解説文: 150〜200文字程度。なぜ今重要か、具体的な進展、社会への価値、今後の見通しを統合して記述。キーワードを自然に含めること。）
+  </p>
+  <ul>
+    <li><a href="記事URL" target="_blank">記事タイトル1</a></li>
+    <li><a href="記事URL" target="_blank">記事タイトル2</a></li>
+  </ul>
+</div>
+
+※ これをトレンドの数だけ繰り返してください。
+※ 前置きや挨拶は不要です。HTMLタグから始めてください。
+`;
+
+  try {
+    // LLM呼び出し
+    let analysisResult = callLlmForAnalysis(systemPrompt, contextText);
+
+    // 不要なバッククォート削除
+    analysisResult = analysisResult.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+    
+    return `
+      <div style="margin-bottom: 15px;">
+        <strong>🔍 分析対象:</strong> ${relevantArticles.length}件中、直近${targetArticles.length}件<br>
+        <strong>🔑 キーワード:</strong> ${keyword} (AND検索)
+      </div>
+      <hr>
+      ${analysisResult}
+    `;
+  } catch (e) {
+    return `分析中にエラーが発生しました: ${e.message}`;
+  }
+}
+
+/**
+ * callLlmForAnalysis
+ * 分析用のAPI呼び出し（Temperature指定付き）
+ */
+function callLlmForAnalysis(systemPrompt, userContent) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  const model = Config.Llm.MODEL_NAME || "gemini-1.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  const payload = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: systemPrompt + "\n\n" + userContent }]
+      }
+    ],
+    // ★重要: ここで「創造性」を制御します
+    generationConfig: {
+      temperature: 0.4, // 0.0〜1.0。低いほど事実に忠実で安定的。高いと創造的だがブレる。
+      maxOutputTokens: 2000
+    }
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`API Error: ${response.getContentText()}`);
+  }
+
+  const json = JSON.parse(response.getContentText());
+
+  if (json.candidates && json.candidates[0].content) {
+    return json.candidates[0].content.parts[0].text;
+  } else {
+    throw new Error("APIからの応答が不正です。");
+  }
+}
+
+/**
+ * removeDuplicates
+ * 【メンテナンス用】collectシート内の重複記事（同一URL）を削除して整理する。
+ * URL（C列）が同じ場合、より上の行（古い方/要約済みの方）を残します。
+ */
+function removeDuplicates() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  if (!sheet) {
+    Logger.log("エラー: シートが見つかりません");
+    return;
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("データがありません");
+    return;
+  }
+
+  // 全データを取得
+  const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  const values = range.getValues();
+  
+  const uniqueUrls = new Set();
+  const uniqueRows = [];
+  let duplicateCount = 0;
+
+  // 上から順に走査し、初めて出てくるURLの行だけを残す
+  values.forEach(row => {
+    const url = row[Config.CollectSheet.Columns.URL - 1]; // C列
+    
+    // URLが空でなく、まだセットに入っていない場合のみ採用
+    if (url && !uniqueUrls.has(url)) {
+      uniqueUrls.add(url);
+      uniqueRows.push(row);
+    } else {
+      // 既に存在するURLなら重複としてカウント（スキップ）
+      duplicateCount++;
+    }
+  });
+
+  if (duplicateCount > 0) {
+    // 一旦データをクリアして、ユニークなデータだけ書き戻す
+    range.clearContent();
+    if (uniqueRows.length > 0) {
+      sheet.getRange(2, 1, uniqueRows.length, sheet.getLastColumn()).setValues(uniqueRows);
+    }
+    Logger.log(`完了: ${duplicateCount} 件の重複記事を削除しました。`);
+  } else {
+    Logger.log("重複記事は見つかりませんでした（URLが完全に一致するものはありません）。");
   }
 }
