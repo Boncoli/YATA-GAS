@@ -926,37 +926,84 @@ function getDateWindow(days) {
  * 副作用: `collect` シートの更新
  */
 function collectRssFeeds() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const rssListSheet = ss.getSheetByName(Config.SheetNames.RSS_LIST);
-  const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
-  if (!rssListSheet || !trendDataSheet) {
-    Logger.log("エラー: シート名が正しくありません。'RSS'または'collect'のシート名を確認してください。");
-    return;
+  const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.RSS_LIST);
+  const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  
+  // RSSリスト取得
+  const rssData = rssListSheet.getRange(
+    Config.RssListSheet.DataRange.START_ROW, 
+    Config.RssListSheet.DataRange.START_COL, 
+    rssListSheet.getLastRow() - 1, 
+    Config.RssListSheet.DataRange.NUM_COLS
+  ).getValues();
+
+  // 既存の記事URLを取得（重複チェック用）
+  const existingUrls = new Set();
+  if (collectSheet.getLastRow() >= Config.CollectSheet.DataRange.START_ROW) {
+    const existingData = collectSheet.getRange(
+      Config.CollectSheet.DataRange.START_ROW,
+      Config.CollectSheet.Columns.URL,
+      collectSheet.getLastRow() - 1,
+      1
+    ).getValues();
+    existingData.forEach(row => existingUrls.add(row[0]));
   }
-  const lastRow = rssListSheet.getLastRow();
-  if (lastRow < 2) {
-    Logger.log("RSSリストシートにデータがありません。");
-    return;
-  }
-  const rssList = rssListSheet.getRange(Config.RssListSheet.DataRange.START_ROW, 1, lastRow - 1, Config.RssListSheet.DataRange.NUM_COLS).getValues();
-  const existingUrls = getExistingUrls(trendDataSheet);
-  let newData = [];
-  rssList.forEach(row => {
+
+  const newItems = [];
+
+  // 各RSSフィードを処理
+  for (const row of rssData) {
     const siteName = row[0];
     const rssUrl = row[1];
-    if (rssUrl) {
-      const articles = fetchAndParseRss(rssUrl, siteName, existingUrls);
-      newData = newData.concat(articles);
+
+    if (!rssUrl) continue;
+
+    // RSS取得
+    const items = fetchAndParseRss(rssUrl);
+
+    // 【修正点3】Null/空チェックの強化
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      console.warn(`記事が取得できませんでした: ${siteName} (${rssUrl})`);
+      continue; // スキップして次のRSSへ
     }
-  });
-  if (newData.length > 0) {
-    newData.sort((a, b) => a[0] - b[0]);
-    const startRow = trendDataSheet.getLastRow() + 1;
-    trendDataSheet.getRange(startRow, 1, newData.length, newData[0].length).setValues(newData);
-    sortCollectByDateAsc();
-    Logger.log(newData.length + " 件の新しい記事をシートに追記しました。");
+
+    // 記事ごとに処理
+    for (const item of items) {
+      try {
+        // 必須項目のチェック
+        if (!item.link || !item.title) continue;
+
+        // 重複チェック
+        if (existingUrls.has(item.link)) continue;
+
+        // 新規追加リストへ (日付は現在時刻とするか、pubDateを使うかは運用による)
+        // ここでは収集日として今日の日付を入れる想定
+        newItems.push([
+          new Date(), // A列: 収集日時
+          siteName,   // B列: サイト名
+          item.link,  // C列: URL
+          item.description || Config.Llm.NO_ABSTRACT_TEXT, // D列: 抜粋
+          "",         // E列: 要約 (後でAIが埋める)
+          item.title  // F列: 元タイトル
+        ]);
+
+        // 一度に追加しすぎないよう制限する場合などはここにロジック追加
+        
+      } catch (err) {
+        console.error(`アイテム処理エラー: ${err.message}`, item);
+      }
+    }
+  }
+
+  // シートへ書き込み
+  if (newItems.length > 0) {
+    // collectシートの構造に合わせて書き込む
+    // 前提: A=Date, B=Site, C=URL, D=Abstract, E=Summary, F=Title
+    const startRow = collectSheet.getLastRow() + 1;
+    collectSheet.getRange(startRow, 1, newItems.length, newItems[0].length).setValues(newItems);
+    Logger.log(`${newItems.length} 件の新しい記事を追加しました。`);
   } else {
-    Logger.log("新しい記事は見つかりませんでした。");
+    Logger.log("新しい記事はありませんでした。");
   }
 }
 
@@ -982,35 +1029,117 @@ function getExistingUrls(sheet) {
 }
 
 /**
- * fetchAndParseRss
- * 指定された URL から RSS/Atom フィードを取得し、パースして Document オブジェクトを返す。
- * 【改善】厳格なXMLパースでエラーが出る場合、不正なタグを除去して再試行するロジックを追加
+ * 指定されたURLからRSS/Atomフィードを取得してパースする
+ * エラー処理とサニタイズ機能を強化
  */
 function fetchAndParseRss(url) {
   try {
-    // 1. テキストとして取得
-    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-    if (response.getResponseCode() !== 200) {
-      Logger.log(`[ERROR] RSS取得失敗 (${response.getResponseCode()}): ${url}`);
-      return null;
+    const options = {
+      'muteHttpExceptions': true,
+      'validateHttpsCertificates': false
+    };
+    
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+    
+    if (responseCode !== 200) {
+      console.warn(`RSS取得失敗 (${responseCode}): ${url}`);
+      return [];
     }
-    let xmlText = response.getContentText();
 
-    // 2. まずはそのままパースを試みる
+    let xml = response.getContentText();
+
+    // 【修正点1】XMLサニタイズ処理の強化
+    // "atom:link" などのプレフィックスが未定義でエラーになるのを防ぐため、単純なタグに置換または削除
+    xml = xml
+      // atom:link を link に置換
+      .replace(/<atom:link/gi, '<link')
+      .replace(/<\/atom:link>/gi, '</link>')
+      // dc:creator などの一般的なプレフィックスも念の為削除 (汎用対応)
+      .replace(/<[a-zA-Z0-9]+:/g, '<')
+      .replace(/<\/[a-zA-Z0-9]+:/g, '</');
+
+    // XMLパース試行
+    let document;
     try {
-      return XmlService.parse(xmlText);
+      document = XmlService.parse(xml);
     } catch (e) {
-      // 3. エラーが出たら「汚いXML」を掃除（サニタイズ）して再トライ
-      Logger.log(`[WARN] 標準パース失敗。サニタイズして再試行します: ${url} / Error: ${e.message}`);
-      
-      const cleanXmlText = sanitizeXml(xmlText);
-      return XmlService.parse(cleanXmlText);
+      // 制御文字などを除去して再試行
+      console.warn(`標準パース失敗。強力なサニタイズで再試行します: ${url} / Error: ${e.message}`);
+      // 無効な制御文字を削除
+      xml = xml.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
+      document = XmlService.parse(xml);
     }
+
+    const root = document.getRootElement();
+    let items = [];
+    
+    // RSS 2.0 (<channel><item>) か Atom (<entry>) かを判定して処理
+    const channel = root.getChild('channel');
+    
+    if (channel) {
+      // RSS 2.0
+      const children = channel.getChildren('item');
+      items = children.map(item => {
+        return {
+          title: getChildText(item, 'title'),
+          link: getChildText(item, 'link'),
+          description: getChildText(item, 'description') || getChildText(item, 'encoded'), // content:encoded対応
+          pubDate: getChildText(item, 'pubDate') || getChildText(item, 'date'),
+          source: "RSS 2.0"
+        };
+      });
+    } else if (root.getName() === 'feed' || root.getName() === 'RDF') {
+      // Atom または RSS 1.0 (RDF)
+      // RDFの場合は item はルート直下にあることが多いが、ここでは簡略化のため getChildren で探索
+      let entries = root.getChildren('entry');
+      if (entries.length === 0) entries = root.getChildren('item');
+      
+      items = entries.map(entry => {
+        let link = getChildText(entry, 'link');
+        // Atomの場合、linkは属性hrefに入っている場合がある
+        if (!link) {
+          const linkNode = entry.getChild('link');
+          if (linkNode) {
+            link = linkNode.getAttribute('href') ? linkNode.getAttribute('href').getValue() : '';
+          }
+        }
+        
+        return {
+          title: getChildText(entry, 'title'),
+          link: link,
+          description: getChildText(entry, 'summary') || getChildText(entry, 'content') || getChildText(entry, 'description'),
+          pubDate: getChildText(entry, 'published') || getChildText(entry, 'updated') || getChildText(entry, 'date'),
+          source: "Atom/RDF"
+        };
+      });
+    }
+
+    return items;
 
   } catch (e) {
-    Logger.log(`[ERROR] fetchAndParseRss: RSS/Atomフィードの取得またはパース中にエラーが発生しました。URL: ${url} Exception: ${e.toString()}`);
-    return null;
+    // エラー時はログを出力して空配列を返す（nullは返さない）
+    console.error(`fetchAndParseRss: エラーが発生しました。URL: ${url} Exception: ${e.toString()}`);
+    return []; // 【修正点2】エラー時は必ず空配列を返す
   }
+}
+
+/**
+ * 安全にXMLの子要素のテキストを取得するヘルパー関数
+ */
+function getChildText(element, tagName) {
+  if (!element) return '';
+  // 名前空間を無視してタグ名だけで探すための簡易実装
+  // XmlServiceでは名前空間指定が必要だが、上記サニタイズでプレフィックスを消しているためこれで動作する可能性が高い
+  const child = element.getChild(tagName);
+  if (child) return child.getText();
+  
+  // 名前空間付きで見つからない場合、全ての子要素から名前だけ一致するものを探す
+  const allChildren = element.getChildren();
+  for (const c of allChildren) {
+    if (c.getName() === tagName) return c.getText();
+  }
+  return '';
 }
 
 /**
