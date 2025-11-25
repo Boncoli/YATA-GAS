@@ -47,18 +47,68 @@ const Config = {
 /**
  * mainAutomationFlow
  * 日次トリガー用のエントリポイント。
- * - RSSの収集
- * - 見出し生成（AI or シート関数）
- * - トレンド検出の実行
- * これらを順に実行する軽量なワークフローです。
- * 呼び出し元: time-driven トリガー（daily）や手動実行
  */
 function mainAutomationFlow() {
-  Logger.log("--- 自動化フロー開始（収集→見出し生成のみ） ---");
+  Logger.log("--- 自動化フロー開始 ---");
+  
+  // 1. RSS収集
   collectRssFeeds();
+  
+  // 2. AI見出し生成
   processSummarization();
+  
+  // 3. 日付順に並び替え (追加: 最新の記事を上に)
+  sortCollectByDateDesc();
+
+  // 4. トレンド検出
   detectAndRecordTrends();
+  
   Logger.log("--- 自動化フロー完了 ---");
+}
+
+/**
+ * dailyDigestJob
+ * 日刊ダイジェストを生成・送信するエントリポイント。
+ * 対象期間: 過去24時間 (1日)。キーワードは週刊と同じくキーワードシートから使用。
+ */
+function dailyDigestJob() {
+  Logger.log("--- 日刊ダイジェスト生成開始 (過去24時間) ---");
+  
+  // 期間設定: 1日 (24時間)
+  const DAYS_WINDOW = 1; 
+
+  // 設定と期間の取得
+  const config = _getDigestConfig(); 
+  const { start, end } = getDateWindow(DAYS_WINDOW); 
+  
+  // 1. 対象記事の抽出
+  const allItems = getArticlesInDateWindow(start, end);
+  
+  if (allItems.length === 0) {
+    Logger.log("日刊ダイジェスト：対象期間に記事がありませんでした。");
+    // ヘルパー関数を呼び出し（daysWindowを渡す）
+    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
+    return;
+  }
+  
+  Logger.log(`日刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
+  
+  // 2. キーワードによる記事の分類
+  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, null);
+  
+  if (relevantArticles.length === 0) {
+    Logger.log("日刊ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
+    return;
+  }
+  
+  Logger.log(`日刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+  _logKeywordHitCounts(hitKeywordsWithCount);
+  
+  // 3. LLMによる要約生成とメール送信
+  // daysWindowを渡して、日刊/週刊を切り替える
+  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, false, DAYS_WINDOW);
+  
+  Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
 
 /**
@@ -69,35 +119,41 @@ function mainAutomationFlow() {
  *  - returnHtmlOnly: true を指定すると HTML 本文のみを返す（テスト用）
  * 内部で記事抽出、フィルタリング、LLM 呼び出し、メール送信を行います。
  */
+// function weeklyDigestJob を置き換え
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
   const config = _getDigestConfig();
-  const { start, end } = getDateWindow(config.days);
+  const DAYS_WINDOW = config.days; // 7日間
+
+  // 実行期間を計算
+  const { start, end } = getDateWindow(DAYS_WINDOW);
   const allItems = getArticlesInDateWindow(start, end);
+
   if (allItems.length === 0) {
-    Logger.log("週間ダイジェスト：対象期間に記事がありませんでした。");
-    if (returnHtmlOnly) {
-      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-      const htmlContent = markdownToHtml("今週のダイジェスト対象となる記事はありませんでした。");
-      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlContent}</div>`;
-    }
-    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。");
+    Logger.log("週刊ダイジェスト：対象期間に記事がありませんでした。");
+    // daysWindowを渡す
+    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
     return;
   }
-  Logger.log(`週間ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
+  
+  Logger.log(`週刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
+
+  // キーワードによる記事の分類 (中略)
   const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
+
   if (relevantArticles.length === 0) {
-    Logger.log("週間ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
-    if (returnHtmlOnly) {
-      const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-      const msgMd = `### 今週の注目キーワード\n- **${webUiKeyword || ''}** (0件)\n\n---\n\n該当記事がありませんでした。`;
-      const htmlBody = markdownToHtml(msgMd);
-      return `<div>${headerLine.replace(/\n/g, '<br>')}<br><br>${htmlBody}</div>`;
-    }
+    Logger.log("週刊ダイジェスト：キーワードに合致する記事がありませんでした。");
+    // daysWindowを渡す
+    _handleNoArticlesFound(config, start, end, "キーワードに合致する記事がありませんでした。", DAYS_WINDOW);
     return;
   }
-  Logger.log(`週間ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
+  
+  Logger.log(`週刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
   _logKeywordHitCounts(hitKeywordsWithCount);
-  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly);
+
+  // LLMによる要約生成とメール送信
+  // daysWindowを渡す
+  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly, DAYS_WINDOW); 
+  
   if (returnHtmlOnly) return result;
 }
 
@@ -272,7 +328,7 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
  * 週次ダイジェストの本文を生成し、設定に応じてメール送信する。
  * returnHtmlOnly=true の場合は HTML を返す（WebUI 用/テスト用）。
  */
-function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false) {
+function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false, daysWindow = 7) {
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
   const articlesGroupedByKeyword = {};
@@ -298,7 +354,7 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
   if (returnHtmlOnly) return fullHtmlBody;
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount);
+    sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow); 
   }
 }
 
@@ -306,12 +362,17 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
  * _handleNoArticlesFound
  * 対象記事が無い場合の通知処理（メール送信など）。
  */
-function _handleNoArticlesFound(config, start, end, message) {
-  Logger.log(`週間ダイジェスト：${message}`);
+function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) { 
+  Logger.log(`ダイジェスト：${message}`);
+
   const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-  const reportBody = "今週のダイジェスト対象となる記事はありませんでした。";
+  
+  // メッセージを日刊/週刊で切り替え
+  const reportBody = daysWindow === 1 ? "本日のダイジェスト対象となる記事はありませんでした。" : "今週のダイジェスト対象となる記事はありませんでした。";
+  
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendWeeklyDigestEmail(headerLine, reportBody);
+    // daysWindowを渡す
+    sendWeeklyDigestEmail(headerLine, reportBody, null, daysWindow);
   }
 }
 
@@ -368,11 +429,14 @@ function getArticlesInDateWindow(start, end) {
  * sendWeeklyDigestEmail
  * 週次ダイジェストを HTML メールで送信する。
  */
-function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
+function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
   const props = PropertiesService.getScriptProperties();
   const to = props.getProperty("MAIL_TO");
   if (!to) { Logger.log("MAIL_TO未設定のためメール送信せず。"); return; }
-  const subjectPrefix = props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】";
+  
+  // プレフィックスを動的に変更
+  const prefixBase = daysWindow === 1 ? "日刊" : "週間";
+  const subjectPrefix = props.getProperty("MAIL_SUBJECT_PREFIX") || `【${prefixBase}RSS】`;
   const senderName = props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット";
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl = props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)";
@@ -391,7 +455,7 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount) {
   const htmlContent = markdownToHtml(fullMdBody);
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
   GmailApp.sendEmail(to, finalSubject, textBody, { name: senderName, htmlBody: fullHtmlBody });
-  Logger.log("メール送信（HTML形式）完了: " + to);
+  Logger.log(`メール送信（${prefixBase}ダイジェスト）完了: ${to}`);
 }
 
 // Trend detector: トレンド検出関連の関数群
@@ -916,7 +980,6 @@ function getDateWindow(days) {
   return { start, end };
 }
 
-
 // RSS collector: RSSフィードの収集と解析
 /**
  * collectRssFeeds
@@ -924,12 +987,15 @@ function getDateWindow(days) {
  * 新着記事を `collect` シートに追記する処理。
  * 重複チェックや日付フィルタを行い、必要に応じて抜粋のHTML除去やソース名の付与を行う。
  * 副作用: `collect` シートの更新
+ * RSSフィードを収集し、B列にタイトル、F列にソース名を書き込む
+ * 過去2日以内の記事のみを対象とする（日付フィルタ）
+ * RSSフィードを収集し、サイトごとにこまめに保存する（タイムアウト対策版）
+ * URLの正規化を行い、重複取得を防止する。
  */
 function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.RSS_LIST);
   const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
   
-  // RSSリスト取得
   const rssData = rssListSheet.getRange(
     Config.RssListSheet.DataRange.START_ROW, 
     Config.RssListSheet.DataRange.START_COL, 
@@ -937,74 +1003,96 @@ function collectRssFeeds() {
     Config.RssListSheet.DataRange.NUM_COLS
   ).getValues();
 
-  // 既存の記事URLを取得（重複チェック用）
-  const existingUrls = new Set();
-  if (collectSheet.getLastRow() >= Config.CollectSheet.DataRange.START_ROW) {
+  // 既存URL取得（正規化してSetに格納）
+  const existingUrlSet = new Set();
+  const lastRow = collectSheet.getLastRow();
+  
+  // 【修正】直近 10,000件のURLをチェック対象とする (過去の重複を拾いやすくするため)
+  if (lastRow >= Config.CollectSheet.DataRange.START_ROW) {
+    const checkLimit = 10000; 
+    const startRow = Math.max(2, lastRow - checkLimit + 1);
+    const numRows = lastRow - startRow + 1;
+
     const existingData = collectSheet.getRange(
-      Config.CollectSheet.DataRange.START_ROW,
-      Config.CollectSheet.Columns.URL,
-      collectSheet.getLastRow() - 1,
+      startRow,
+      Config.CollectSheet.Columns.URL, // C列
+      numRows,
       1
     ).getValues();
-    existingData.forEach(row => existingUrls.add(row[0]));
+    
+    // 【最重要】シート上のURLも正規化してセットに登録する
+    existingData.forEach(row => {
+      if (row[0]) existingUrlSet.add(normalizeUrl(row[0])); 
+    });
   }
+  
+  let totalNewCount = 0;
+  const DATE_LIMIT_DAYS = 2; 
 
-  const newItems = [];
-
-  // 各RSSフィードを処理
   for (const row of rssData) {
     const siteName = row[0];
     const rssUrl = row[1];
 
     if (!rssUrl) continue;
 
-    // RSS取得
     const items = fetchAndParseRss(rssUrl);
-
-    // 【修正点3】Null/空チェックの強化
     if (!items || !Array.isArray(items) || items.length === 0) {
-      console.warn(`記事が取得できませんでした: ${siteName} (${rssUrl})`);
-      continue; // スキップして次のRSSへ
+      continue;
     }
 
-    // 記事ごとに処理
+    const feedNewItems = [];
+
     for (const item of items) {
       try {
-        // 必須項目のチェック
         if (!item.link || !item.title) continue;
-
-        // 重複チェック
-        if (existingUrls.has(item.link)) continue;
-
-        // 新規追加リストへ (日付は現在時刻とするか、pubDateを使うかは運用による)
-        // ここでは収集日として今日の日付を入れる想定
-        newItems.push([
-          new Date(), // A列: 収集日時
-          siteName,   // B列: サイト名
-          item.link,  // C列: URL
-          item.description || Config.Llm.NO_ABSTRACT_TEXT, // D列: 抜粋
-          "",         // E列: 要約 (後でAIが埋める)
-          item.title  // F列: 元タイトル
-        ]);
-
-        // 一度に追加しすぎないよう制限する場合などはここにロジック追加
         
+        // 1. 重複チェック（正規化URLで比較）を日付チェックより先に行う
+        const normalizedLink = normalizeUrl(item.link);
+        if (existingUrlSet.has(normalizedLink)) {
+            continue; // 重複記事としてスキップ
+        }
+
+        // 2. 日付チェック
+        if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) {
+          // 日付情報がない、または2日より古いためスキップ
+          continue; 
+        }
+        
+        // HTML除去
+        const cleanDescription = stripHtml(item.description || Config.Llm.NO_ABSTRACT_TEXT).trim();
+        const cleanTitle = stripHtml(item.title).trim();
+
+        // データ作成: A:日付, B:タイトル, C:URL, D:抜粋, E:空, F:ソース名
+        const rowData = [
+          new Date(),      // A列: 収集日時
+          cleanTitle,      // B列: 元タイトル
+          item.link,       // C列: URL (オリジナルをそのまま保存)
+          cleanDescription,// D列: 抜粋
+          "",              // E列: 要約用
+          siteName         // F列: ソース名
+        ];
+
+        feedNewItems.push(rowData);
+        
+        // 重複防止用セットにも正規化URLを追加（同一実行内での重複も防ぐ）
+        existingUrlSet.add(normalizedLink);
+
       } catch (err) {
-        console.error(`アイテム処理エラー: ${err.message}`, item);
+        console.error(`アイテム処理エラー: ${siteName} - ${err.message}`);
       }
+    }
+
+    if (feedNewItems.length > 0) {
+      const startRow = collectSheet.getLastRow() + 1;
+      collectSheet.getRange(startRow, 1, feedNewItems.length, feedNewItems[0].length).setValues(feedNewItems);
+      SpreadsheetApp.flush(); 
+      
+      totalNewCount += feedNewItems.length;
+      Logger.log(`${siteName}: ${feedNewItems.length} 件追加 (過去${DATE_LIMIT_DAYS}日以内)`);
     }
   }
 
-  // シートへ書き込み
-  if (newItems.length > 0) {
-    // collectシートの構造に合わせて書き込む
-    // 前提: A=Date, B=Site, C=URL, D=Abstract, E=Summary, F=Title
-    const startRow = collectSheet.getLastRow() + 1;
-    collectSheet.getRange(startRow, 1, newItems.length, newItems[0].length).setValues(newItems);
-    Logger.log(`${newItems.length} 件の新しい記事を追加しました。`);
-  } else {
-    Logger.log("新しい記事はありませんでした。");
-  }
+  Logger.log(`合計 ${totalNewCount} 件の新しい記事を追加しました。`);
 }
 
 /**
@@ -1244,14 +1332,18 @@ function isRecentArticle(pubDate, daysLimit = 7) {
 }
 
 /**
- * sortCollectByDateAsc
- * `collect` シートを記事日付で降順にソートする。
+ * sortCollectByDateDesc
+ * collect シートを日付(A列)で「降順(新しい順)」に並び替える
  */
-function sortCollectByDateAsc() {
+function sortCollectByDateDesc() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).sort({ column: 1, ascending: false });
-    Logger.log("collectシートを日付で降順にソートしました。");
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow > 1) {
+    // 2行目から最終行までを、1列目(A列)を基準に降順(false)でソート
+    sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn())
+         .sort({ column: 1, ascending: false });
+    Logger.log("collectシートを日付(最新順)で並び替えました。");
   }
 }
 
@@ -1428,6 +1520,7 @@ function callLlmForAnalysis(systemPrompt, userContent) {
  * removeDuplicates
  * 【メンテナンス用】collectシート内の重複記事（同一URL）を削除して整理する。
  * URL（C列）が同じ場合、より上の行（古い方/要約済みの方）を残します。
+ * 【修正】重複チェックに normalizeUrl を使用するように変更しました。
  */
 function removeDuplicates() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
@@ -1445,7 +1538,8 @@ function removeDuplicates() {
   const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
   const values = range.getValues();
   
-  const uniqueUrls = new Set();
+  // ★正規化されたURLを格納するSetに変更★
+  const uniqueNormalizedUrls = new Set();
   const uniqueRows = [];
   let duplicateCount = 0;
 
@@ -1453,13 +1547,20 @@ function removeDuplicates() {
   values.forEach(row => {
     const url = row[Config.CollectSheet.Columns.URL - 1]; // C列
     
-    // URLが空でなく、まだセットに入っていない場合のみ採用
-    if (url && !uniqueUrls.has(url)) {
-      uniqueUrls.add(url);
-      uniqueRows.push(row);
+    if (url) {
+      // 正規化されたURLでチェック
+      const normalizedUrl = normalizeUrl(url); 
+      
+      if (!uniqueNormalizedUrls.has(normalizedUrl)) {
+        uniqueNormalizedUrls.add(normalizedUrl);
+        uniqueRows.push(row);
+      } else {
+        // 既に存在する正規化URLなら重複としてカウント（スキップ）
+        duplicateCount++;
+      }
     } else {
-      // 既に存在するURLなら重複としてカウント（スキップ）
-      duplicateCount++;
+      // URLが空の行はそのまま残す（稀なケースだが安全のため）
+      uniqueRows.push(row);
     }
   });
 
@@ -1471,6 +1572,63 @@ function removeDuplicates() {
     }
     Logger.log(`完了: ${duplicateCount} 件の重複記事を削除しました。`);
   } else {
-    Logger.log("重複記事は見つかりませんでした（URLが完全に一致するものはありません）。");
+    Logger.log("重複記事は見つかりませんでした。");
   }
+}
+/**
+ * normalizeUrl
+ * 【最終版】重複判定用にURLを正規化する
+ * 1. URLデコードでエンコーディングの不一致を解消
+ * 2. クエリパラメータとフラグメントを削除
+ * 3. プロトコル、www.、末尾スラッシュの揺れを吸収
+ */
+// function normalizeUrl を確認/置き換え
+function normalizeUrl(url) {
+  if (!url) return "";
+  let s = String(url).trim();
+  
+  // 1. 【最重要】URLデコードを実行し、エンコーディングの違いを吸収する
+  try {
+    s = decodeURIComponent(s);
+  } catch (e) {
+    // デコードできなかった場合（既にデコードされている等）は、そのまま続行
+  }
+  
+  // 2. クエリパラメータ (?) とフラグメント (#) を削除
+  const queryIndex = s.indexOf('?');
+  if (queryIndex > -1) {
+    s = s.substring(0, queryIndex);
+  }
+  const hashIndex = s.indexOf('#');
+  if (hashIndex > -1) {
+    s = s.substring(0, hashIndex);
+  }
+  
+  // 3. プロトコル削除 (http/httpsの揺れ吸収)
+  s = s.replace(/^https?:\/\//, "//");
+  
+  // 4. www.削除
+  s = s.replace(/\/\/www\./, "//");
+  
+  // 5. 末尾スラッシュ削除
+  s = s.replace(/\/$/, "");
+  
+  return s;
+}
+
+/**
+ * isRecentDate
+ * 日付文字列を受け取り、指定日数以内かどうかを判定する
+ */
+function isRecentDate(dateStr, daysLimit) {
+  if (!dateStr) return false; // 日付情報がない場合は弾く
+  
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return false; // パースできない場合も弾く
+
+  const now = new Date();
+  const diffTime = now - date;
+  const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
+  return diffDays <= daysLimit;
 }
