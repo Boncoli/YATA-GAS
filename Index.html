@@ -7,8 +7,14 @@
   <style>
     body { font-family: sans-serif; padding: 20px; }
     input[type="text"] { width: 300px; padding: 8px; margin-bottom: 10px; }
-    button { padding: 10px 15px; cursor: pointer; }
-    #output { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9; }
+    button { padding: 10px 15px; cursor: pointer; margin-right: 10px; }
+    #output, #analysis-output { 
+      margin-top: 20px; 
+      padding: 10px; 
+      border: 1px solid #ccc; 
+      background: #f9f9f9; 
+      min-height: 50px;
+    }
     .loading { color: #888; }
     /* ローディングスピナーのスタイル */
     .spinner {
@@ -18,7 +24,7 @@
       width: 20px;
       height: 20px;
       animation: spin 1s linear infinite;
-      display: inline-block; /* テキストと並べるため */
+      display: none; /* 初期状態では非表示 */
       vertical-align: middle; /* テキストと中央揃え */
       margin-left: 10px;
     }
@@ -36,46 +42,76 @@
   </style>
 </head>
 <body>
-  <h2>RSS ダイジェスト実行</h2>
+  <h2>RSS 処理ツール</h2>
 
   <label for="keyword">キーワード:</label><br>
   <input type="text" id="keyword" name="keyword" placeholder="検索キーワードを入力してください"><br><br>
 
-  <button id="runButton" onclick="runDigestJob()">実行</button>
+  <button id="runButton" onclick="runDigestJob()">ダイジェスト実行</button>
+  <button id="runAnalysisButton" onclick="runAnalysisJob()">分析実行</button>
+  <div id="loadingSpinner" class="spinner"></div>
 
-  <div id="output">ステータス: 待機中</div>
-  <div id="loadingSpinner" class="spinner" style="display: none;"></div>
+  <h3>ダイジェスト実行結果</h3>
+  <div id="output">待機中</div>
+  
+  <h3>分析実行結果</h3>
+  <div id="analysis-output">待機中</div>
 
   <script>
+    function disableButtons(disabled) {
+      document.getElementById('runButton').disabled = disabled;
+      document.getElementById('runAnalysisButton').disabled = disabled;
+      document.getElementById('loadingSpinner').style.display = disabled ? 'inline-block' : 'none';
+    }
+
     function runDigestJob() {
       const keyword = document.getElementById('keyword').value;
       const output = document.getElementById('output');
-      const runButton = document.getElementById('runButton'); // ボタン要素を取得
-      const loadingSpinner = document.getElementById('loadingSpinner'); // スピナー要素を取得
 
       if (!keyword.trim()) {
-        output.innerHTML = 'ステータス: 待機中<br>キーワードを入力してください。';
+        output.innerHTML = 'キーワードを入力してください。';
         return;
       }
 
-      output.innerHTML = '<span class="loading">ステータス: 実行中...</span>';
-      runButton.disabled = true; // ボタンを無効化
-      loadingSpinner.style.display = 'block'; // スピナーを表示
+      output.innerHTML = '<span class="loading">実行中...</span>';
+      disableButtons(true);
 
-      // サーバーサイドのGAS関数 (executeWeeklyDigest) を呼び出す
       google.script.run
         .withSuccessHandler(function(result) {
-          output.innerHTML = 'ステータス: 完了<br>' + (result || '<div>該当記事がありませんでした。</div>');
-          runButton.disabled = false; // ボタンを有効化
-          loadingSpinner.style.display = 'none'; // スピナーを非表示
+          output.innerHTML = result || '<div>該当記事がありませんでした。</div>';
+          disableButtons(false);
         })
         .withFailureHandler(function(error) {
           const msg = (error && error.message) ? error.message : String(error);
-          output.innerHTML = 'ステータス: エラー<br>' + msg;
-          runButton.disabled = false; // ボタンを有効化
-          loadingSpinner.style.display = 'none'; // スピナーを非表示
+          output.innerHTML = '<strong>エラー:</strong><br>' + msg;
+          disableButtons(false);
         })
-        .executeWeeklyDigest(keyword); // GAS関数名
+        .executeWeeklyDigest(keyword);
+    }
+    
+    function runAnalysisJob() {
+      const keyword = document.getElementById('keyword').value;
+      const output = document.getElementById('analysis-output');
+
+      if (!keyword.trim()) {
+        output.innerHTML = 'キーワードを入力してください。';
+        return;
+      }
+
+      output.innerHTML = '<span class="loading">分析中...</span>';
+      disableButtons(true);
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          output.innerHTML = result || '<div>分析結果がありませんでした。</div>';
+          disableButtons(false);
+        })
+        .withFailureHandler(function(error) {
+          const msg = (error && error.message) ? error.message : String(error);
+          output.innerHTML = '<strong>エラー:</strong><br>' + msg;
+          disableButtons(false);
+        })
+        .searchAndAnalyzeKeyword(keyword);
     }
   </script>
 </body>
