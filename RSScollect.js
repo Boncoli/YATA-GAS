@@ -1,8 +1,36 @@
 /**
  * @file RSScollect.js
  * @description RSSフィードを収集し、AIで見出しと週次ダイジェストを生成するGoogle Apps Script
- * @version 2.6.0
- * @date 2025-11-10
+ * @version 2.6.1
+ * @date 2025-11-25
+ * 
+ * ===== スクリプトプロパティの変更履歴 =====
+ * 
+ * 【2025-11-25】NANO/MINI機能ベース命名への統一
+ * 
+ * 旧プロパティキー（廃止）:
+ *   - OPENAI_MODEL_DAILY   → 削除
+ *   - OPENAI_MODEL_WEEKLY  → 削除
+ *   - AZURE_ENDPOINT_URL_WEEKLY → 削除
+ * 
+ * 新プロパティキー（推奨）:
+ *   - OPENAI_MODEL_NANO          : 軽量処理用モデル（見出し生成、キーワード抽出）
+ *     デフォルト: "gpt-4.1-nano"
+ *     使用関数: summarizeWithLLM(), extractKeywordsWithLLM()
+ * 
+ *   - OPENAI_MODEL_MINI          : 高次分析用モデル（日刊・週刊ダイジェスト、検索分析）
+ *     デフォルト: "gpt-4.1-mini"
+ *     使用関数: callDailyDigestLlm(), _llmMakeTrendSections(), searchAndAnalyzeKeyword()
+ * 
+ *   - AZURE_ENDPOINT_URL_NANO    : Azure OpenAI 軽量処理用エンドポイント
+ *     使用関数: summarizeWithLLM(), extractKeywordsWithLLM()
+ * 
+ *   - AZURE_ENDPOINT_URL_MINI    : Azure OpenAI 高次分析用エンドポイント
+ *     使用関数: callDailyDigestLlm(), _llmMakeTrendSections(), searchAndAnalyzeKeyword()
+ * 
+ * フォールバック戦略（全関数共通）:
+ *   Azure OpenAI → OpenAI Personal → Google Gemini
+ * 
  */
 
 // Core: 全体設定と定数
@@ -43,10 +71,23 @@ const Config = {
   },
 };
 
-// Triggers: スクリプトのエントリポイント（タイムトリガーなどから呼び出す）
+/**
+ * ================================================================================
+ * SECTION 1: TRIGGER ENTRY POINTS
+ * ================================================================================
+ * タイムトリガーからの呼び出しエントリポイント。
+ * 各関数は独立した処理フローを実行：
+ *   - mainAutomationFlow    : 日次自動化（RSS収集→見出し生成→トレンド検出）
+ *   - dailyDigestJob        : 日刊ダイジェスト生成・送信
+ *   - weeklyDigestJob       : 週刊ダイジェスト生成・送信（キーワードベース）
+ * ================================================================================
+ */
+
 /**
  * mainAutomationFlow
- * 日次トリガー用のエントリポイント。
+ * 【責務】日次自動化フロー：RSS収集 → 見出し生成 → トレンド検出
+ * 【実行サイクル】毎日 1:00 AM (タイムトリガー設定)
+ * 【副作用】collectシート・Trendsシート更新、LLMAPI呼び出し
  */
 function mainAutomationFlow() {
   Logger.log("--- 自動化フロー開始 ---");
@@ -68,8 +109,16 @@ function mainAutomationFlow() {
 
 /**
  * dailyDigestJob
- * 日刊ダイジェストを生成・送信するエントリポイント。
- * 対象期間: 過去24時間 (1日)。キーワードではなく、全記事を対象とする。
+ * 【責務】日刊ダイジェスト生成・送信：過去24時間の全記事をLLMで要約
+ * 【実行サイクル】毎日 8:00 AM (タイムトリガー設定)
+ * 【特徴】キーワードフィルタリング不要、期間内の全記事を対象
+ * 【処理流程】
+ *   1. 過去24時間の記事を取得
+ *   2. LLM（Azure→OpenAI→Gemini）でトピック抽出・要約生成
+ *   3. Trendsシートに記録
+ *   4. メール送信
+ * @param {none}
+ * @returns {none}
  */
 function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
@@ -102,11 +151,21 @@ function dailyDigestJob() {
 
 /**
  * weeklyDigestJob
- * 週次ダイジェストを生成・送信するエントリポイント。
- * 引数:
- *  - webUiKeyword: Web UI 経由で単発にキーワードを指定する場合に使用
- *  - returnHtmlOnly: true を指定すると HTML 本文のみを返す（テスト用）
- * 内部で記事抽出、フィルタリング、LLM 呼び出し、メール送信を行います。
+ * 【責務】週刊ダイジェスト生成・送信：過去7日のキーワード関連記事をLLMで分析
+ * 【実行サイクル】毎週 月曜 9:00 AM (タイムトリガー設定)
+ * 【特徴】Keywords シートのキーワードでフィルタリング、トレンドセクション生成
+ * 【処理流程】
+ *   1. 過去7日の記事を取得
+ *   2. Keywordsシートのキーワード でフィルタリング
+ *   3. 上位N件をスコア付けで選抜
+ *   4. LLMでトレンドセクション生成（キーワード毎）
+ *   5. メール送信
+ * 【引数】
+ *   - webUiKeyword   : Web UI から単発入力されたキーワード（優先度高）
+ *   - returnHtmlOnly : true→HTML返却のみ（メール送信せず）
+ * @param {string} webUiKeyword - （オプション）Web UI キーワード入力
+ * @param {boolean} returnHtmlOnly - （オプション）HTML返却のみフラグ
+ * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
 // function weeklyDigestJob を置き換え
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
@@ -148,8 +207,17 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 
 /**
  * processSummarization
- * 日次処理内で未生成の見出し（E列）をチェックし、AIで見出しを生成する。
- * 【改善】5分経過したらタイムアウトを回避するために処理を中断し、そこまでの結果を保存する機能を追加
+ * 【責務】未生成の見出し（E列）をAIで生成：短記事は簡易処理、長記事はLLM処理
+ * 【実行タイミング】mainAutomationFlow から呼び出し（日次 1:00 AM）
+ * 【タイムアウト対策】5分経過で処理中断→進捗保存し、残りは次回実行に委譲
+ * 【処理流程】
+ *   1. 全行をスキャンして見出し未生成の記事を特定
+ *   2. 短記事（抜粋<100字 or 「抜粋なし」）：タイトルまたはGOOGLETRANSLATE数式で代用
+ *   3. 長記事：LLM呼び出し（NANO モデル）で見出し生成
+ *   4. 5分上限チェックで強制終了→進捗をシートに保存
+ * 【副作用】collectシートのE列（SUMMARY）を更新、LLM API呼び出し（複数回）
+ * @param {none}
+ * @returns {none}
  */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -252,13 +320,29 @@ function processSummarization() {
   }
 }
 
-// Weekly digest: 週次ダイジェストの作成・送信ロジック
+/**
+ * ================================================================================
+ * SECTION 2: WEEKLY DIGEST PROCESSORS
+ * ================================================================================
+ * 週刊ダイジェスト生成・送信の関数群。
+ * キーワードベースのフィルタリング、記事選抜、LLM分析の統合フロー。
+ * ================================================================================
+ */
 
 /**
  * _filterRelevantArticles
- * 指定したキーワードに合致する記事を抽出し、キーワード毎のヒット数を集計する。
- * 入力: 全記事配列、（オプション）単発キーワード
- * 出力: { relevantArticles, hitKeywordsWithCount, articleKeywordMap }
+ * 【責務】キーワード照合で関連記事をフィルタリング・ヒット数集計
+ * 【機能】
+ *   - キーワード AND/OR 論理演算をサポート（例："Python AND AI" → 両キーワード含む記事のみ抽出）
+ *   - 記事（タイトル+抜粋+見出し）とキーワードを正規表現でマッチング
+ *   - キーワード毎のヒット数を集計→後続の優先度判定に利用
+ * 【入力】
+ *   - allItems : 全記事配列 ({ date, title, url, abstractText, headline, source })
+ *   - webUiKeyword : Web UI から入力されたキーワード（優先度高）
+ * 【出力】
+ *   - { relevantArticles, hitKeywordsWithCount, articleKeywordMap }
+ *   - hitKeywordsWithCount : キーワード毎の記事数（ソート済み）
+ *   - articleKeywordMap : URL→キーワード配列の Map（スコア計算用）
  */
 function _filterRelevantArticles(allItems, webUiKeyword = null) {
   let activeKeywords = [];
@@ -302,7 +386,9 @@ function _filterRelevantArticles(allItems, webUiKeyword = null) {
 
 /**
  * _logKeywordHitCounts
- * コンソールにキーワード別ヒット数を整形して出力するヘルパー。
+ * 【責務】コンソール出力：キーワード別ヒット件数の整形ログ
+ * @param {Array} hitKeywordsWithCount - { keyword, count } 配列
+ * @returns {none} (ログ出力のみ)
  */
 function _logKeywordHitCounts(hitKeywordsWithCount) {
   let hitLog = "【キーワード別ヒット件数】\n";
@@ -314,8 +400,29 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
 
 /**
  * _generateAndSendDigest
- * 週次ダイジェストの本文を生成し、設定に応じてメール送信する。
- * returnHtmlOnly=true の場合は HTML を返す（WebUI 用/テスト用）。
+ * 【責務】週刊ダイジェスト本文生成・メール送信
+ * 【処理流程】
+ *   1. relevantArticles をヒューリスティックスコアで選抜（上位N件）
+ *   2. キーワード毎に記事をグループ化
+ *   3. LLM でトレンドセクション生成
+ *   4. Markdown→HTML変換、メール送信
+ * 【引数】
+ *   - relevantArticles : キーワード関連記事配列
+ *   - hitKeywordsWithCount : キーワード毎ヒット数配列
+ *   - articleKeywordMap : URL→キーワード配列の Map
+ *   - config : digest設定 { days, topN, notifyChannel, ... }
+ *   - start, end : 集計期間
+ *   - returnHtmlOnly : true→HTML返却のみ（メール送信しない）
+ *   - daysWindow : 集計期間（日数）：日刊=1, 週刊=7
+ * @param {Array} relevantArticles - フィルタリング済み記事配列
+ * @param {Array} hitKeywordsWithCount - キーワード毎ヒット数（ソート済み）
+ * @param {Map} articleKeywordMap - URL→キーワード配列
+ * @param {Object} config - ダイジェスト設定
+ * @param {Date} start - 集計開始日時
+ * @param {Date} end - 集計終了日時
+ * @param {boolean} returnHtmlOnly - HTML返却のみフラグ
+ * @param {number} daysWindow - 期間（1=日刊, 7=週刊）
+ * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
 function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false, daysWindow = 7) {
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
@@ -348,11 +455,27 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
 }
 
 
-/*******************************************************
- * _generateAndSendDailyDigest  （差し替え版）
- * 日刊ダイジェスト：全記事から LLM でトピック抽出＆要約し送信
- * Azure > OpenAI > Gemini のフォールバック順で実行
- *******************************************************/
+/**
+ * _generateAndSendDailyDigest
+ * 【責務】日刊ダイジェスト生成・メール送信（全記事対象、キーワード不要）
+ * 【処理流程】
+ *   1. 全記事を文字列化
+ *   2. LLM でトピック抽出・要約生成（MINI モデル）
+ *   3. 結果を Trendsシート に記録
+ *   4. メール送信
+ * 【LLM戦略】Azure > OpenAI > Gemini フォールバック
+ * 【引数】
+ *   - allArticles : 全記事配列（フィルタリングなし）
+ *   - config : digest設定
+ *   - start, end : 集計期間
+ *   - daysWindow : 1（日刊固定）
+ * @param {Array} allArticles - 全記事配列
+ * @param {Object} config - ダイジェスト設定
+ * @param {Date} start - 集計開始日時
+ * @param {Date} end - 集計終了日時
+ * @param {number} daysWindow - 1（日刊）
+ * @returns {none}
+ */
 function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow) {
   const digestSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
 
@@ -398,12 +521,16 @@ function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow
   sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow);
 }
 
-/********************************************************
- * callDailyDigestLlm（新規追加）
- * 日刊ダイジェスト用：Azure > OpenAI > Gemini の順に試行
- * - モデル指定は OpenAI 用のみ（props: OPENAI_MODEL_DAILY）
- * - Azure はデプロイメントURLに紐づくモデルが使用されます
- ********************************************************/
+/**
+ * callDailyDigestLlm
+ * 【責務】日刊ダイジェスト専用 LLM 呼び出し（フォールバック付き）
+ * 【モデル】MINI (gpt-4.1-mini) ← 高次分析用
+ * 【LLM戦略】Azure > OpenAI > Gemini
+ * 【用途】日刊・週刊の高度な分析・まとめ生成
+ * @param {string} systemPrompt - システムプロンプト（指示）
+ * @param {string} userPrompt - ユーザープロンプト（入力データ）
+ * @returns {string} LLMからの回答（エラーメッセージ含む）
+ */
 function callDailyDigestLlm(systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
 
@@ -429,9 +556,11 @@ function callDailyDigestLlm(systemPrompt, userPrompt) {
 
 /**
  * getDailyDigestPrompts
- * プロンプト設定シートから、日刊ダイジェスト用のプロンプトを取得する。
- * DAILY_DIGEST_SYSTEM (A列) と DAILY_DIGEST_USER (A列) の2つのキーを参照します。
- * @returns {[string, string]} [システムプロンプト, ユーザープロンプト]
+ * 【責務】promptシートから日刊ダイジェスト用プロンプト取得
+ * 【キー】'DAILY_DIGEST_SYSTEM', 'DAILY_DIGEST_USER'
+ * @param {none}
+ * @returns {Array} [systemPrompt, userPrompt]
+ * @throws プロンプト設定が不完全な場合
  */
 function getDailyDigestPrompts() {
   const promptSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.PROMPT_CONFIG);
@@ -468,7 +597,14 @@ function getDailyDigestPrompts() {
 
 /**
  * _handleNoArticlesFound
- * 対象記事が無い場合の通知処理（メール送信など）。
+ * 【責務】対象記事がない場合の通知処理（メール送信）
+ * 【用途】日刊・週刊の両方で、記事なしエラー時に呼び出し
+ * @param {Object} config - digest設定
+ * @param {Date} start - 集計開始日時
+ * @param {Date} end - 集計終了日時
+ * @param {string} message - ログメッセージ
+ * @param {number} daysWindow - 1=日刊, 7=週刊（メッセージ切り替え用）
+ * @returns {none}
  */
 function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) { 
   Logger.log(`ダイジェスト：${message}`);
@@ -486,7 +622,12 @@ function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) {
 
 /**
  * rankAndSelectArticles
- * 記事をヒューリスティックでスコア付けし、上位 N 件を選抜する。
+ * 【責務】記事をスコア付けして上位N件を選抜
+ * 【スコア計算】キーワードマッチ度 + 新鮮度 + 抜粋長
+ * @param {Array} relevantArticles - 候補記事配列
+ * @param {Object} config - topN設定を含む config
+ * @param {Map} articleKeywordMap - URL→キーワード配列の Map
+ * @returns {Object} { selectedTopN: 選抜記事配列 }
  */
 function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
   const topN = config.topN || 20;
@@ -501,7 +642,12 @@ function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
 
 /**
  * generateWeeklyReportWithLLM
- * LLM を用いてトレンドセクションを生成するラッパー。
+ * 【責務】LLM でトレンドセクション生成（キーワード毎）
+ * 【処理】_llmMakeTrendSections ラッパー
+ * @param {Array} articles - 選抜記事配列
+ * @param {Array} hitKeywordsWithCount - キーワード毎ヒット数
+ * @param {Object} articlesGroupedByKeyword - キーワード→記事配列 の Object
+ * @returns {Object} { reportBody: Markdown本文 }
  */
 function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword) {
   const LINKS_PER_TREND = 3;
@@ -512,7 +658,13 @@ function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGro
 
 /**
  * getArticlesInDateWindow
- * 指定した期間に該当する `collect` シート上の記事を取得する。
+ * 【責務】collect シートから指定期間内の記事を抽出
+ * 【フィルタ】
+ *   - 日付が範囲内
+ *   - E列（見出し）が存在＆空でない＆エラーでない
+ * @param {Date} start - 開始日時（含む）
+ * @param {Date} end - 終了日時（含まない）
+ * @returns {Array} 記事配列 ({ date, title, url, abstractText, headline, source })
  */
 function getArticlesInDateWindow(start, end) {
   const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
@@ -535,7 +687,16 @@ function getArticlesInDateWindow(start, end) {
 
 /**
  * sendWeeklyDigestEmail
- * 週次ダイジェストを HTML メールで送信する。
+ * 【責務】ダイジェストメール送信（日刊・週刊両対応）
+ * 【仕様】
+ *   - Markdown→HTML変換してリッチメール送信
+ *   - プレフィックスを daysWindow で自動切り替え（「日刊RSS」 or 「週間RSS」）
+ *   - キーワード注記セクション含む
+ * @param {string} headerLine - ヘッダー（期間表示）
+ * @param {string} mdBody - Markdown本文
+ * @param {Array} hitKeywordsWithCount - キーワード毎ヒット数（null可）
+ * @param {number} daysWindow - 1=日刊, 7=週刊（メール件名・本文用）
+ * @returns {none}
  */
 function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
   const props = PropertiesService.getScriptProperties();
@@ -566,15 +727,28 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWin
   Logger.log(`メール送信（${prefixBase}ダイジェスト）完了: ${to}`);
 }
 
-// Trend detector: トレンド検出関連の関数群
+/**
+ * ================================================================================
+ * SECTION 3: TREND DETECTION
+ * ================================================================================
+ * トレンド検出・分析の関数群。
+ * 日次の重要キーワード抽出、過去データとの比較、変化率計算、結果記録。
+ * ================================================================================
+ */
 
 /**
  * detectAndRecordTrends
- * 日次トレンド検出のエントリポイント。
- * - 過去1日分の記事タイトルを集め、LLMで重要キーワードを抽出
- * - 過去の `Trends` シートから履歴を取得し、変化率を計算
- * - 検出されたトレンドを `Trends` シートに記録
- * 副作用: `Trends` シートに行を追加
+ * 【責務】日次トレンド検出・記録のエントリポイント
+ * 【処理流程】
+ *   1. 過去1日分の記事タイトル を取得
+ *   2. LLM (NANO) でキーワード抽出
+ *   3. 過去7日分の Trendsシート から履歴を取得
+ *   4. 出現回数＆新規/既出判定でスコア計算
+ *   5. Trendsシート に書き込み
+ * 【制御】TREND_DETECTION_ENABLED=true でのみ実行
+ * 【副作用】Trendsシート更新、LLM API呼び出し（1回）
+ * @param {none}
+ * @returns {none}
  */
 function detectAndRecordTrends() {
   const props = PropertiesService.getScriptProperties();
@@ -608,7 +782,9 @@ function detectAndRecordTrends() {
 }
 /**
  * getArticlesForTrendAnalysis
- * トレンド解析対象となる期間内（days）の記事タイトルを取得する。
+ * 【責務】トレンド分析対象期間の記事タイトルを取得
+ * @param {number} days - 日数（通常 1）
+ * @returns {Array} { date, title } 配列
  */
 function getArticlesForTrendAnalysis(days) {
   const { start, end } = getDateWindow(days);
@@ -627,10 +803,10 @@ function getArticlesForTrendAnalysis(days) {
 }
 /**
  * getHistoricalTrendData
- * `Trends` シートから過去 N 日分のキーワード一覧を取得し、
- * 本日のキーワードとの一致判定に用いる。
- * 過去のカウント集計は不要（変化率計算は不要）。
- * 返り値: Map<keyword, true> （キーワードの存在確認用）
+ * 【責務】Trendsシートから過去N日のキーワード履歴を取得
+ * 【用途】本日のキーワードが既出か新規かを判定するため
+ * @param {number} days - 遡り日数（デフォルト 7）
+ * @returns {Map} キーワード→true の Map（存在確認用）
  */
 function getHistoricalTrendData(days = 7) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
@@ -658,10 +834,14 @@ function getHistoricalTrendData(days = 7) {
 }
 /**
  * calculateTrendScores
- * 本日のキーワードと過去7日分のキーワード一覧を照合し、
- * 既出キーワードなら「ホット」フラグを立てる。
- * 新規キーワードまたは出現回数が少ないものは「通常」扱い。
- * 変化率表示: 🆕 New（新規）または ✓ 既出キーワード
+ * 【責務】本日キーワードのスコア計算＆ホット判定
+ * 【判定ロジック】
+ *   - 新規キーワード：🆕 New
+ *   - 既出キーワード：✓ 既出
+ *   - ホット判定：出現回数 ≥ 2 ならホット
+ * @param {Array} todayKeywords - 本日抽出キーワード配列
+ * @param {Map} historicalKeywords - 過去キーワード Map
+ * @returns {Array} トレンド配列 ({ keyword, count, changeRate, relatedArticles, summary, isHot })
  */
 function calculateTrendScores(todayKeywords, historicalKeywords) {
   const todayCounts = new Map();
@@ -702,11 +882,15 @@ function calculateTrendScores(todayKeywords, historicalKeywords) {
 
 /**
  * writeTrendsToSheet
- * 検出されたトレンド情報を `Trends` シートへ書き込む。
- * 本日のキーワードが既に存在する場合は出現回数を更新し、
- * 新規キーワードの場合は新規行を追加する。
- * 各行は A: 日付, B: キーワード(英語), C: キーワード(日本語) [数式], D: 出現回数, E: 変化率, F: 関連記事数, G: 要約
- * 書き込み後、D列（出現回数）を降順でソートして視覚的に傾向を把握しやすくする。
+ * 【責務】トレンド情報を Trendsシート に書き込み
+ * 【仕様】
+ *   - A: 日付, B: キーワード, C: 日本語訳（GOOGLETRANSLATE数式）
+ *   - D: 出現回数, E: 変化率（新規/既出）, F: 関連記事数, G: 要約
+ *   - 既存キーワード（本日同日付）：出現回数を加算
+ *   - 新規キーワード：新規行追加
+ *   - 最後にD列（出現回数）で降順ソート
+ * @param {Array} trends - トレンド配列
+ * @returns {none}
  */
 function writeTrendsToSheet(trends) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
@@ -779,11 +963,28 @@ function writeTrendsToSheet(trends) {
   // 処理完了ログ（サマリーのみ）
   Logger.log(`トレンド追記完了: 新規${newKeywords.length}件、更新${updateKeywords.length}件`);
 }
-// LLM service: LLM 呼び出しラッパー
+
+/**
+ * ================================================================================
+ * SECTION 4: LLM SERVICE LAYER
+ * ================================================================================
+ * LLM呼び出しの統一フロー。Azure/OpenAI/Gemini のフォールバック処理。
+ * モデル選択：
+ *   - NANO (gpt-4.1-nano)  : 軽量処理（見出し生成、キーワード抽出）
+ *   - MINI (gpt-4.1-mini)  : 高次分析（ダイジェスト生成、トレンド分析、キーワード分析）
+ * ================================================================================
+ */
 
 /**
  * _callAzureLlm
- * Azure OpenAI (Chat Completions) を呼び出す。失敗時は null を返す。
+ * 【責務】Azure OpenAI Chat Completions API 呼び出し
+ * 【仕様】エラー時は null 返却→フォールバックへ
+ * @param {string} systemPrompt - システムプロンプト
+ * @param {string} userPrompt - ユーザープロンプト
+ * @param {string} azureUrl - デプロイメント URL
+ * @param {string} azureKey - API キー
+ * @param {Object} options - { temperature, max_completion_tokens など }
+ * @returns {string|null} 回答文字列またはnull
  */
 function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
   Logger.log("Azure OpenAIを試行中...");
@@ -810,7 +1011,14 @@ function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {
 }
 /**
  * _callOpenAiLlm
- * OpenAI Chat Completions API を呼び出す。
+ * 【責務】OpenAI Chat Completions API 呼び出し
+ * 【仕様】エラー時は null 返却→フォールバックへ
+ * @param {string} systemPrompt - システムプロンプト
+ * @param {string} userPrompt - ユーザープロンプト
+ * @param {string} openAiModel - モデル名（gpt-4.1-nano または gpt-4.1-mini）
+ * @param {string} openAiKey - API キー
+ * @param {Object} options - { temperature など }
+ * @returns {string|null} 回答文字列またはnull
  */
 function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
   Logger.log("OpenAI APIを試行中...");
@@ -837,7 +1045,13 @@ function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, option
 }
 /**
  * _callGeminiLlm
- * Google Generative Language (Gemini) を呼び出すラッパー。
+ * 【責務】Google Gemini API 呼び出し（フォールバック最後の砦）
+ * 【仕様】エラー時は null 返却
+ * @param {string} systemPrompt - システムプロンプト
+ * @param {string} userPrompt - ユーザープロンプト
+ * @param {string} geminiApiKey - API キー
+ * @param {Object} options - { temperature など }
+ * @returns {string|null} 回答文字列またはnull
  */
 function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
   Logger.log("Gemini APIを試行中...");
@@ -863,7 +1077,15 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
 
 /**
  * callLlmWithFallback
- * Azure/OpenAI/Gemini の順で呼び出し、成功した結果を返す。全て失敗した場合はエラーメッセージを返す。
+ * 【責務】LLM 呼び出しのフォールバック制御
+ * 【戦略】Azure → OpenAI → Gemini の順で試行。全失敗時はエラーメッセージ返却
+ * 【特徴】azureUrlOverride で動的にエンドポイント切り替え可能（NANO/MINI用途別）
+ * @param {string} systemPrompt - システムプロンプト
+ * @param {string} userPrompt - ユーザープロンプト
+ * @param {string} openAiModel - デフォルトモデル（"gpt-4.1-nano" または "gpt-4.1-mini"）
+ * @param {string} azureUrlOverride - Azure エンドポイント（null=デフォルト）
+ * @param {Object} options - { temperature など }
+ * @returns {string} 回答文字列またはエラーメッセージ
  */
 function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null, options = {}) {
   const props = PropertiesService.getScriptProperties();
@@ -892,7 +1114,11 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
 
 /**
  * summarizeWithLLM
- * 記事テキストを LLM に投げて要約（JSON等）を取得する。
+ * 【責務】記事テキストをLLMで要約（見出し生成）
+ * 【モデル】NANO (gpt-4.1-nano) ← 軽量処理用
+ * 【用途】processSummarization() から呼び出し
+ * @param {string} articleText - "Title: xxx\nAbstract: yyy" 形式テキスト
+ * @returns {string} JSON形式返却（tldr or summary キーを期待）
  */
 function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
@@ -906,7 +1132,13 @@ function summarizeWithLLM(articleText) {
 
 /**
  * _llmMakeTrendSections
- * トレンドごとのセクションを LLM で生成する。
+ * 【責務】キーワード毎にLLMでトレンドセクション生成
+ * 【モデル】MINI (gpt-4.1-mini) ← 高次分析用
+ * 【出力形式】Markdown（見出しH3 + 解説 + 記事リンク）
+ * @param {Object} articlesGroupedByKeyword - { keyword: [記事配列] }
+ * @param {number} linksPerTrend - 各トレンドの記事リンク数上限
+ * @param {Array} hitKeywords - キーワード配列（処理対象）
+ * @returns {string} Markdown本文
  */
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
   const props = PropertiesService.getScriptProperties();
@@ -939,7 +1171,11 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
 
 /**
  * extractKeywordsWithLLM
- * テキスト群を LLM に投げて重要キーワードを抽出する。
+ * 【責務】テキスト群からLLMで重要キーワード抽出
+ * 【モデル】NANO (gpt-4.1-nano) ← 軽量処理用
+ * 【用途】トレンド検出時に dailyKeywords を生成
+ * @param {string} text - 改行区切りのテキスト群（記事タイトルなど）
+ * @returns {Array} キーワード配列（空行除去済み）
  */
 function extractKeywordsWithLLM(text) {
   const props = PropertiesService.getScriptProperties();
@@ -952,11 +1188,20 @@ function extractKeywordsWithLLM(text) {
   }
   return null;
 }
-// Utilities: 補助関数群（ファイル下部にまとめています）
+
+/**
+ * ================================================================================
+ * SECTION 5: UTILITIES & HELPERS
+ * ================================================================================
+ * 補助関数群：スプレッドシート操作、設定取得、テキスト変換、日付操作など。
+ * ================================================================================
+ */
 
 /**
  * getWeightedKeywords
- * Keywords シートから、有効フラグが立っているキーワードのリストを取得する。
+ * 【責務】Keywordsシートから有効キーワードを取得
+ * @param {string} sheetName - シート名（デフォルト "Keywords"）
+ * @returns {Array} { keyword, active } 配列
  */
 function getWeightedKeywords(sheetName = "Keywords") {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -973,7 +1218,9 @@ function getWeightedKeywords(sheetName = "Keywords") {
 
 /**
  * getPromptConfig
- * prompt シートから LLM プロンプトテンプレートを取得する。
+ * 【責務】promptシートからプロンプトテンプレートを取得
+ * @param {string} key - キー名（例："BATCH_SYSTEM", "DAILY_DIGEST_USER"）
+ * @returns {string|null} プロンプト内容
  */
 function getPromptConfig(key) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -996,7 +1243,9 @@ function getPromptConfig(key) {
 
 /**
  * _getDigestConfig
- * スクリプトプロパティから週次ダイジェスト設定を読み込む。
+ * 【責務】スクリプトプロパティからダイジェスト設定を一括取得
+ * @param {none}
+ * @returns {Object} { days, topN, notifyChannel, mailTo, mailSubjectPrefix, mailSenderName }
  */
 function _getDigestConfig() {
   const props = PropertiesService.getScriptProperties();
@@ -1012,7 +1261,11 @@ function _getDigestConfig() {
 
 /**
  * computeHeuristicScore
- * 記事のキーワードマッチ、新しさ、抜粋長に基づいてスコア（0-100）を計算する。
+ * 【責務】記事のスコア計算（キーワード数 + 新鮮度 + 抜粋長）
+ * 【用途】rankAndSelectArticles() で上位N件選抜に使用
+ * @param {Object} article - 記事オブジェクト
+ * @param {Map} articleKeywordMap - URL→キーワード配列
+ * @returns {number} スコア（0-100）
  */
 function computeHeuristicScore(article, articleKeywordMap) {
   const now = new Date();
@@ -1028,7 +1281,10 @@ function computeHeuristicScore(article, articleKeywordMap) {
 
 /**
  * markdownToHtml
- * Markdown テキストを HTML に変換する。
+ * 【責務】Markdown → HTML 変換
+ * 【対応】h3見出し、太字、リンク、区切り線、箇条書き
+ * @param {string} md - Markdown テキスト
+ * @returns {string} HTML テキスト
  */
 function markdownToHtml(md) {
   if (!md) return "";
@@ -1047,7 +1303,9 @@ function markdownToHtml(md) {
 
 /**
  * stripHtml
- * HTML タグを除去してテキストのみを抽出する。
+ * 【責務】HTML タグを除去してテキスト抽出
+ * @param {string} html - HTML テキスト
+ * @returns {string} プレーンテキスト
  */
 function stripHtml(html) {
   return html ? html.replace(/<[^>]*>?/gm, '') : '';
@@ -1055,7 +1313,9 @@ function stripHtml(html) {
 
 /**
  * isLikelyEnglish
- * テキストに日本語文字（ひらがな、カタカナ、漢字）が含まれているかチェックする。
+ * 【責務】テキストに日本語が含まれているか判定
+ * @param {string} text - 判定対象テキスト
+ * @returns {boolean} true=英語のみ, false=日本語含む
  */
 function isLikelyEnglish(text) {
   return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
@@ -1063,7 +1323,9 @@ function isLikelyEnglish(text) {
 
 /**
  * fmtDate
- * Date オブジェクトを "yyyy/MM/dd" 形式の文字列にフォーマットする。
+ * 【責務】Date を "yyyy/MM/dd" 形式にフォーマット
+ * @param {Date} d - Date オブジェクト
+ * @returns {string} フォーマット済み日付文字列
  */
 function fmtDate(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
@@ -1071,7 +1333,11 @@ function fmtDate(d) {
 
 /**
  * _logError
- * エラー情報をコンソールに整形して出力する。
+ * 【責務】エラーログを整形出力
+ * @param {string} functionName - エラー発生関数名
+ * @param {Error} error - エラーオブジェクト
+ * @param {string} message - 補足メッセージ
+ * @returns {none}
  */
 function _logError(functionName, error, message = "") {
   Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
@@ -1079,7 +1345,9 @@ function _logError(functionName, error, message = "") {
 
 /**
  * getDateWindow
- * 指定日数前から現在までの日付範囲 { start, end } を計算する。
+ * 【責務】"N日前から今日まで"の日付範囲を計算
+ * @param {number} days - 遡り日数
+ * @returns {Object} { start: Date, end: Date }
  */
 function getDateWindow(days) {
   const end = new Date();
@@ -1089,17 +1357,28 @@ function getDateWindow(days) {
   return { start, end };
 }
 
-// RSS collector: RSSフィードの収集と解析
+/**
+ * ================================================================================
+ * SECTION 6: RSS COLLECTOR
+ * ================================================================================
+ * RSSフィード取得・パース・記事抽出の関数群。
+ * 重複排除、日付フィルタ、HTML除去を実装。
+ * ================================================================================
+ */
+
 /**
  * collectRssFeeds
- * RSSリスト (`RSS` シート) に登録されたフィードを巡回し、
- * 新着記事を `collect` シートに追記する処理。
- * 重複チェックや日付フィルタを行い、必要に応じて抜粋のHTML除去やソース名の付与を行う。
- * 副作用: `collect` シートの更新
- * RSSフィードを収集し、B列にタイトル、F列にソース名を書き込む
- * 過去2日以内の記事のみを対象とする（日付フィルタ）
- * RSSフィードを収集し、サイトごとにこまめに保存する（タイムアウト対策版）
- * URLの正規化を行い、重複取得を防止する。
+ * 【責務】RSSフィード巡回→記事抽出→collectシートへ追記
+ * 【処理】
+ *   1. RSSシートのフィード URL をすべて巡回
+ *   2. 過去2日以内の記事を抽出
+ *   3. URL 正規化で重複判定
+ *   4. HTML 除去、ソース名付与
+ *   5. collectシートへ追記
+ * 【タイムアウト対策】フィード毎に SpreadsheetApp.flush() で中間保存
+ * 【副作用】collectシートの更新、ネットワークリクエスト（複数回）
+ * @param {none}
+ * @returns {none}
  */
 function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.RSS_LIST);
@@ -1206,8 +1485,10 @@ function collectRssFeeds() {
 
 /**
  * getExistingUrls
- * collect シートに既に存在する記事の URL を Set で取得する。
- * 【改善】全行ではなく直近の一定数（3000件）のみをチェックすることで高速化
+ * 【責務】collectシート既存URL を Set で取得（高速化版）
+ * 【最適化】直近3000件のみをチェック（古い記事の再送は稀のため）
+ * @param {Sheet} sheet - collectシート
+ * @returns {Set} URL の Set（重複排除済み）
  */
 function getExistingUrls(sheet) {
   const lastRow = sheet.getLastRow();
@@ -1226,8 +1507,12 @@ function getExistingUrls(sheet) {
 }
 
 /**
- * 指定されたURLからRSS/Atomフィードを取得してパースする
- * エラー処理とサニタイズ機能を強化
+ * fetchAndParseRss
+ * 【責務】RSSフィード取得 → XML パース → 記事抽出
+ * 【対応フォーマット】RSS 2.0, Atom, RSS 1.0 (RDF)
+ * 【エラーハンドル】パース失敗時は強力なサニタイズで再試行
+ * @param {string} url - RSSフィード URL
+ * @returns {Array} 記事配列 ({ title, link, description, pubDate })
  */
 function fetchAndParseRss(url) {
   try {
@@ -1322,7 +1607,11 @@ function fetchAndParseRss(url) {
 }
 
 /**
- * 安全にXMLの子要素のテキストを取得するヘルパー関数
+ * getChildText
+ * 【責務】XML 要素から安全に子要素テキストを取得
+ * @param {Element} element - XML 要素
+ * @param {string} tagName - 子要素タグ名
+ * @returns {string} テキスト（見つからない場合は空文字列）
  */
 function getChildText(element, tagName) {
   if (!element) return '';
@@ -1341,7 +1630,10 @@ function getChildText(element, tagName) {
 
 /**
  * sanitizeXml
- * XMLパースエラーの原因になりやすいHTMLタグや特殊文字を除去・置換するヘルパー関数
+ * 【責務】XML パースエラー原因の HTML タグ・制御文字を除去
+ * 【処理】<sup>, <sub>, <font>, <br>, &nbsp; など
+ * @param {string} text - 入力テキスト
+ * @returns {string} クリーニング済みテキスト
  */
 function sanitizeXml(text) {
   let cleanText = text;
@@ -1378,7 +1670,10 @@ function sanitizeXml(text) {
 
 /**
  * isRecentArticle
- * 記事の公開日が指定日数以内かチェックする。
+ * 【責務】記事の公開日が指定日数以内かチェック
+ * @param {Date} pubDate - 公開日
+ * @param {number} daysLimit - 日数上限（デフォルト 7）
+ * @returns {boolean} true=期間内, false=期限外
  */
 function isRecentArticle(pubDate, daysLimit = 7) {
   if (!pubDate || !(pubDate instanceof Date)) return false;
@@ -1389,7 +1684,9 @@ function isRecentArticle(pubDate, daysLimit = 7) {
 
 /**
  * sortCollectByDateDesc
- * collect シートを日付(A列)で「降順(新しい順)」に並び替える
+ * 【責務】collectシートを日付(A列)で降順（新しい順）にソート
+ * @param {none}
+ * @returns {none}
  */
 function sortCollectByDateDesc() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
@@ -1403,11 +1700,20 @@ function sortCollectByDateDesc() {
   }
 }
 
-// Web UI: Web アプリケーション UI
+/**
+ * ================================================================================
+ * SECTION 7: WEB UI
+ * ================================================================================
+ * Web アプリケーション UI のエントリポイント。
+ * Google Apps Script の doGet で展開し、Index.html を評価して返す。
+ * ================================================================================
+ */
 
 /**
  * doGet
- * Web アプリのエントリポイント。HTML テンプレート (Index) を評価して返す。
+ * 【責務】Web UI のエントリポイント
+ * @param {none}
+ * @returns {HtmlOutput} Index.html を評価した結果
  */
 function doGet() {
   return HtmlService.createTemplateFromFile('Index').evaluate().setSandboxMode(HtmlService.SandboxMode.IFRAME).setTitle('RSSキーワード検索ツール');
@@ -1415,7 +1721,9 @@ function doGet() {
 
 /**
  * executeWeeklyDigest
- * Web UI から指定されたキーワードで週次ダイジェストを生成し HTML を返す。
+ * 【責務】Web UI から呼び出し：キーワード指定で週刊ダイジェスト生成
+ * @param {string} keyword - キーワード入力
+ * @returns {string} HTML 本文（またはエラーメッセージ）
  */
 function executeWeeklyDigest(keyword) {
   try {
@@ -1431,9 +1739,11 @@ function executeWeeklyDigest(keyword) {
 
 /**
  * searchAndAnalyzeKeyword
- * Web UIから呼び出される関数。
- * 指定されたキーワードで collect シートを検索し、高度なプロンプトで分析させる。
- * 【改善】キーワードをスペース区切りで AND 検索に対応
+ * 【責務】Web UI から キーワード検索 → LLM 分析
+ * 【検索】AND 条件（スペース区切り）
+ * 【出力】トレンドセクション HTML（LLM生成）
+ * @param {string} keyword - 検索キーワード
+ * @returns {string} 分析結果 HTML
  */
 function searchAndAnalyzeKeyword(keyword) {
   if (!keyword) return "キーワードが入力されていません。";
@@ -1542,10 +1852,19 @@ function searchAndAnalyzeKeyword(keyword) {
 }
 
 /**
+ * ================================================================================
+ * SECTION 8: MAINTENANCE UTILITIES
+ * ================================================================================
+ * メンテナンス用補助関数群：重複削除、URL 正規化、日付判定など。
+ * ================================================================================
+ */
+
+/**
  * removeDuplicates
- * 【メンテナンス用】collectシート内の重複記事（同一URL）を削除して整理する。
- * URL（C列）が同じ場合、より上の行（古い方/要約済みの方）を残します。
- * 【修正】重複チェックに normalizeUrl を使用するように変更しました。
+ * 【責務】collectシート内の重複記事を削除
+ * 【判定】URL 正規化で重複チェック（上部の行を優先）
+ * @param {none}
+ * @returns {none}
  */
 function removeDuplicates() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
@@ -1602,12 +1921,14 @@ function removeDuplicates() {
 }
 /**
  * normalizeUrl
- * 【最終版】重複判定用にURLを正規化する
- * 1. URLデコードでエンコーディングの不一致を解消
- * 2. クエリパラメータとフラグメントを削除
- * 3. プロトコル、www.、末尾スラッシュの揺れを吸収
+ * 【責務】URL 正規化（重複判定用）
+ * 【処理】
+ *   1. URL デコード
+ *   2. クエリパラメータ＆フラグメント削除
+ *   3. プロトコル・www. 吸収
+ * @param {string} url - 対象 URL
+ * @returns {string} 正規化済み URL
  */
-// function normalizeUrl を確認/置き換え
 function normalizeUrl(url) {
   if (!url) return "";
   let s = String(url).trim();
@@ -1643,7 +1964,10 @@ function normalizeUrl(url) {
 
 /**
  * isRecentDate
- * 日付文字列を受け取り、指定日数以内かどうかを判定する
+ * 【責務】日付文字列が指定日数以内かチェック
+ * @param {string} dateStr - 日付文字列
+ * @param {number} daysLimit - 日数上限
+ * @returns {boolean} true=期間内, false=期限外
  */
 function isRecentDate(dateStr, daysLimit) {
   if (!dateStr) return false; // 日付情報がない場合は弾く
