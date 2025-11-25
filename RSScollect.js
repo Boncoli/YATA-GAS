@@ -785,9 +785,9 @@ function writeTrendsToSheet(trends) {
  * _callAzureLlm
  * Azure OpenAI (Chat Completions) を呼び出す。失敗時は null を返す。
  */
-function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
+function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
   Logger.log("Azure OpenAIを試行中...");
-  const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: 0.2, max_completion_tokens: 2048 };
+  const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 2048 };
   const options = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
   try {
     const res = UrlFetchApp.fetch(azureUrl, options);
@@ -812,9 +812,9 @@ function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey) {
  * _callOpenAiLlm
  * OpenAI Chat Completions API を呼び出す。
  */
-function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
+function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
   Logger.log("OpenAI APIを試行中...");
-  const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048 };
+  const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048, temperature: options.temperature ?? undefined };
   const options = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
   try {
     const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
@@ -839,14 +839,14 @@ function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey) {
  * _callGeminiLlm
  * Google Generative Language (Gemini) を呼び出すラッパー。
  */
-function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
+function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
   Logger.log("Gemini APIを試行中...");
   const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
   const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-  const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 2048 } };
-  const options = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
+  const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 2048 } };
+  const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
   try {
-    const response = UrlFetchApp.fetch(API_ENDPOINT, options);
+    const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
     const json = JSON.parse(response.getContentText());
     let text = null;
     if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
@@ -865,7 +865,7 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
  * callLlmWithFallback
  * Azure/OpenAI/Gemini の順で呼び出し、成功した結果を返す。全て失敗した場合はエラーメッセージを返す。
  */
-function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null) {
+function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null, options = {}) {
   const props = PropertiesService.getScriptProperties();
   const azureUrl = azureUrlOverride || props.getProperty("AZURE_ENDPOINT_URL");
   const azureKey = props.getProperty("OPENAI_API_KEY");
@@ -873,17 +873,17 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
   const geminiApiKey = props.getProperty("GEMINI_API_KEY");
   let result = null;
   if (azureUrl && azureKey) {
-    result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey);
+    result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options);
     if (result !== null) return result;
     Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
   }
   if (openAiKey) {
-    result = _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey);
+    result = _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options);
     if (result !== null) return result;
     Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
   }
   if (geminiApiKey) {
-    result = _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey);
+    result = _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options);
     if (result !== null) return result;
     Logger.log("Gemini APIでの呼び出しに失敗しました。");
   }
@@ -1562,10 +1562,23 @@ function searchAndAnalyzeKeyword(keyword) {
 
   try {
     // LLM呼び出し
-    let analysisResult = callLlmForAnalysis(systemPrompt, contextText);
+    const props = PropertiesService.getScriptProperties();
+    // モデルは週次レポートと同等のものを指定
+    const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
+    // Azureのエンドポイントも週次レポート用を指定
+    const azureUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY");
+    // 温度を指定
+    const options = { temperature: 0.4 };
+
+    let analysisResult = callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
 
     // 不要なバッククォート削除
     analysisResult = analysisResult.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+
+    // フォールバック全て失敗時のエラー処理
+    if (analysisResult.includes("いずれのLLMでも")) {
+        throw new Error("LLMによる分析に失敗しました。詳細はログを確認してください。");
+    }
     
     return `
       <div style="margin-bottom: 15px;">
@@ -1576,52 +1589,8 @@ function searchAndAnalyzeKeyword(keyword) {
       ${analysisResult}
     `;
   } catch (e) {
+    Logger.log(`searchAndAnalyzeKeywordでエラー: ${e.stack}`);
     return `分析中にエラーが発生しました: ${e.message}`;
-  }
-}
-
-/**
- * callLlmForAnalysis
- * 分析用のAPI呼び出し（Temperature指定付き）
- */
-function callLlmForAnalysis(systemPrompt, userContent) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-  const model = Config.Llm.MODEL_NAME || "gemini-1.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-  const payload = {
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: systemPrompt + "\n\n" + userContent }]
-      }
-    ],
-    // ★重要: ここで「創造性」を制御します
-    generationConfig: {
-      temperature: 0.4, // 0.0〜1.0。低いほど事実に忠実で安定的。高いと創造的だがブレる。
-      maxOutputTokens: 2000
-    }
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  const response = UrlFetchApp.fetch(url, options);
-  
-  if (response.getResponseCode() !== 200) {
-    throw new Error(`API Error: ${response.getContentText()}`);
-  }
-
-  const json = JSON.parse(response.getContentText());
-
-  if (json.candidates && json.candidates[0].content) {
-    return json.candidates[0].content.parts[0].text;
-  } else {
-    throw new Error("APIからの応答が不正です。");
   }
 }
 
