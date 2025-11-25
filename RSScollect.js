@@ -407,11 +407,11 @@ function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow
 function callDailyDigestLlm(systemPrompt, userPrompt) {
   const props = PropertiesService.getScriptProperties();
 
-  // OpenAI（非Azure）用のモデル指定（任意／未設定なら軽量）
-  const openAiModelDaily = props.getProperty("OPENAI_MODEL_WEEKLY") ?? "gpt-4.1-mini";
+  // OpenAI（非Azure）用のモデル指定: 高次分析用 mini
+  const openAiModelDaily = props.getProperty("OPENAI_MODEL_MINI") ?? "gpt-4.1-mini";
 
-  // Azureのエンドポイント（Chat Completions デプロイメント URL）
-  const azureDailyUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY") || null;
+  // Azureのエンドポイント（Chat Completions デプロイメント URL）: 高次分析用
+  const azureDailyUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI") || null;
 
   // Azure/OpenAI/Gemini の鍵
   const azureKey = props.getProperty("OPENAI_API_KEY");           // Azure OpenAI の API key
@@ -788,9 +788,9 @@ function writeTrendsToSheet(trends) {
 function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
   Logger.log("Azure OpenAIを試行中...");
   const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 2048 };
-  const options = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+  const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
   try {
-    const res = UrlFetchApp.fetch(azureUrl, options);
+    const res = UrlFetchApp.fetch(azureUrl, fetchOptions);
     const code = res.getResponseCode();
     const txt = res.getContentText();
     if (code !== 200) {
@@ -815,9 +815,9 @@ function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {
 function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
   Logger.log("OpenAI APIを試行中...");
   const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048, temperature: options.temperature ?? undefined };
-  const options = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+  const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
   try {
-    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", fetchOptions);
     const code = res.getResponseCode();
     const txt = res.getContentText();
     if (code !== 200) {
@@ -896,7 +896,7 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
  */
 function summarizeWithLLM(articleText) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
+  const model = props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano";
   const SYSTEM = getPromptConfig("BATCH_SYSTEM");
   const USER_TEMPLATE = getPromptConfig("BATCH_USER_TEMPLATE");
   if (!SYSTEM || !USER_TEMPLATE) return "エラー: BATCHプロンプト設定が見つかりません。";
@@ -910,8 +910,8 @@ function summarizeWithLLM(articleText) {
  */
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
-  const azureWeeklyUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY");
+  const model = props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini";
+  const azureWeeklyUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI");
   const SYSTEM = getPromptConfig("TREND_SYSTEM");
   const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
   if (!SYSTEM || !USER_TEMPLATE) {
@@ -943,7 +943,7 @@ function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywo
  */
 function extractKeywordsWithLLM(text) {
   const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_DAILY") || "gpt-4.1-nano";
+  const model = props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano";
   const SYSTEM = getPromptConfig("TREND_KEYWORD_SYSTEM") || "以下のテキスト群から、重要と思われる技術、製品、イベントなどのキーワード（名詞）を最大50個、重複を除いてリストアップしてください。各キーワードは改行で区切って、リスト形式でのみ出力してください。前書きや後書きは不要です。";
   const USER = text;
   const result = callLlmWithFallback(SYSTEM, USER, model);
@@ -1372,62 +1372,9 @@ function sanitizeXml(text) {
   return cleanText;
 }
 
-/**
- * parseRss2Feed
- * RSS 2.0 形式の `<item>` 要素を解析し、記事行データの配列を返す。
- */
-function parseRss2Feed(root, siteName, existingUrls) {
-  const rssArticles = [];
-  const channel = root.getChild("channel");
-  if (channel) {
-    const items = channel.getChildren("item");
-    items.forEach(item => {
-      const title = (item.getChild("title") && item.getChild("title").getText()) || "";
-      const link = (item.getChild("link") && item.getChild("link").getText()) || "";
-      const pubDateStr = (item.getChild("pubDate") && item.getChild("pubDate").getText()) || "";
-      const description = (item.getChild("description") && item.getChild("description").getText()) || "";
-      const articleDate = pubDateStr ? new Date(pubDateStr) : new Date(0);
-      if (link && !existingUrls.has(link) && title && isRecentArticle(articleDate, 7)) {
-        rssArticles.push([articleDate, title.trim(), link.trim(), stripHtml(description) || Config.Llm.NO_ABSTRACT_TEXT, "", siteName]);
-      }
-    });
-  }
-  return rssArticles;
-}
 
-/**
- * parseAtomFeed
- * Atom 1.0 形式の `<entry>` 要素を解析し、記事行データの配列を返す。
- */
-function parseAtomFeed(root, siteName, existingUrls) {
-  const atomArticles = [];
-  const ATOM_NS = XmlService.getNamespace("http://www.w3.org/2005/Atom");
-  const entries = root.getChildren("entry", ATOM_NS) || [];
-  entries.forEach(entry => {
-    const title = (entry.getChild("title", ATOM_NS) && entry.getChild("title", ATOM_NS).getText()) || "";
-    let link = "";
-    const linkElArr = entry.getChildren("link", ATOM_NS) || [];
-    for (let i = 0; i < linkElArr.length; i++) {
-      const relAttr = linkElArr[i].getAttribute("rel");
-      if (!relAttr || relAttr.getValue() === "alternate") {
-        const hrefAttr = linkElArr[i].getAttribute("href");
-        if (hrefAttr) link = hrefAttr.getValue();
-        break;
-      }
-    }
-    const updatedEl = entry.getChild("updated", ATOM_NS);
-    const publishedEl = entry.getChild("published", ATOM_NS);
-    const pubDateStr = (updatedEl && updatedEl.getText()) || (publishedEl && publishedEl.getText()) || "";
-    const summaryEl = entry.getChild("summary", ATOM_NS);
-    const contentEl = entry.getChild("content", ATOM_NS);
-    const summary = (summaryEl && summaryEl.getText()) || (contentEl && contentEl.getText()) || "";
-    const articleDate = pubDateStr ? new Date(pubDateStr) : new Date(0);
-    if (link && !existingUrls.has(link) && title && isRecentArticle(articleDate, 7)) {
-      atomArticles.push([articleDate, title.trim(), link.trim(), stripHtml(summary) || Config.Llm.NO_ABSTRACT_TEXT, "", siteName]);
-    }
-  });
-  return atomArticles;
-}
+
+
 
 /**
  * isRecentArticle
@@ -1563,10 +1510,10 @@ function searchAndAnalyzeKeyword(keyword) {
   try {
     // LLM呼び出し
     const props = PropertiesService.getScriptProperties();
-    // モデルは週次レポートと同等のものを指定
-    const model = props.getProperty("OPENAI_MODEL_WEEKLY") || "gpt-4.1-mini";
-    // Azureのエンドポイントも週次レポート用を指定
-    const azureUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY");
+    // モデルは高次分析用 mini を指定
+    const model = props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini";
+    // Azureのエンドポイント: 高次分析用を指定
+    const azureUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI");
     // 温度を指定
     const options = { temperature: 0.4 };
 

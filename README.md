@@ -97,23 +97,31 @@
 | プロパティ名 | 説明 | 設定例 | 必須/任意 |
 |---|---|---|---|
 | `GEMINI_API_KEY` | Gemini APIを利用する場合のAPIキー | `AIzaSy...` | AI利用時 |
-| `AZURE_ENDPOINT_URL` | Azure OpenAIを利用する場合のエンドポイントURL | `https://your-resource.openai.azure.com/...` | AI利用時 |
+| `AZURE_ENDPOINT_URL_NANO` | Azure OpenAI（軽量処理用）のエンドポイントURL | `https://your-resource.openai.azure.com/...` | AI利用時 |
+| `AZURE_ENDPOINT_URL_MINI` | Azure OpenAI（高次分析用）のエンドポイントURL | `https://your-resource.openai.azure.com/...` | AI利用時 |
 | `OPENAI_API_KEY` | Azure OpenAIを利用する場合のAPIキー | `your-azure-openai-api-key` | AI利用時 |
 | `OPENAI_API_KEY_PERSONAL` | 個人的なOpenAI APIを利用する場合のAPIキー | `sk-...` | AI利用時 |
-| `OPENAI_MODEL_DAILY` | **日次**見出し生成で使うOpenAI/Azureモデル名 | `gpt-4.1-nano` (既定値) | 任意 |
-| `OPENAI_MODEL_WEEKLY` | **週次**ダイジェスト生成で使うOpenAI/Azureモデル名 | `gpt-4.1-mini` (既定値) | 任意 |
+| `OPENAI_MODEL_NANO` | **軽量処理**で使うOpenAI/Azureモデル名（見出し生成、キーワード抽出等） | `gpt-4.1-nano` (既定値) | 任意 |
+| `OPENAI_MODEL_MINI` | **高次分析処理**で使うOpenAI/Azureモデル名（日刊、週刊、検索分析等） | `gpt-4.1-mini` (既定値) | 任意 |
 | `DIGEST_DAYS` | 週次ダイジェストの集計日数 | `7` (既定値) | 任意 |
 | `DIGEST_TOP_N` | 週次ダイジェストでAI分析の対象とする上位記事数 | `30` (既定値) | 任意 |
 | `NOTIFY_CHANNEL_WEEKLY` | 週次ダイジェストの通知先 (`email` または `none`) | `email` (既定値) | 任意 |
 | `MAIL_TO` | メール通知の送信先メールアドレス (カンマ区切りで複数指定可) | `your-email@example.com` | `NOTIFY_CHANNEL_WEEKLY` が `email` の場合必須 |
 | `MAIL_SUBJECT_PREFIX` | メール件名のプレフィックス | `【週間RSS】` (既定値) | 任意 |
 | `MAIL_SENDER_NAME` | メール送信者名 | `RSS要約ボット` (既定値) | 任意 |
+| `TREND_DETECTION_ENABLED` | トレンド検出機能の有効/無効 | `true` / `false` | 任意 |
 
 **注意:** AIモデルの選択は以下の優先順位で行われます。
-1. **Azure OpenAI**: `AZURE_ENDPOINT_URL` と `OPENAI_API_KEY` が両方設定されている場合。
+1. **Azure OpenAI**: `AZURE_ENDPOINT_URL_NANO` または `AZURE_ENDPOINT_URL_MINI` と `OPENAI_API_KEY` が設定されている場合。
 2. **OpenAI (個人)**: `OPENAI_API_KEY_PERSONAL` が設定されている場合。
 3. **Gemini API**: `GEMINI_API_KEY` が設定されている場合。
-いずれも設定されていない場合はAIによる処理は行われません。Gemini API利用時のモデルはコード内で`gemini-2.5-flash-lite`に設定されています。
+
+いずれも設定されていない場合はAIによる処理は行われません。
+
+**モデル選択基準:**
+- **NANO モデル** (`gpt-4.1-nano`): 記事見出し生成、キーワード抽出など、単純な処理用。
+- **MINI モデル** (`gpt-4.1-mini`): 日刊・週刊ダイジェスト、記事分析など、高次な分析が必要な処理用。
+- **Gemini API**: コード内で `gemini-2.5-flash-lite` に設定されています。
 
 ## 使い方
 
