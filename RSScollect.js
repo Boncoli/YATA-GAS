@@ -1088,11 +1088,21 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
  * @returns {string} 回答文字列またはエラーメッセージ
  */
 function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null, options = {}) {
-  const props = PropertiesService.getScriptProperties();
-  const azureUrl = azureUrlOverride || props.getProperty("AZURE_ENDPOINT_URL");
-  const azureKey = props.getProperty("OPENAI_API_KEY");
-  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL");
-  const geminiApiKey = props.getProperty("GEMINI_API_KEY");
+  // 互換性を保ちつつ内部でプロパティをキャッシュして使用する
+  const llmProps = _getLlmProps();
+
+  // openAiModel 引数は "gpt-..." のモデル名か、"nano"/"mini" のいずれかを受け付ける
+  let model = openAiModel;
+  if (openAiModel === "nano" || openAiModel === "mini") {
+    model = openAiModel === "mini" ? llmProps.modelMini : llmProps.modelNano;
+  }
+
+  // Azure URL の優先決定: 引数 > 種別別エンドポイント > 汎用エンドポイント
+  const azureUrl = azureUrlOverride || (model && model.includes("mini") ? llmProps.azureUrlMini : llmProps.azureUrlNano) || llmProps.azureUrl;
+  const azureKey = llmProps.azureKey;
+  const openAiKey = llmProps.openAiKey;
+  const geminiKey = llmProps.geminiKey;
+
   let result = null;
   if (azureUrl && azureKey) {
     result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options);
@@ -1100,16 +1110,35 @@ function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-na
     Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
   }
   if (openAiKey) {
-    result = _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options);
+    result = _callOpenAiLlm(systemPrompt, userPrompt, model, openAiKey, options);
     if (result !== null) return result;
     Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
   }
-  if (geminiApiKey) {
-    result = _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options);
+  if (geminiKey) {
+    result = _callGeminiLlm(systemPrompt, userPrompt, geminiKey, options);
     if (result !== null) return result;
     Logger.log("Gemini APIでの呼び出しに失敗しました。");
   }
   return "いずれのLLMでも見出しを生成できませんでした。";
+}
+
+// LLM プロパティキャッシュ（読み込み回数削減）
+let _llmPropsCache = null;
+function _getLlmProps() {
+  if (!_llmPropsCache) {
+    const props = PropertiesService.getScriptProperties();
+    _llmPropsCache = {
+      azureUrl: props.getProperty("AZURE_ENDPOINT_URL") || null,
+      azureUrlNano: props.getProperty("AZURE_ENDPOINT_URL_NANO") || null,
+      azureUrlMini: props.getProperty("AZURE_ENDPOINT_URL_MINI") || null,
+      azureKey: props.getProperty("OPENAI_API_KEY") || null,
+      openAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
+      geminiKey: props.getProperty("GEMINI_API_KEY") || null,
+      modelNano: props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano",
+      modelMini: props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini"
+    };
+  }
+  return _llmPropsCache;
 }
 
 /**
