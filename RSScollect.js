@@ -69,10 +69,10 @@ function mainAutomationFlow() {
 /**
  * dailyDigestJob
  * 日刊ダイジェストを生成・送信するエントリポイント。
- * 対象期間: 過去24時間 (1日)。キーワードは週刊と同じくキーワードシートから使用。
+ * 対象期間: 過去24時間 (1日)。キーワードではなく、全記事を対象とする。
  */
 function dailyDigestJob() {
-  Logger.log("--- 日刊ダイジェスト生成開始 (過去24時間) ---");
+  Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
   
   // 期間設定: 1日 (24時間)
   const DAYS_WINDOW = 1; 
@@ -81,32 +81,21 @@ function dailyDigestJob() {
   const config = _getDigestConfig(); 
   const { start, end } = getDateWindow(DAYS_WINDOW); 
   
-  // 1. 対象記事の抽出
+  // 1. 対象記事の抽出（要約済みの全記事）
+  // ※ここではキーワードフィルタリングを行いません。
   const allItems = getArticlesInDateWindow(start, end);
   
   if (allItems.length === 0) {
     Logger.log("日刊ダイジェスト：対象期間に記事がありませんでした。");
-    // ヘルパー関数を呼び出し（daysWindowを渡す）
     _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
     return;
   }
   
   Logger.log(`日刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
   
-  // 2. キーワードによる記事の分類
-  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, null);
-  
-  if (relevantArticles.length === 0) {
-    Logger.log("日刊ダイジェスト：キーワードに合致する記事がありませんでした。ダイジェストは作成されません。");
-    return;
-  }
-  
-  Logger.log(`日刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
-  _logKeywordHitCounts(hitKeywordsWithCount);
-  
-  // 3. LLMによる要約生成とメール送信
-  // daysWindowを渡して、日刊/週刊を切り替える
-  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, false, DAYS_WINDOW);
+  // 2. LLMによるトピック抽出・要約生成とメール送信
+  // 新しい日刊専用関数を呼び出す
+  _generateAndSendDailyDigest(allItems, config, start, end, DAYS_WINDOW);
   
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
@@ -356,6 +345,125 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
     sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow); 
   }
+}
+
+
+/*******************************************************
+ * _generateAndSendDailyDigest  （差し替え版）
+ * 日刊ダイジェスト：全記事から LLM でトピック抽出＆要約し送信
+ * Azure > OpenAI > Gemini のフォールバック順で実行
+ *******************************************************/
+function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow) {
+  const digestSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
+
+  // 1. プロンプト取得（DAILY_DIGEST_SYSTEM / DAILY_DIGEST_USER）
+  const [systemPromptTemplate, userPromptTemplate] = getDailyDigestPrompts();
+
+
+  // 2. 記事リストを整形（URL を含む Markdownリンク形式）
+  const articleListText = allArticles.map(a =>
+    `・${a.title} - 抜粋: ${a.abstractText}`
+  ).join('\n');
+
+  // 3. 実行プロンプト生成（シンプルな置換）
+  const userPrompt = userPromptTemplate
+    .replace(/\$\{all_articles_in_date_window\}/g, articleListText)
+
+  // 4. LLM呼び出し（フォールバック順）
+  Logger.log("LLMに日刊ダイジェストの生成を依頼中... (Azure > OpenAI > Gemini)");
+  let reportBody = "(LLM生成失敗)";
+  try {
+    reportBody = callDailyDigestLlm(systemPromptTemplate, userPrompt);
+
+    // Trendsシートへ書き込み
+    const writeData = [
+      new Date(),               // A: 記録日時
+      "日刊ダイジェスト",       // B: 種別
+      start,                    // C: 集計開始
+      end,                      // D: 集計終了
+      "Topics (All Articles)",  // E: 注記（キーワードではなくトピック分析）
+      reportBody,               // F: 本文
+      allArticles.length        // G: 記事数
+    ];
+    digestSheet.appendRow(writeData);
+    SpreadsheetApp.flush();
+  } catch (e) {
+    Logger.log("LLM呼び出しエラー: " + e.message);
+    reportBody = `## エラーが発生しました\n${e.message}`; // エラー時は本文としてそのまま送信
+  }
+
+  // 5. メール送信
+  const headerLine = `集計期間：${fmtDate(start)}〜${fmtDate(new Date(end.getTime() - 1))} (全${allArticles.length}記事)`;
+  const hitKeywordsWithCount = null; // キーワードベースではないため null
+  sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow);
+}
+
+/********************************************************
+ * callDailyDigestLlm（新規追加）
+ * 日刊ダイジェスト用：Azure > OpenAI > Gemini の順に試行
+ * - モデル指定は OpenAI 用のみ（props: OPENAI_MODEL_DAILY）
+ * - Azure はデプロイメントURLに紐づくモデルが使用されます
+ ********************************************************/
+function callDailyDigestLlm(systemPrompt, userPrompt) {
+  const props = PropertiesService.getScriptProperties();
+
+  // OpenAI（非Azure）用のモデル指定（任意／未設定なら軽量）
+  const openAiModelDaily = props.getProperty("OPENAI_MODEL_WEEKLY") ?? "gpt-4.1-mini";
+
+  // Azureのエンドポイント（Chat Completions デプロイメント URL）
+  const azureDailyUrl = props.getProperty("AZURE_ENDPOINT_URL_WEEKLY") || null;
+
+  // Azure/OpenAI/Gemini の鍵
+  const azureKey = props.getProperty("OPENAI_API_KEY");           // Azure OpenAI の API key
+  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // OpenAI の API key
+  const geminiKey = props.getProperty("GEMINI_API_KEY");          // Gemini の API key
+
+  // 既存のフォールバックラッパーをそのまま利用
+  //   第4引数に azureDailyUrl を渡すと、Azure が最優先に
+  //   Azure失敗→OpenAI（openAiModelDaily）→Gemini の順で試行
+  const result = callLlmWithFallback(systemPrompt, userPrompt, openAiModelDaily, azureDailyUrl);
+
+  // 返却は文字列（エラー文言含む）
+  return result;
+}
+
+/**
+ * getDailyDigestPrompts
+ * プロンプト設定シートから、日刊ダイジェスト用のプロンプトを取得する。
+ * DAILY_DIGEST_SYSTEM (A列) と DAILY_DIGEST_USER (A列) の2つのキーを参照します。
+ * @returns {[string, string]} [システムプロンプト, ユーザープロンプト]
+ */
+function getDailyDigestPrompts() {
+  const promptSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.PROMPT_CONFIG);
+  if (!promptSheet) throw new Error("promptシートが見つかりません。");
+
+  // A列: キー, B列: プロンプト内容
+  const data = promptSheet.getDataRange().getValues();
+  const prompts = {};
+  
+  // 2行目から最終行までを走査し、キーとB列の内容をマップに格納
+  for (let i = 1; i < data.length; i++) {
+    const key = data[i][0];
+    const promptContent = data[i][1]; // ★ B列を参照
+    if (key && promptContent) {
+      // String(promptContent).trim() で確実に文字列として格納
+      prompts[key.trim()] = String(promptContent).trim();
+    }
+  }
+
+  // 新しいキーでプロンプトを取得
+  const systemKey = 'DAILY_DIGEST_SYSTEM';
+  const userKey = 'DAILY_DIGEST_USER';
+  
+  const systemPrompt = prompts[systemKey];
+  const userPrompt = prompts[userKey];
+
+  if (!systemPrompt || !userPrompt) {
+      Logger.log(`警告: 日刊ダイジェストのプロンプト設定が不完全です。不足キー: ${!systemPrompt ? systemKey : ''} ${!userPrompt ? userKey : ''}`);
+      throw new Error("プロンプトシートにキー 'DAILY_DIGEST_SYSTEM' と 'DAILY_DIGEST_USER' の両方の設定を追加してください。");
+  }
+  
+  return [systemPrompt, userPrompt];
 }
 
 /**
@@ -752,6 +860,7 @@ function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey) {
     return null;
   }
 }
+
 /**
  * callLlmWithFallback
  * Azure/OpenAI/Gemini の順で呼び出し、成功した結果を返す。全て失敗した場合はエラーメッセージを返す。
