@@ -1,17 +1,17 @@
 /**
  * @file RSScollect.js
  * @description RSSフィードを収集し、AIで見出しと週次ダイジェストを生成するGoogle Apps Script
- * @version 2.6.1
- * @date 2025-11-25
+ * @version 2.7.0
+ * @date 2025-12-06
  * 
  * ===== スクリプトプロパティの変更履歴 =====
  * 
- * 【2025-11-25】NANO/MINI機能ベース命名への統一
+ * 【2025-12-06】実行コンテキストの導入
+ *   - EXECUTION_CONTEXT : LLM呼び出し優先順位を制御 ('COMPANY' or 'PERSONAL')
+ *     - 'COMPANY' (デフォルト): Azure OpenAI → OpenAI Personal → Google Gemini
+ *     - 'PERSONAL'            : OpenAI Personal → Azure OpenAI → Google Gemini
  * 
- * 旧プロパティキー（廃止）:
- *   - OPENAI_MODEL_DAILY   → 削除
- *   - OPENAI_MODEL_WEEKLY  → 削除
- *   - AZURE_ENDPOINT_URL_WEEKLY → 削除
+ * 【2025-11-25】NANO/MINI機能ベース命名への統一
  * 
  * 新プロパティキー（推奨）:
  *   - OPENAI_MODEL_NANO          : 軽量処理用モデル（見出し生成、キーワード抽出）
@@ -28,48 +28,67 @@
  *   - AZURE_ENDPOINT_URL_MINI    : Azure OpenAI 高次分析用エンドポイント
  *     使用関数: callDailyDigestLlm(), _llmMakeTrendSections(), searchAndAnalyzeKeyword()
  * 
- * フォールバック戦略（全関数共通）:
- *   Azure OpenAI → OpenAI Personal → Google Gemini
+ * 旧プロパティキー（廃止）:
+ *   - OPENAI_MODEL_DAILY, OPENAI_MODEL_WEEKLY, AZURE_ENDPOINT_URL_WEEKLY
  * 
  */
 
 // Core: 全体設定と定数
+const AppConfig = (function() {
+  let cache = null;
+  // この関数は設定値を一度だけ読み込み、キャッシュする
+  function load() {
+    if (cache) return cache;
 
-const Config = {
-  SheetNames: {
-    RSS_LIST: "RSS",
-    TREND_DATA: "collect",
-    PROMPT_CONFIG: "prompt",
-    TRENDS: "Trends",
-  },
-  CollectSheet: {
-    Columns: {
-      URL: 3,
-      ABSTRACT: 4,
-      SUMMARY: 5, // E列
-      SOURCE: 6,  // F列
-    },
-    DataRange: {
-      START_ROW: 2,
-      NUM_COLS_FOR_URL: 1,
-    },
-  },
-  RssListSheet: {
-    DataRange: {
-      START_ROW: 2,
-      START_COL: 1,
-      NUM_COLS: 2,
-    },
-  },
-  Llm: {
-    MODEL_NAME: "gemini-2.5-flash-lite",
-    DELAY_MS: 1100,
-    MIN_SUMMARY_LENGTH: 100,
-    NO_ABSTRACT_TEXT: "抜粋なし",
-    MISSING_ABSTRACT_TEXT: "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。",
-    SHORT_JA_SKIP_TEXT: "記事が短く、日本語のため見出し生成をスキップしました。",
-  },
-};
+    const props = PropertiesService.getScriptProperties();
+    cache = {
+      SheetNames: {
+        RSS_LIST: "RSS",
+        TREND_DATA: "collect",
+        PROMPT_CONFIG: "prompt",
+        TRENDS: "Trends",
+      },
+      CollectSheet: {
+        Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6 },
+        DataRange: { START_ROW: 2, NUM_COLS_FOR_URL: 1 },
+      },
+      RssListSheet: {
+        DataRange: { START_ROW: 2, START_COL: 1, NUM_COLS: 2 },
+      },
+      Llm: {
+        MODEL_NAME: "gemini-2.5-flash-lite",
+        DELAY_MS: 1100,
+        MIN_SUMMARY_LENGTH: 100,
+        NO_ABSTRACT_TEXT: "抜粋なし",
+        MISSING_ABSTRACT_TEXT: "記事が短すぎるか、抜粋がないため見出し生成をスキップしました。",
+        SHORT_JA_SKIP_TEXT: "記事が短く、日本語のため見出し生成をスキップしました。",
+        // --- Dynamic settings from Script Properties ---
+        Context: props.getProperty("EXECUTION_CONTEXT") || "COMPANY",
+        ModelNano: props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano",
+        ModelMini: props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini",
+        AzureUrlNano: props.getProperty("AZURE_ENDPOINT_URL_NANO") || null,
+        AzureUrlMini: props.getProperty("AZURE_ENDPOINT_URL_MINI") || null,
+        AzureKey: props.getProperty("OPENAI_API_KEY") || null,
+        OpenAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
+        GeminiKey: props.getProperty("GEMINI_API_KEY") || null,
+      },
+      Digest: {
+        days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
+        topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
+        notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
+        mailTo: props.getProperty("MAIL_TO"),
+        mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX"), // デフォルトはnull/undefined
+        mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
+        sheetUrl: props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)",
+      },
+      Trend: {
+        detectionEnabled: (props.getProperty("TREND_DETECTION_ENABLED") || 'false').toLowerCase() === 'true',
+      }
+    };
+    return cache;
+  }
+  return { get: load };
+})();
 
 /**
  * ================================================================================
@@ -127,7 +146,7 @@ function dailyDigestJob() {
   const DAYS_WINDOW = 1; 
 
   // 設定と期間の取得
-  const config = _getDigestConfig(); 
+  const config = AppConfig.get().Digest; 
   const { start, end } = getDateWindow(DAYS_WINDOW); 
   
   // 1. 対象記事の抽出（要約済みの全記事）
@@ -169,7 +188,7 @@ function dailyDigestJob() {
  */
 // function weeklyDigestJob を置き換え
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
-  const config = _getDigestConfig();
+  const config = AppConfig.get().Digest;
   const DAYS_WINDOW = config.days; // 7日間
 
   // 実行期間を計算
@@ -221,7 +240,7 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
  */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const trendDataSheet = ss.getSheetByName(Config.SheetNames.TREND_DATA);
+  const trendDataSheet = ss.getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   if (!trendDataSheet) {
     Logger.log("エラー: collectシートが見つかりません。");
     return;
@@ -239,14 +258,14 @@ function processSummarization() {
 
   // 1. まず全行をスキャンして、要約が必要な記事を特定する（ここは高速なのでそのまま）
   values.forEach((row, index) => {
-    const currentHeadline = row[Config.CollectSheet.Columns.SUMMARY - 1];
+    const currentHeadline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
     // 見出しが空の場合のみ処理
     if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[Config.CollectSheet.Columns.URL - 2]; // C列の左隣(B列)がタイトルと仮定
-      const abstractText = row[Config.CollectSheet.Columns.ABSTRACT - 1];
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // C列の左隣(B列)がタイトルと仮定
+      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1];
       
       // 記事が短すぎる、または「抜粋なし」の場合はAIを使わず簡易処理
-      const isShort = (abstractText === Config.Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < Config.Llm.MIN_SUMMARY_LENGTH);
+      const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
       
       if (isShort) {
         let newHeadline;
@@ -254,13 +273,13 @@ function processSummarization() {
         if (title && String(title).trim() !== "") {
           // タイトルがあればそれを使う（英語なら翻訳）
           newHeadline = isLikelyEnglish(String(title)) ? `=GOOGLETRANSLATE(B${sheetRowNumber},"auto","ja")` : String(title).trim();
-        } else if (abstractText && abstractText !== Config.Llm.NO_ABSTRACT_TEXT) {
+        } else if (abstractText && abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT) {
           newHeadline = isLikelyEnglish(String(abstractText)) ? `=GOOGLETRANSLATE(D${sheetRowNumber},"auto","ja")` : String(abstractText).trim();
         } else {
-          newHeadline = Config.Llm.MISSING_ABSTRACT_TEXT;
+          newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
         }
         // 即座に配列を更新
-        values[index][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
+        values[index][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
         // AI要約対象としてリストに追加
         articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
@@ -302,12 +321,12 @@ function processSummarization() {
       }
 
       if (newHeadline && String(newHeadline).trim() !== "" && String(newHeadline).indexOf("エラー") === -1) {
-        values[article.originalRowIndex][Config.CollectSheet.Columns.SUMMARY - 1] = newHeadline;
+        values[article.originalRowIndex][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
         Logger.log(`見出し生成結果が空またはエラーのためスキップ (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
       
-      Utilities.sleep(Config.Llm.DELAY_MS);
+      Utilities.sleep(AppConfig.get().Llm.DELAY_MS);
     }
   }
 
@@ -477,7 +496,7 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
  * @returns {none}
  */
 function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow) {
-  const digestSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
+  const digestSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
 
   // 1. プロンプト取得（DAILY_DIGEST_SYSTEM / DAILY_DIGEST_USER）
   const [systemPromptTemplate, userPromptTemplate] = getDailyDigestPrompts();
@@ -532,22 +551,12 @@ function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow
  * @returns {string} LLMからの回答（エラーメッセージ含む）
  */
 function callDailyDigestLlm(systemPrompt, userPrompt) {
-  const props = PropertiesService.getScriptProperties();
+  const llmConfig = AppConfig.get().Llm;
 
-  // OpenAI（非Azure）用のモデル指定: 高次分析用 mini
-  const openAiModelDaily = props.getProperty("OPENAI_MODEL_MINI") ?? "gpt-4.1-mini";
-
-  // Azureのエンドポイント（Chat Completions デプロイメント URL）: 高次分析用
-  const azureDailyUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI") || null;
-
-  // Azure/OpenAI/Gemini の鍵
-  const azureKey = props.getProperty("OPENAI_API_KEY");           // Azure OpenAI の API key
-  const openAiKey = props.getProperty("OPENAI_API_KEY_PERSONAL"); // OpenAI の API key
-  const geminiKey = props.getProperty("GEMINI_API_KEY");          // Gemini の API key
+  const openAiModelDaily = llmConfig.ModelMini;
+  const azureDailyUrl = llmConfig.AzureUrlMini;
 
   // 既存のフォールバックラッパーをそのまま利用
-  //   第4引数に azureDailyUrl を渡すと、Azure が最優先に
-  //   Azure失敗→OpenAI（openAiModelDaily）→Gemini の順で試行
   const result = callLlmWithFallback(systemPrompt, userPrompt, openAiModelDaily, azureDailyUrl);
 
   // 返却は文字列（エラー文言含む）
@@ -563,7 +572,7 @@ function callDailyDigestLlm(systemPrompt, userPrompt) {
  * @throws プロンプト設定が不完全な場合
  */
 function getDailyDigestPrompts() {
-  const promptSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.PROMPT_CONFIG);
+  const promptSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.PROMPT_CONFIG);
   if (!promptSheet) throw new Error("promptシートが見つかりません。");
 
   // A列: キー, B列: プロンプト内容
@@ -667,10 +676,10 @@ function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGro
  * @returns {Array} 記事配列 ({ date, title, url, abstractText, headline, source })
  */
 function getArticlesInDateWindow(start, end) {
-  const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
+  const sh = SpreadsheetApp.getActive().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return [];
-  const vals = sh.getRange(2, 1, lastRow - 1, Config.CollectSheet.Columns.SOURCE).getValues();
+  const vals = sh.getRange(2, 1, lastRow - 1, AppConfig.get().CollectSheet.Columns.SOURCE).getValues();
   const out = [];
   for (const r of vals) {
     const date = r[0];
@@ -699,16 +708,17 @@ function getArticlesInDateWindow(start, end) {
  * @returns {none}
  */
 function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
-  const props = PropertiesService.getScriptProperties();
-  const to = props.getProperty("MAIL_TO");
+  const digestConfig = AppConfig.get().Digest;
+  const to = digestConfig.mailTo;
   if (!to) { Logger.log("MAIL_TO未設定のためメール送信せず。"); return; }
   
   // プレフィックスを動的に変更
   const prefixBase = daysWindow === 1 ? "日刊" : "週間";
-  const subjectPrefix = props.getProperty("MAIL_SUBJECT_PREFIX") || `【${prefixBase}RSS】`;
-  const senderName = props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット";
+  // プロパティが設定されていればそれを使い、なければ動的に生成
+  const subjectPrefix = digestConfig.mailSubjectPrefix || `【${prefixBase}RSS】`;
+  const senderName = digestConfig.mailSenderName;
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
-  const sheetUrl = props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)";
+  const sheetUrl = digestConfig.sheetUrl;
   let keywordSection = "";
   if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
     keywordSection = "\n\n### 今週の注目キーワード\n";
@@ -751,9 +761,8 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWin
  * @returns {none}
  */
 function detectAndRecordTrends() {
-  const props = PropertiesService.getScriptProperties();
-  const isEnabled = props.getProperty("TREND_DETECTION_ENABLED");
-  if (String(isEnabled).toLowerCase() !== 'true') {
+  const trendConfig = AppConfig.get().Trend;
+  if (!trendConfig.detectionEnabled) {
     Logger.log("トレンド検出機能は無効化されています。スキップします。");
     return;
   }
@@ -788,7 +797,7 @@ function detectAndRecordTrends() {
  */
 function getArticlesForTrendAnalysis(days) {
   const { start, end } = getDateWindow(days);
-  const sh = SpreadsheetApp.getActive().getSheetByName(Config.SheetNames.TREND_DATA);
+  const sh = SpreadsheetApp.getActive().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return [];
   const vals = sh.getRange(2, 1, lastRow - 1, 2).getValues();
@@ -809,7 +818,7 @@ function getArticlesForTrendAnalysis(days) {
  * @returns {Map} キーワード→true の Map（存在確認用）
  */
 function getHistoricalTrendData(days = 7) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
   if (!sheet || sheet.getLastRow() < 2) return new Map();
   
   const historicalKeywords = new Map();
@@ -893,7 +902,7 @@ function calculateTrendScores(todayKeywords, historicalKeywords) {
  * @returns {none}
  */
 function writeTrendsToSheet(trends) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TRENDS);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
   if (!sheet) {
     Logger.log("エラー: Trendsシートが見つかりません。");
     return;
@@ -968,255 +977,238 @@ function writeTrendsToSheet(trends) {
  * ================================================================================
  * SECTION 4: LLM SERVICE LAYER
  * ================================================================================
- * LLM呼び出しの統一フロー。Azure/OpenAI/Gemini のフォールバック処理。
- * モデル選択：
- *   - NANO (gpt-4.1-nano)  : 軽量処理（見出し生成、キーワード抽出）
- *   - MINI (gpt-4.1-mini)  : 高次分析（ダイジェスト生成、トレンド分析、キーワード分析）
- * ================================================================================
+ * LLM呼び出しに関する全てのロジックを集約したサービスモジュール。
+ * 外部からはこのサービスを通じて、目的別の抽象化されたメソッドを呼び出す。
+ * (例: LlmService.summarize(text))
  */
+const LlmService = (function() {
+  const llmConfig = AppConfig.get().Llm;
 
-/**
- * _callAzureLlm
- * 【責務】Azure OpenAI Chat Completions API 呼び出し
- * 【仕様】エラー時は null 返却→フォールバックへ
- * @param {string} systemPrompt - システムプロンプト
- * @param {string} userPrompt - ユーザープロンプト
- * @param {string} azureUrl - デプロイメント URL
- * @param {string} azureKey - API キー
- * @param {Object} options - { temperature, max_completion_tokens など }
- * @returns {string|null} 回答文字列またはnull
- */
-function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
-  Logger.log("Azure OpenAIを試行中...");
-  const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 2048 };
-  const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-  try {
-    const res = UrlFetchApp.fetch(azureUrl, fetchOptions);
-    const code = res.getResponseCode();
-    const txt = res.getContentText();
-    if (code !== 200) {
-      _logError("_callAzureLlm", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
+  // --- Private Methods ---
+
+  function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
+    Logger.log("Azure OpenAIを試行中...");
+    const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 2048 };
+    const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+    try {
+      const res = UrlFetchApp.fetch(azureUrl, fetchOptions);
+      const code = res.getResponseCode();
+      const txt = res.getContentText();
+      if (code !== 200) {
+        _logError("_callAzureLlm", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
+        return null;
+      }
+      const json = JSON.parse(txt);
+      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+        return String(json.choices[0].message.content).trim();
+      }
+      _logError("_callAzureLlm", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
+      return null;
+    } catch (e) {
+      _logError("_callAzureLlm", e, "Azure OpenAI呼び出し中に例外が発生しました。");
       return null;
     }
-    const json = JSON.parse(txt);
-    if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-      return String(json.choices[0].message.content).trim();
-    }
-    _logError("_callAzureLlm", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
-    return null;
-  } catch (e) {
-    _logError("_callAzureLlm", e, "Azure OpenAI呼び出し中に例外が発生しました。");
-    return null;
   }
-}
-/**
- * _callOpenAiLlm
- * 【責務】OpenAI Chat Completions API 呼び出し
- * 【仕様】エラー時は null 返却→フォールバックへ
- * @param {string} systemPrompt - システムプロンプト
- * @param {string} userPrompt - ユーザープロンプト
- * @param {string} openAiModel - モデル名（gpt-4.1-nano または gpt-4.1-mini）
- * @param {string} openAiKey - API キー
- * @param {Object} options - { temperature など }
- * @returns {string|null} 回答文字列またはnull
- */
-function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
-  Logger.log("OpenAI APIを試行中...");
-  const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048, temperature: options.temperature ?? undefined };
-  const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-  try {
-    const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", fetchOptions);
-    const code = res.getResponseCode();
-    const txt = res.getContentText();
-    if (code !== 200) {
-      _logError("_callOpenAiLlm", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
+
+  function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
+    Logger.log("OpenAI APIを試行中...");
+    const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048, temperature: options.temperature ?? undefined };
+    const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+    try {
+      const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", fetchOptions);
+      const code = res.getResponseCode();
+      const txt = res.getContentText();
+      if (code !== 200) {
+        _logError("_callOpenAiLlm", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
+        return null;
+      }
+      const json = JSON.parse(txt);
+      if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+        return String(json.choices[0].message.content).trim();
+      }
+      _logError("_callOpenAiLlm", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。");
+      return null;
+    } catch (e) {
+      _logError("_callOpenAiLlm", e, "OpenAI呼び出し中に例外が発生しました。");
       return null;
     }
-    const json = JSON.parse(txt);
-    if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-      return String(json.choices[0].message.content).trim();
+  }
+  
+  function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
+    Logger.log("Gemini APIを試行中...");
+    const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
+    const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
+    const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 2048 } };
+    const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
+    try {
+      const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
+      const json = JSON.parse(response.getContentText());
+      let text = null;
+      if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
+        text = json.candidates[0].content.parts[0].text;
+      }
+      const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
+      Utilities.sleep(llmConfig.DELAY_MS);
+      return headline;
+    } catch (e) {
+      _logError("_callGeminiLlm", e, "Gemini API呼び出し中に例外が発生しました。");
+      return null;
     }
-    _logError("_callOpenAiLlm", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。");
-    return null;
-  } catch (e) {
-    _logError("_callOpenAiLlm", e, "OpenAI呼び出し中に例外が発生しました。");
-    return null;
   }
-}
-/**
- * _callGeminiLlm
- * 【責務】Google Gemini API 呼び出し（フォールバック最後の砦）
- * 【仕様】エラー時は null 返却
- * @param {string} systemPrompt - システムプロンプト
- * @param {string} userPrompt - ユーザープロンプト
- * @param {string} geminiApiKey - API キー
- * @param {Object} options - { temperature など }
- * @returns {string|null} 回答文字列またはnull
- */
-function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
-  Logger.log("Gemini APIを試行中...");
-  const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + Config.Llm.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
-  const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-  const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 2048 } };
-  const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
-  try {
-    const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
-    const json = JSON.parse(response.getContentText());
-    let text = null;
-    if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
-      text = json.candidates[0].content.parts[0].text;
+
+  function _callLlmWithFallback(systemPrompt, userPrompt, openAiModel, azureUrlOverride = null, options = {}) {
+    const llmProps = llmConfig; // AppConfigから取得済みの設定を利用
+    let model = openAiModel;
+    if (openAiModel === "nano" || openAiModel === "mini") {
+      model = openAiModel === "mini" ? llmProps.ModelMini : llmProps.ModelNano;
     }
-    const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
-    Utilities.sleep(Config.Llm.DELAY_MS);
-    return headline;
-  } catch (e) {
-    _logError("_callGeminiLlm", e, "Gemini API呼び出し中に例外が発生しました。");
-    return null;
+    const azureUrl = azureUrlOverride || (model && model.includes("mini") ? llmProps.AzureUrlMini : llmProps.AzureUrlNano);
+    const context = llmProps.Context;
+    let result = null;
+
+    if (context === 'PERSONAL') {
+      if (llmProps.OpenAiKey) {
+        result = _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options);
+        if (result !== null) return result;
+        Logger.log("OpenAI API(個人)での呼び出しに失敗しました。Azure OpenAIを試行します。");
+      }
+      if (azureUrl && llmProps.AzureKey) {
+        result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options);
+        if (result !== null) return result;
+        Logger.log("Azure OpenAIでの呼び出しに失敗しました。Gemini APIを試行します。");
+      }
+    } else {
+      if (azureUrl && llmProps.AzureKey) {
+        result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options);
+        if (result !== null) return result;
+        Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI API(個人)を試行します。");
+      }
+      if (llmProps.OpenAiKey) {
+        result = _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options);
+        if (result !== null) return result;
+        Logger.log("OpenAI API(個人)での呼び出しに失敗しました。Gemini APIを試行します。");
+      }
+    }
+
+    if (llmProps.GeminiKey) {
+      result = _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
+      if (result !== null) return result;
+      Logger.log("Gemini APIでの呼び出しに失敗しました。");
+    }
+    return "いずれのLLMでも見出しを生成できませんでした。";
   }
-}
+
+  // --- Public Methods ---
+  return {
+    /**
+     * 記事テキストをLLMで要約（見出し生成）
+     */
+    summarize: function(articleText) {
+      const model = llmConfig.ModelNano;
+      const SYSTEM = getPromptConfig("BATCH_SYSTEM");
+      const USER_TEMPLATE = getPromptConfig("BATCH_USER_TEMPLATE");
+      if (!SYSTEM || !USER_TEMPLATE) return "エラー: BATCHプロンプト設定が見つかりません。";
+      const USER = USER_TEMPLATE + ["", "記事: ---", articleText, "---"].join("\n");
+      return _callLlmWithFallback(SYSTEM, USER, model);
+    },
+
+    /**
+     * テキスト群からLLMで重要キーワード抽出
+     */
+    extractKeywords: function(text) {
+      const model = llmConfig.ModelNano;
+      const SYSTEM = getPromptConfig("TREND_KEYWORD_SYSTEM") || "以下のテキスト群から、重要と思われる技術、製品、イベントなどのキーワード（名詞）を最大50個、重複を除いてリストアップしてください。各キーワードは改行で区切って、リスト形式でのみ出力してください。前書きや後書きは不要です。";
+      const USER = text;
+      const result = _callLlmWithFallback(SYSTEM, USER, model);
+      if (result && !result.includes("エラー")) {
+        return result.split('\n').map(kw => kw.trim()).filter(kw => kw);
+      }
+      return null;
+    },
+
+    /**
+     * キーワード毎にLLMでトレンドセクション生成
+     */
+    generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
+      const model = llmConfig.ModelMini;
+      const azureWeeklyUrl = llmConfig.AzureUrlMini;
+      const SYSTEM = getPromptConfig("TREND_SYSTEM");
+      const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
+      if (!SYSTEM || !USER_TEMPLATE) {
+        Logger.log("エラー: WEEKLYトレンドプロンプト設定が見つかりません。");
+        return "今週のトレンドは生成できませんでした。";
+      }
+      const allTrends = [];
+      for (const keyword of hitKeywords) {
+        const articlesForKeyword = articlesGroupedByKeyword[keyword];
+        if (!articlesForKeyword || articlesForKeyword.length === 0) continue;
+        const keywordHeader = `キーワード「${keyword}」\n`;
+        const articleListForLlm = articlesForKeyword.map(a => `- 見出し: ${a.headline}\n  要約: ${a.tldr}\n  URL: ${a.url}`).join("\n");
+        const user = [USER_TEMPLATE, `キーワード: ${keyword}`, "", "各トレンドについて、以下の厳密なMarkdown形式で出力してください。", "", "1. 15〜25字程度のキャッチーなトレンド名称を太字で記述してください。", "2. 150〜200字程度で、なぜ今このトレンドが重要なのか、背景、具体的な進展、将来の展望などを、複数の記事から得られた情報を統合・要約して記述してください。**この解説文には、キーワードを自然に含めてください。** 箇条書きは使用しないでください。", `3. そのトレンドを最もよく表している記事を${linksPerTrend}つまで、\n・[記事の見出し](記事のURL)\n の形式で記述してください。`, "", "前書きや後書きは一切不要です。", "", "【記事リスト】", articleListForLlm].join("\n");
+        const txt = _callLlmWithFallback(SYSTEM, user, model, azureWeeklyUrl);
+        if (txt && txt.trim()) {
+          allTrends.push(keywordHeader + txt.trim());
+        } else if (articlesForKeyword.length > 0) {
+          allTrends.push(`${keywordHeader}**${keyword}関連のトレンド**\nこのキーワードに関するトレンドは生成できませんでした。関連する記事をいくつか紹介します。\n${articlesForKeyword.slice(0, linksPerTrend).map(a => `・[${a.title}](${a.url})`).join("\n")}`);
+        }
+      }
+      return allTrends.join("\n\n---\n\n");
+    },
+    
+    /**
+     * 日刊ダイジェスト専用 LLM 呼び出し
+     */
+    generateDailyDigest: function(systemPrompt, userPrompt) {
+        const model = llmConfig.ModelMini;
+        const azureDailyUrl = llmConfig.AzureUrlMini;
+        return _callLlmWithFallback(systemPrompt, userPrompt, model, azureDailyUrl);
+    },
+    
+    /**
+     * WebUIからのキーワード分析
+     */
+    analyzeKeywordSearch: function(systemPrompt, contextText, options) {
+        const model = llmConfig.ModelMini;
+        const azureUrl = llmConfig.AzureUrlMini;
+        return _callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
+    }
+  };
+})();
 
 /**
- * callLlmWithFallback
- * 【責務】LLM 呼び出しのフォールバック制御
- * 【戦略】Azure → OpenAI → Gemini の順で試行。全失敗時はエラーメッセージ返却
- * 【特徴】azureUrlOverride で動的にエンドポイント切り替え可能（NANO/MINI用途別）
- * @param {string} systemPrompt - システムプロンプト
- * @param {string} userPrompt - ユーザープロンプト
- * @param {string} openAiModel - デフォルトモデル（"gpt-4.1-nano" または "gpt-4.1-mini"）
- * @param {string} azureUrlOverride - Azure エンドポイント（null=デフォルト）
- * @param {Object} options - { temperature など }
- * @returns {string} 回答文字列またはエラーメッセージ
- */
-function callLlmWithFallback(systemPrompt, userPrompt, openAiModel = "gpt-4.1-nano", azureUrlOverride = null, options = {}) {
-  // 互換性を保ちつつ内部でプロパティをキャッシュして使用する
-  const llmProps = _getLlmProps();
-
-  // openAiModel 引数は "gpt-..." のモデル名か、"nano"/"mini" のいずれかを受け付ける
-  let model = openAiModel;
-  if (openAiModel === "nano" || openAiModel === "mini") {
-    model = openAiModel === "mini" ? llmProps.modelMini : llmProps.modelNano;
-  }
-
-  // Azure URL の優先決定: 引数 > 種別別エンドポイント > 汎用エンドポイント
-  const azureUrl = azureUrlOverride || (model && model.includes("mini") ? llmProps.azureUrlMini : llmProps.azureUrlNano) || llmProps.azureUrl;
-  const azureKey = llmProps.azureKey;
-  const openAiKey = llmProps.openAiKey;
-  const geminiKey = llmProps.geminiKey;
-
-  let result = null;
-  if (azureUrl && azureKey) {
-    result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options);
-    if (result !== null) return result;
-    Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI APIを試行します。");
-  }
-  if (openAiKey) {
-    result = _callOpenAiLlm(systemPrompt, userPrompt, model, openAiKey, options);
-    if (result !== null) return result;
-    Logger.log("OpenAI APIでの呼び出しに失敗しました。Gemini APIを試行します。");
-  }
-  if (geminiKey) {
-    result = _callGeminiLlm(systemPrompt, userPrompt, geminiKey, options);
-    if (result !== null) return result;
-    Logger.log("Gemini APIでの呼び出しに失敗しました。");
-  }
-  return "いずれのLLMでも見出しを生成できませんでした。";
-}
-
-// LLM プロパティキャッシュ（読み込み回数削減）
-let _llmPropsCache = null;
-function _getLlmProps() {
-  if (!_llmPropsCache) {
-    const props = PropertiesService.getScriptProperties();
-    _llmPropsCache = {
-      azureUrl: props.getProperty("AZURE_ENDPOINT_URL") || null,
-      azureUrlNano: props.getProperty("AZURE_ENDPOINT_URL_NANO") || null,
-      azureUrlMini: props.getProperty("AZURE_ENDPOINT_URL_MINI") || null,
-      azureKey: props.getProperty("OPENAI_API_KEY") || null,
-      openAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
-      geminiKey: props.getProperty("GEMINI_API_KEY") || null,
-      modelNano: props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano",
-      modelMini: props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini"
-    };
-  }
-  return _llmPropsCache;
-}
-
-/**
- * summarizeWithLLM
+ * summarizeWithLLM (ラッパー関数)
  * 【責務】記事テキストをLLMで要約（見出し生成）
- * 【モデル】NANO (gpt-4.1-nano) ← 軽量処理用
- * 【用途】processSummarization() から呼び出し
- * @param {string} articleText - "Title: xxx\nAbstract: yyy" 形式テキスト
- * @returns {string} JSON形式返却（tldr or summary キーを期待）
  */
 function summarizeWithLLM(articleText) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano";
-  const SYSTEM = getPromptConfig("BATCH_SYSTEM");
-  const USER_TEMPLATE = getPromptConfig("BATCH_USER_TEMPLATE");
-  if (!SYSTEM || !USER_TEMPLATE) return "エラー: BATCHプロンプト設定が見つかりません。";
-  const USER = USER_TEMPLATE + ["", "記事: ---", articleText, "---"].join("\n");
-  return callLlmWithFallback(SYSTEM, USER, model);
+  return LlmService.summarize(articleText);
 }
 
 /**
- * _llmMakeTrendSections
+ * _llmMakeTrendSections (ラッパー関数)
  * 【責務】キーワード毎にLLMでトレンドセクション生成
- * 【モデル】MINI (gpt-4.1-mini) ← 高次分析用
- * 【出力形式】Markdown（見出しH3 + 解説 + 記事リンク）
- * @param {Object} articlesGroupedByKeyword - { keyword: [記事配列] }
- * @param {number} linksPerTrend - 各トレンドの記事リンク数上限
- * @param {Array} hitKeywords - キーワード配列（処理対象）
- * @returns {string} Markdown本文
  */
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini";
-  const azureWeeklyUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI");
-  const SYSTEM = getPromptConfig("TREND_SYSTEM");
-  const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
-  if (!SYSTEM || !USER_TEMPLATE) {
-    Logger.log("エラー: WEEKLYトレンドプロンプト設定が見つかりません。");
-    return "今週のトレンドは生成できませんでした。";
-  }
-  const allTrends = [];
-  for (const keyword of hitKeywords) {
-    const articlesForKeyword = articlesGroupedByKeyword[keyword];
-    if (!articlesForKeyword || articlesForKeyword.length === 0) continue;
-    const keywordHeader = `キーワード「${keyword}」\n`;
-    const articleListForLlm = articlesForKeyword.map(a => `- 見出し: ${a.headline}\n  要約: ${a.tldr}\n  URL: ${a.url}`).join("\n");
-    const user = [USER_TEMPLATE, `キーワード: ${keyword}`, "", "各トレンドについて、以下の厳密なMarkdown形式で出力してください。", "", "1. 15〜25字程度のキャッチーなトレンド名称を太字で記述してください。", "2. 150〜200字程度で、なぜ今このトレンドが重要なのか、背景、具体的な進展、将来の展望などを、複数の記事から得られた情報を統合・要約して記述してください。**この解説文には、キーワードを自然に含めてください。** 箇条書きは使用しないでください。", `3. そのトレンドを最もよく表している記事を${linksPerTrend}つまで、\
-・[記事の見出し](記事のURL)\
- の形式で記述してください。`, "", "前書きや後書きは一切不要です。", "", "【記事リスト】", articleListForLlm].join("\n");
-    const txt = callLlmWithFallback(SYSTEM, user, model, azureWeeklyUrl);
-    if (txt && txt.trim()) {
-      allTrends.push(keywordHeader + txt.trim());
-    } else if (articlesForKeyword.length > 0) {
-      allTrends.push(`${keywordHeader}**${keyword}関連のトレンド**\nこのキーワードに関するトレンドは生成できませんでした。関連する記事をいくつか紹介します。\n${articlesForKeyword.slice(0, linksPerTrend).map(a => `・[${a.title}](${a.url})`).join("\n")}`);
-    }
-  }
-  return allTrends.join("\n\n---\n\n");
+  return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords);
 }
 
 /**
- * extractKeywordsWithLLM
+ * extractKeywordsWithLLM (ラッパー関数)
  * 【責務】テキスト群からLLMで重要キーワード抽出
- * 【モデル】NANO (gpt-4.1-nano) ← 軽量処理用
- * 【用途】トレンド検出時に dailyKeywords を生成
- * @param {string} text - 改行区切りのテキスト群（記事タイトルなど）
- * @returns {Array} キーワード配列（空行除去済み）
  */
 function extractKeywordsWithLLM(text) {
-  const props = PropertiesService.getScriptProperties();
-  const model = props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano";
-  const SYSTEM = getPromptConfig("TREND_KEYWORD_SYSTEM") || "以下のテキスト群から、重要と思われる技術、製品、イベントなどのキーワード（名詞）を最大50個、重複を除いてリストアップしてください。各キーワードは改行で区切って、リスト形式でのみ出力してください。前書きや後書きは不要です。";
-  const USER = text;
-  const result = callLlmWithFallback(SYSTEM, USER, model);
-  if (result && !result.includes("エラー")) {
-    return result.split('\n').map(kw => kw.trim()).filter(kw => kw);
-  }
-  return null;
+  return LlmService.extractKeywords(text);
 }
+
+/**
+ * callDailyDigestLlm (ラッパー関数)
+ * 【責務】日刊ダイジェスト専用 LLM 呼び出し
+ */
+function callDailyDigestLlm(systemPrompt, userPrompt) {
+  return LlmService.generateDailyDigest(systemPrompt, userPrompt);
+}
+
+// callLlmWithFallback は LlmService の内部関数になったため、グローバルスコープからは削除されました
+
 
 /**
  * ================================================================================
@@ -1253,7 +1245,7 @@ function getWeightedKeywords(sheetName = "Keywords") {
  */
 function getPromptConfig(key) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(Config.SheetNames.PROMPT_CONFIG);
+  const sheet = ss.getSheetByName(AppConfig.get().SheetNames.PROMPT_CONFIG);
   if (!sheet) {
     Logger.log(`エラー: promptシートが見つかりません。キー: ${key}`);
     return null;
@@ -1270,23 +1262,7 @@ function getPromptConfig(key) {
   return String(content).trim();
 }
 
-/**
- * _getDigestConfig
- * 【責務】スクリプトプロパティからダイジェスト設定を一括取得
- * @param {none}
- * @returns {Object} { days, topN, notifyChannel, mailTo, mailSubjectPrefix, mailSenderName }
- */
-function _getDigestConfig() {
-  const props = PropertiesService.getScriptProperties();
-  return {
-    days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
-    topN: parseInt(props.getProperty("DIGEST_TOP_N") || "20", 10),
-    notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
-    mailTo: props.getProperty("MAIL_TO"),
-    mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX") || "【週間RSS】",
-    mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
-  };
-}
+// _getDigestConfig は AppConfig に統合されたため削除されました
 
 /**
  * computeHeuristicScore
@@ -1302,7 +1278,7 @@ function computeHeuristicScore(article, articleKeywordMap) {
   const matchedKeywords = articleKeywordMap.get(article.url) || [];
   const keywordScore = Math.min(40, matchedKeywords.length * 8);
   const freshnessScore = 40 * Math.exp(-daysOld / 7);
-  const hasAbstract = article.abstractText && article.abstractText !== Config.Llm.NO_ABSTRACT_TEXT;
+  const hasAbstract = article.abstractText && article.abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT;
   const abstractBonus = hasAbstract ? Math.min(20, String(article.abstractText).length / 100) : 0;
   const rawScore = keywordScore + freshnessScore + abstractBonus;
   return Math.max(0, Math.min(100, Math.round(rawScore)));
@@ -1410,14 +1386,14 @@ function getDateWindow(days) {
  * @returns {none}
  */
 function collectRssFeeds() {
-  const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.RSS_LIST);
-  const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.RSS_LIST);
+  const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   
   const rssData = rssListSheet.getRange(
-    Config.RssListSheet.DataRange.START_ROW, 
-    Config.RssListSheet.DataRange.START_COL, 
+    AppConfig.get().RssListSheet.DataRange.START_ROW, 
+    AppConfig.get().RssListSheet.DataRange.START_COL, 
     rssListSheet.getLastRow() - 1, 
-    Config.RssListSheet.DataRange.NUM_COLS
+    AppConfig.get().RssListSheet.DataRange.NUM_COLS
   ).getValues();
 
   // 既存URL取得（正規化してSetに格納）
@@ -1425,14 +1401,14 @@ function collectRssFeeds() {
   const lastRow = collectSheet.getLastRow();
   
   // 【修正】直近 10,000件のURLをチェック対象とする (過去の重複を拾いやすくするため)
-  if (lastRow >= Config.CollectSheet.DataRange.START_ROW) {
+  if (lastRow >= AppConfig.get().CollectSheet.DataRange.START_ROW) {
     const checkLimit = 10000; 
     const startRow = Math.max(2, lastRow - checkLimit + 1);
     const numRows = lastRow - startRow + 1;
 
     const existingData = collectSheet.getRange(
       startRow,
-      Config.CollectSheet.Columns.URL, // C列
+      AppConfig.get().CollectSheet.Columns.URL, // C列
       numRows,
       1
     ).getValues();
@@ -1476,7 +1452,7 @@ function collectRssFeeds() {
         }
         
         // HTML除去
-        const cleanDescription = stripHtml(item.description || Config.Llm.NO_ABSTRACT_TEXT).trim();
+        const cleanDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
         const cleanTitle = stripHtml(item.title).trim();
 
         // データ作成: A:日付, B:タイトル, C:URL, D:抜粋, E:空, F:ソース名
@@ -1531,7 +1507,7 @@ function getExistingUrls(sheet) {
   const numRows = lastRow - startRow + 1;
   
   // 対象範囲のURLのみを取得してフラット化
-  const urls = sheet.getRange(startRow, Config.CollectSheet.Columns.URL, numRows, 1).getValues().flat();
+  const urls = sheet.getRange(startRow, AppConfig.get().CollectSheet.Columns.URL, numRows, 1).getValues().flat();
   return new Set(urls);
 }
 
@@ -1718,7 +1694,7 @@ function isRecentArticle(pubDate, daysLimit = 7) {
  * @returns {none}
  */
 function sortCollectByDateDesc() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
   
   if (lastRow > 1) {
@@ -1777,7 +1753,7 @@ function executeWeeklyDigest(keyword) {
 function searchAndAnalyzeKeyword(keyword) {
   if (!keyword) return "キーワードが入力されていません。";
 
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return "データが存在しません。";
 
@@ -1792,7 +1768,7 @@ function searchAndAnalyzeKeyword(keyword) {
   // 2. キーワードでフィルタリング（AND条件）
   const relevantArticles = values.filter(row => {
     const title = String(row[1] || "").toLowerCase();
-    const summary = String(row[Config.CollectSheet.Columns.SUMMARY - 1] || "").toLowerCase();
+    const summary = String(row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1] || "").toLowerCase();
 
     // 全ての検索語句がタイトルまたは要約に含まれているかチェック（AND条件）
     return searchTerms.every(term => {
@@ -1812,8 +1788,8 @@ function searchAndAnalyzeKeyword(keyword) {
   targetArticles.forEach((row, i) => {
     const date = row[0]; 
     const title = row[1]; // B列（元の記事タイトル）
-    const summary = row[Config.CollectSheet.Columns.SUMMARY - 1]; // E列（日本語見出し/要約）
-    const url = row[Config.CollectSheet.Columns.URL - 1]; // C列（URL）
+    const summary = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1]; // E列（日本語見出し/要約）
+    const url = row[AppConfig.get().CollectSheet.Columns.URL - 1]; // C列（URL）
 
     // AIの出力テキストを日本語リンクにするため、タイトル部分に日本語見出しを使用
     contextText += `[${i+1}] 日付:${date} / タイトル:${summary} / URL:${url}\n---\n`;
@@ -1848,15 +1824,15 @@ function searchAndAnalyzeKeyword(keyword) {
 
   try {
     // LLM呼び出し
-    const props = PropertiesService.getScriptProperties();
+    const llmConfig = AppConfig.get().Llm;
     // モデルは高次分析用 mini を指定
-    const model = props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini";
+    const model = llmConfig.ModelMini;
     // Azureのエンドポイント: 高次分析用を指定
-    const azureUrl = props.getProperty("AZURE_ENDPOINT_URL_MINI");
+    const azureUrl = llmConfig.AzureUrlMini;
     // 温度を指定
     const options = { temperature: 0.4 };
 
-    let analysisResult = callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
+    let analysisResult = LlmService.analyzeKeywordSearch(systemPrompt, contextText, options);
 
     // 不要なバッククォート削除
     analysisResult = analysisResult.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
@@ -1896,7 +1872,7 @@ function searchAndAnalyzeKeyword(keyword) {
  * @returns {none}
  */
 function removeDuplicates() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(Config.SheetNames.TREND_DATA);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   if (!sheet) {
     Logger.log("エラー: シートが見つかりません");
     return;
@@ -1918,7 +1894,7 @@ function removeDuplicates() {
 
   // 上から順に走査し、初めて出てくるURLの行だけを残す
   values.forEach(row => {
-    const url = row[Config.CollectSheet.Columns.URL - 1]; // C列
+    const url = row[AppConfig.get().CollectSheet.Columns.URL - 1]; // C列
     
     if (url) {
       // 正規化されたURLでチェック
