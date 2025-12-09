@@ -186,10 +186,21 @@ function dailyDigestJob() {
  * @param {boolean} returnHtmlOnly - （オプション）HTML返却のみフラグ
  * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
-// function weeklyDigestJob を置き換え
-function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
-  const config = AppConfig.get().Digest;
-  const DAYS_WINDOW = config.days; // 7日間
+/**
+ * weeklyDigestJob
+ * 【責務】週刊ダイジェスト生成・送信
+ * 【変更点】第3引数 overrides を追加し、設定(config)を一時的に書き換える処理を追加
+ */
+// ▼▼▼ 変更箇所: 第3引数 overrides を追加 ▼▼▼
+function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false, overrides = null) {
+  // 1. 基本設定を取得
+  const baseConfig = AppConfig.get().Digest;
+  
+  // ▼▼▼ 変更箇所: オーバーライド設定があれば適用（マージ） ▼▼▼
+  // Web UIから来た場合は topN=100, days=14 などに書き換わる
+  const config = overrides ? { ...baseConfig, ...overrides } : baseConfig;
+
+  const DAYS_WINDOW = config.days; // 設定値を使用
 
   // 実行期間を計算
   const { start, end } = getDateWindow(DAYS_WINDOW);
@@ -197,28 +208,26 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
 
   if (allItems.length === 0) {
     Logger.log("週刊ダイジェスト：対象期間に記事がありませんでした。");
-    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
-    return;
+    return returnHtmlOnly ? "<div>対象期間に記事がありませんでした。</div>" : null;
   }
   
-  Logger.log(`週刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
+  Logger.log(`週刊ダイジェスト：対象期間内(${DAYS_WINDOW}日間)に ${allItems.length} 件の記事が見つかりました。`);
 
-  // キーワードによる記事の分類 (中略)
+  // キーワードによる記事の分類
   const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
 
   if (relevantArticles.length === 0) {
     Logger.log("週刊ダイジェスト：キーワードに合致する記事がありませんでした。");
-    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "キーワードに合致する記事がありませんでした。", DAYS_WINDOW);
-    return;
+    return returnHtmlOnly ? "<div>キーワードに合致する記事がありませんでした。</div>" : null;
   }
   
   Logger.log(`週刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
   _logKeywordHitCounts(hitKeywordsWithCount);
 
   // LLMによる要約生成とメール送信
-  // daysWindowを渡す
+  // config (topN=100等が反映済み) が渡されるため、ここで多くの記事が選ばれます
   const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly, DAYS_WINDOW); 
   
   if (returnHtmlOnly) return result;
@@ -1727,18 +1736,27 @@ function doGet() {
 /**
  * executeWeeklyDigest
  * 【責務】Web UI から呼び出し：キーワード指定で週刊ダイジェスト生成
- * @param {string} keyword - キーワード入力
- * @returns {string} HTML 本文（またはエラーメッセージ）
+ * 【変更点】Webからの実行時は、記事数上限と検索期間を拡張して呼び出すように変更
  */
 function executeWeeklyDigest(keyword) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
     Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
-    const htmlContent = weeklyDigestJob(trimmedKeyword, true);
+
+    // ▼▼▼ 変更箇所: Web UI実行時の特別設定（オーバーライド）を作成 ▼▼▼
+    const webUiSettings = {
+      topN: 100,  // 記事数上限を 100件 に拡大 (通常は20-30)
+      days: 14    // 検索期間を 14日間 に拡大 (通常は7)
+    };
+
+    // 第3引数に設定オーバーライドを渡す
+    const htmlContent = weeklyDigestJob(trimmedKeyword, true, webUiSettings);
+    // ▲▲▲ 変更箇所終了 ▲▲▲
+    
     return htmlContent || "<div>該当記事がありませんでした。</div>";
   } catch (e) {
     Logger.log(`エラーが発生しました: ${e.toString()}`);
-    return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
+    return `<div>エラーが発生しました: ${e.message}</div>`;
   }
 }
 
@@ -1781,7 +1799,7 @@ function searchAndAnalyzeKeyword(keyword) {
   }
 
   // 3. AIに渡すテキストを作成（直近30件に絞る）
-  const limit = 30;
+  const limit = 100;
   const targetArticles = relevantArticles.slice(0, limit); 
   
   let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
