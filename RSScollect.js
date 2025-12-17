@@ -1903,10 +1903,6 @@ function sanitizeXml(text) {
   return cleanText;
 }
 
-
-
-
-
 /**
  * isRecentArticle
  * 【責務】記事の公開日が指定日数以内かチェック
@@ -2047,8 +2043,8 @@ function searchAndAnalyzeKeyword(keyword) {
   }
 
   // 3. AIに渡すテキストを作成（直近30件に絞る）
-  const limit = 30;
-  const targetArticles = relevantArticles.slice(0, limit); 
+  const limit = AppConfig.get().Digest.topN || 30;
+  const targetArticles = relevantArticles.slice(0, limit);
   
   let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
   targetArticles.forEach((row, i) => {
