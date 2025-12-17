@@ -47,6 +47,7 @@ const AppConfig = (function() {
         TREND_DATA: "collect",
         PROMPT_CONFIG: "prompt",
         TRENDS: "Trends",
+        USERS: "Users",
       },
       CollectSheet: {
         Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6 },
@@ -852,11 +853,18 @@ function getArticlesInDateWindow(start, end) {
  * @param {number} daysWindow - 1=日刊, 7=週刊（メール件名・本文用）
  * @returns {none}
  */
+/**
+ * sendWeeklyDigestEmail (修正版: Usersシート対応)
+ */
 function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
   const digestConfig = AppConfig.get().Digest;
-  const to = digestConfig.mailTo;
-  if (!to) { Logger.log("MAIL_TO未設定のためメール送信せず。"); return; }
   
+  const to = getRecipients(); 
+  
+  if (!to) { 
+    Logger.log("配信先(MAIL_TO または Usersシート)が設定されていないためメール送信しません。"); 
+    return; 
+  }
   // プレフィックスを動的に変更
   const prefixBase = daysWindow === 1 ? "日刊" : "週間";
   // プロパティが設定されていればそれを使い、なければ動的に生成
@@ -2238,4 +2246,50 @@ function decodeHtmlEntities(text) {
              .replace(/&quot;/g, '"')
              .replace(/&#039;/g, "'")
              .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+}
+
+/**
+ * getRecipients
+ * 【責務】配信先メールアドレスリストの生成
+ * 【仕様】
+ * 1. スクリプトプロパティ `MAIL_TO` (管理者) を取得
+ * 2. `Users` シートから「有効(C列!=空)」なアドレスを取得
+ * 3. 重複を除去してカンマ区切り文字列で返す
+ */
+function getRecipients() {
+  const adminMail = AppConfig.get().Digest.mailTo; // プロパティの管理者アドレス
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.USERS);
+  
+  // 重複排除用のSet
+  const recipientSet = new Set();
+
+  // 1. 管理者アドレスを追加
+  if (adminMail) {
+    // カンマ区切りで複数指定されている場合にも対応
+    adminMail.split(',').forEach(email => {
+      const trimmed = email.trim();
+      if (trimmed) recipientSet.add(trimmed);
+    });
+  }
+
+  // 2. シートからユーザーを追加
+  if (sheet && sheet.getLastRow() >= 2) {
+    // A列:名前, B列:Email, C列:有効フラグ
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+    
+    data.forEach(row => {
+      const email = String(row[1]).trim();
+      const isActive = String(row[2]).trim() !== ""; // C列に何か文字があれば有効
+      
+      if (email && isActive) {
+        recipientSet.add(email);
+      }
+    });
+  }
+
+  // Setを配列に戻してカンマ区切りにする
+  const finalRecipients = Array.from(recipientSet).join(',');
+  
+  Logger.log(`配信先リスト生成: ${recipientSet.size} 件 (${finalRecipients})`);
+  return finalRecipients;
 }
