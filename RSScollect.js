@@ -186,21 +186,10 @@ function dailyDigestJob() {
  * @param {boolean} returnHtmlOnly - （オプション）HTML返却のみフラグ
  * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
-/**
- * weeklyDigestJob
- * 【責務】週刊ダイジェスト生成・送信
- * 【変更点】第3引数 overrides を追加し、設定(config)を一時的に書き換える処理を追加
- */
-// ▼▼▼ 変更箇所: 第3引数 overrides を追加 ▼▼▼
-function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false, overrides = null) {
-  // 1. 基本設定を取得
-  const baseConfig = AppConfig.get().Digest;
-  
-  // ▼▼▼ 変更箇所: オーバーライド設定があれば適用（マージ） ▼▼▼
-  // Web UIから来た場合は topN=100, days=14 などに書き換わる
-  const config = overrides ? { ...baseConfig, ...overrides } : baseConfig;
-
-  const DAYS_WINDOW = config.days; // 設定値を使用
+// function weeklyDigestJob を置き換え
+function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
+  const config = AppConfig.get().Digest;
+  const DAYS_WINDOW = config.days; // 7日間
 
   // 実行期間を計算
   const { start, end } = getDateWindow(DAYS_WINDOW);
@@ -208,26 +197,28 @@ function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false, overrides 
 
   if (allItems.length === 0) {
     Logger.log("週刊ダイジェスト：対象期間に記事がありませんでした。");
+    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
-    return returnHtmlOnly ? "<div>対象期間に記事がありませんでした。</div>" : null;
+    return;
   }
   
-  Logger.log(`週刊ダイジェスト：対象期間内(${DAYS_WINDOW}日間)に ${allItems.length} 件の記事が見つかりました。`);
+  Logger.log(`週刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
-  // キーワードによる記事の分類
+  // キーワードによる記事の分類 (中略)
   const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
 
   if (relevantArticles.length === 0) {
     Logger.log("週刊ダイジェスト：キーワードに合致する記事がありませんでした。");
+    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "キーワードに合致する記事がありませんでした。", DAYS_WINDOW);
-    return returnHtmlOnly ? "<div>キーワードに合致する記事がありませんでした。</div>" : null;
+    return;
   }
   
   Logger.log(`週刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
   _logKeywordHitCounts(hitKeywordsWithCount);
 
   // LLMによる要約生成とメール送信
-  // config (topN=100等が反映済み) が渡されるため、ここで多くの記事が選ばれます
+  // daysWindowを渡す
   const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly, DAYS_WINDOW); 
   
   if (returnHtmlOnly) return result;
@@ -372,15 +363,50 @@ function processSummarization() {
  *   - hitKeywordsWithCount : キーワード毎の記事数（ソート済み）
  *   - articleKeywordMap : URL→キーワード配列の Map（スコア計算用）
  */
+/**
+ * _filterRelevantArticles (修正版: 曜日フィルタリング実装)
+ * 【責務】キーワード照合で関連記事をフィルタリング
+ * 【変更】自動実行時は、本日の曜日にマッチするキーワードだけを採用する
+ */
 function _filterRelevantArticles(allItems, webUiKeyword = null) {
   let activeKeywords = [];
+  
   if (webUiKeyword && String(webUiKeyword).trim() !== "") {
+    // 1. Web UIからの手動実行時 -> 曜日は無視してそのキーワードで実行
     activeKeywords = [String(webUiKeyword).trim()];
-    Logger.log(`フィルタリング: Web UIのキーワード「${activeKeywords[0]}」を使用します。`);
+    Logger.log(`フィルタリング(手動): キーワード「${activeKeywords[0]}」を使用します。`);
   } else {
-    activeKeywords = getWeightedKeywords().filter(kw => kw.active).map(kw => kw.keyword);
-    Logger.log(`フィルタリング: シートから ${activeKeywords.length} 件のキーワードを使用します。`);
+    // 2. 自動実行時 -> 「本日の曜日」に一致するキーワードのみ抽出
+    const allConfigured = getWeightedKeywords();
+    
+    // 今日の曜日を取得 (例: "月", "火"...)
+    const dayMap = ["日", "月", "火", "水", "木", "金", "土"];
+    const todayDay = dayMap[new Date().getDay()];
+    
+    activeKeywords = allConfigured
+      .filter(kw => {
+        if (!kw.active) return false; // 無効なものは除外
+        
+        // 曜日指定チェック
+        const targetDay = kw.day;
+        // 空欄または「毎日」なら、どの曜日でも実行
+        if (!targetDay || targetDay === "毎日") return true;
+        
+        // 指定された文字が含まれていれば実行 (例: "月,木" なら月曜と木曜にヒット)
+        return targetDay.includes(todayDay);
+      })
+      .map(kw => kw.keyword);
+
+    if (activeKeywords.length === 0) {
+      Logger.log(`本日は配信設定されているキーワードがありません。（曜日: ${todayDay}）`);
+      // 記事ゼロ扱いで終了させるために空の結果を返す
+      return { relevantArticles: [], hitKeywordsWithCount: [], articleKeywordMap: new Map() };
+    }
+
+    Logger.log(`フィルタリング(自動): 本日(${todayDay}曜日)の対象キーワード ${activeKeywords.length} 件を使用します。`);
   }
+
+  // --- 以下、既存の処理と同じ ---
   const relevantArticles = [];
   const keywordHitCounts = {};
   const articleKeywordMap = new Map();
@@ -391,6 +417,7 @@ function _filterRelevantArticles(allItems, webUiKeyword = null) {
     return { type: 'single', words: [keywordCell.trim()] };
   };
   const keywordConditions = activeKeywords.map(k => ({ original: k, ...parseKeywordCondition(k) }));
+  
   allItems.forEach(article => {
     const text = `${article.title} ${article.abstractText} ${article.headline}`;
     const hitKeywordsForArticle = new Set();
@@ -504,49 +531,102 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
  * @param {number} daysWindow - 1（日刊）
  * @returns {none}
  */
+/**
+ * _generateAndSendDailyDigest (改良版: バッチ処理対応)
+ * 記事数が多い場合、分割して中間要約を作成し、最後に統合する
+ */
+/**
+ * _generateAndSendDailyDigest (改良版: URL保持・バッチ処理強化)
+ * 記事数が多い場合、分割して中間要約を作成し、最後に統合する
+ * ★修正点: 中間要約と最終統合プロンプトで「記事URL」を維持するよう指示を追加
+ */
 function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow) {
   const digestSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
-
-  // 1. プロンプト取得（DAILY_DIGEST_SYSTEM / DAILY_DIGEST_USER）
   const [systemPromptTemplate, userPromptTemplate] = getDailyDigestPrompts();
 
+  let reportBody = "";
+  const BATCH_SIZE = 30; 
 
-  // 2. 記事リストを整形（URL を含む Markdownリンク形式）
-  const articleListText = allArticles.map(a =>
-    `・${a.title} - 抜粋: ${a.abstractText}`
-  ).join('\n');
-
-  // 3. 実行プロンプト生成（シンプルな置換）
-  const userPrompt = userPromptTemplate
-    .replace(/\$\{all_articles_in_date_window\}/g, articleListText)
-
-  // 4. LLM呼び出し（フォールバック順）
-  Logger.log("LLMに日刊ダイジェストの生成を依頼中... (Azure > OpenAI > Gemini)");
-  let reportBody = "(LLM生成失敗)";
-  try {
+  if (allArticles.length <= BATCH_SIZE) {
+    // --- 通常処理（記事数が少ない場合） ---
+    const articleListText = formatArticlesForLlm(allArticles);
+    // ユーザープロンプト内のプレースホルダーを置換
+    // (linksPerTopic はプロンプト内で使われている前提で、もし変数がなければ数値を直接埋め込む形でも可)
+    let userPrompt = userPromptTemplate.replace(/\$\{all_articles_in_date_window\}/g, articleListText);
+    userPrompt = userPrompt.replace(/\$\{linksPerTopic\}/g, "3"); 
+    
     reportBody = callDailyDigestLlm(systemPromptTemplate, userPrompt);
+  } 
+  else {
+    // --- 分割処理（記事数が多い場合） ---
+    Logger.log(`記事数が多いため(${allArticles.length}件)、分割処理を実行します。`);
+    
+    const batchSummaries = [];
+    for (let i = 0; i < allArticles.length; i += BATCH_SIZE) {
+      const batch = allArticles.slice(i, i + BATCH_SIZE);
+      const articleListText = formatArticlesForLlm(batch);
+      
+      // ★修正: 中間要約でもURLリストを出力させる
+      const batchPrompt = `
+以下の記事リストから、主要なトピックを3〜5個抽出し、箇条書きで要約してください。
+【重要】後で統合するため、各トピックの末尾には、その根拠となった記事の「タイトル」と「URL」を必ず記載してください。
 
-    // Trendsシートへ書き込み
-    const writeData = [
-      new Date(),               // A: 記録日時
-      "日刊ダイジェスト",       // B: 種別
-      start,                    // C: 集計開始
-      end,                      // D: 集計終了
-      "Topics (All Articles)",  // E: 注記（キーワードではなくトピック分析）
-      reportBody,               // F: 本文
-      allArticles.length        // G: 記事数
-    ];
-    digestSheet.appendRow(writeData);
-    SpreadsheetApp.flush();
-  } catch (e) {
-    Logger.log("LLM呼び出しエラー: " + e.message);
-    reportBody = `## エラーが発生しました\n${e.message}`; // エラー時は本文としてそのまま送信
+出力形式:
+- トピック概要...
+  - 根拠記事: [記事タイトル](URL)
+
+【記事リスト】
+${articleListText}
+`;
+      const batchResult = callDailyDigestLlm(systemPromptTemplate, batchPrompt); 
+      batchSummaries.push(batchResult);
+      Utilities.sleep(1000); 
+    }
+
+    // ★修正: 最終統合時にURLリストを再構築させる
+    const finalPrompt = `
+以下は、今日の大量のニュース記事をいくつかのブロックに分けて要約したものです（根拠記事のリンク付き）。
+これらを統合し、重複を整理して、今日全体の「日刊ダイジェスト」を作成してください。
+
+【重要指示】
+1. 全体の流れがわかるように構成し、重要なトピックについては深掘りして解説してください。
+2. 各トピックの最後には、必ず「関連記事リスト」として、中間要約に含まれていた記事リンク（[タイトル](URL)）を3つ程度記載してください。**URLを省略しないでください。**
+3. 出力は以下のMarkdown形式で行ってください。
+
+### **トピック名称**
+解説文...
+**関連記事:**
+- [記事タイトル](URL)
+- [記事タイトル](URL)
+
+【中間要約リスト】
+${batchSummaries.join("\n\n---\n\n")}
+`;
+    reportBody = callDailyDigestLlm(systemPromptTemplate, finalPrompt);
   }
 
-  // 5. メール送信
+  // 結果の保存とメール送信（既存コードと同じ）
+  try {
+    const writeData = [
+      new Date(), "日刊ダイジェスト", start, end, 
+      "Topics (All Articles)", reportBody, allArticles.length
+    ];
+    digestSheet.appendRow(writeData);
+  } catch(e) { /* エラー処理 */ }
+
   const headerLine = `集計期間：${fmtDate(start)}〜${fmtDate(new Date(end.getTime() - 1))} (全${allArticles.length}記事)`;
-  const hitKeywordsWithCount = null; // キーワードベースではないため null
-  sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow);
+  sendWeeklyDigestEmail(headerLine, reportBody, null, daysWindow);
+}
+
+/**
+ * ヘルパー関数: 記事リストの整形 (AI見出し優先)
+ */
+function formatArticlesForLlm(articles) {
+  return articles.map(a => {
+    // AI見出し(headline)があれば優先、なければ抜粋、なければタイトル
+    const content = a.headline && a.headline.length > 10 ? a.headline : (a.abstractText || a.title);
+    return `・タイトル: ${a.title}\n  内容: ${content}\n  URL: ${a.url}`;
+  }).join('\n\n');
 }
 
 /**
@@ -647,15 +727,71 @@ function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) {
  * @param {Map} articleKeywordMap - URL→キーワード配列の Map
  * @returns {Object} { selectedTopN: 選抜記事配列 }
  */
+/**
+ * rankAndSelectArticles (改良版)
+ * 【責務】記事をスコア付けし、類似記事を排除しながら多様な上位記事を選抜
+ */
 function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
-  const topN = config.topN || 20;
-  const scoredArticles = relevantArticles.map(a => ({ ...a, heuristicScore: computeHeuristicScore(a, articleKeywordMap) })).sort((a, b) => b.heuristicScore - a.heuristicScore);
-  const picked = [];
-  for (const item of scoredArticles) {
-    picked.push(item);
-    if (picked.length >= topN) break;
+  const topN = config.topN || 30; // 以前より少し多めに取れるように設定
+  
+  // 1. まずスコア順に並べる
+  const scoredArticles = relevantArticles.map(a => ({
+    ...a,
+    heuristicScore: computeHeuristicScore(a, articleKeywordMap)
+  })).sort((a, b) => b.heuristicScore - a.heuristicScore);
+
+  const selectedArticles = [];
+  const selectedTitles = [];
+
+  // 2. 類似度チェックを行いながら選抜
+  for (const article of scoredArticles) {
+    if (selectedArticles.length >= topN) break;
+
+    // 既に選ばれた記事の中に、非常に似ているタイトルがないか確認
+    const isDuplicate = selectedTitles.some(selectedTitle => {
+      return calculateLevenshteinSimilarity(selectedTitle, article.title) > 0.6; // 60%以上一致なら重複とみなす
+    });
+
+    if (!isDuplicate) {
+      selectedArticles.push(article);
+      selectedTitles.push(article.title);
+    } else {
+      Logger.log(`類似記事スキップ: ${article.title}`);
+    }
   }
-  return { selectedTopN: picked };
+
+  return { selectedTopN: selectedArticles };
+}
+
+/**
+ * calculateLevenshteinSimilarity
+ * 【責務】2つの文字列の類似度(0.0〜1.0)を計算 (レーベンシュタイン距離ベース)
+ */
+function calculateLevenshteinSimilarity(s1, s2) {
+  const longer = s1.length > s2.length ? s1 : s2;
+  const shorter = s1.length > s2.length ? s2 : s1;
+  const longerLength = longer.length;
+  if (longerLength === 0) return 1.0;
+  
+  // 編集距離計算
+  const costs = new Array();
+  for (let i = 0; i <= longer.length; i++) {
+    let lastValue = i;
+    for (let j = 0; j <= shorter.length; j++) {
+      if (i == 0) costs[j] = j;
+      else {
+        if (j > 0) {
+          let newValue = costs[j - 1];
+          if (longer.charAt(i - 1) != shorter.charAt(j - 1)) newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+          costs[j - 1] = lastValue;
+          lastValue = newValue;
+        }
+      }
+    }
+    if (i > 0) costs[shorter.length] = lastValue;
+  }
+  
+  return (longerLength - costs[shorter.length]) / longerLength;
 }
 
 /**
@@ -1135,30 +1271,54 @@ const LlmService = (function() {
       return null;
     },
 
+// LlmService 内の generateTrendSections を更新
+
     /**
-     * キーワード毎にLLMでトレンドセクション生成
+     * generateTrendSections (改良版)
+     * 【改良点】抜粋(Abstract)の代わりにAI見出し(Headline)を使用し、トークンを節約
      */
     generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
       const model = llmConfig.ModelMini;
       const azureWeeklyUrl = llmConfig.AzureUrlMini;
       const SYSTEM = getPromptConfig("TREND_SYSTEM");
       const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
+      
       if (!SYSTEM || !USER_TEMPLATE) {
-        Logger.log("エラー: WEEKLYトレンドプロンプト設定が見つかりません。");
-        return "今週のトレンドは生成できませんでした。";
+        return "プロンプト設定エラー";
       }
+
       const allTrends = [];
+      
       for (const keyword of hitKeywords) {
-        const articlesForKeyword = articlesGroupedByKeyword[keyword];
-        if (!articlesForKeyword || articlesForKeyword.length === 0) continue;
+        const articles = articlesGroupedByKeyword[keyword];
+        if (!articles || articles.length === 0) continue;
+
+        // ★ここが変更点: 入力データを圧縮
+        // 記事の「要約」として、D列(Abstract)ではなくE列(Headline/tldr)を優先使用する
+        // これによりトークン消費量を大幅に削減
+        const articleListForLlm = articles.map(a => {
+          // AI見出しがあればそれを、なければ抜粋、それもなければタイトルを使用
+          const summaryContent = a.headline && a.headline.length > 10 ? a.headline : (a.abstractText || a.title);
+          return `- タイトル: ${a.title}\n  要点: ${summaryContent}\n  URL: ${a.url}`;
+        }).join("\n\n");
+
         const keywordHeader = `キーワード「${keyword}」\n`;
-        const articleListForLlm = articlesForKeyword.map(a => `- 見出し: ${a.headline}\n  要約: ${a.tldr}\n  URL: ${a.url}`).join("\n");
-        const user = [USER_TEMPLATE, `キーワード: ${keyword}`, "", "各トレンドについて、以下の厳密なMarkdown形式で出力してください。", "", "1. 15〜25字程度のキャッチーなトレンド名称を太字で記述してください。", "2. 150〜200字程度で、なぜ今このトレンドが重要なのか、背景、具体的な進展、将来の展望などを、複数の記事から得られた情報を統合・要約して記述してください。**この解説文には、キーワードを自然に含めてください。** 箇条書きは使用しないでください。", `3. そのトレンドを最もよく表している記事を${linksPerTrend}つまで、\n・[記事の見出し](記事のURL)\n の形式で記述してください。`, "", "前書きや後書きは一切不要です。", "", "【記事リスト】", articleListForLlm].join("\n");
+        
+        // 記事数が多すぎる場合(例: 40件超)は、分割処理のロジックを入れるか、
+        // 上記 rankAndSelectArticles で既に絞られている前提でそのまま送る。
+        
+        const user = [
+          USER_TEMPLATE,
+          `対象キーワード: ${keyword}`,
+          "",
+          "【分析対象記事リスト】",
+          articleListForLlm
+        ].join("\n");
+
         const txt = _callLlmWithFallback(SYSTEM, user, model, azureWeeklyUrl);
+        
         if (txt && txt.trim()) {
           allTrends.push(keywordHeader + txt.trim());
-        } else if (articlesForKeyword.length > 0) {
-          allTrends.push(`${keywordHeader}**${keyword}関連のトレンド**\nこのキーワードに関するトレンドは生成できませんでした。関連する記事をいくつか紹介します。\n${articlesForKeyword.slice(0, linksPerTrend).map(a => `・[${a.title}](${a.url})`).join("\n")}`);
         }
       }
       return allTrends.join("\n\n---\n\n");
@@ -1233,16 +1393,25 @@ function callDailyDigestLlm(systemPrompt, userPrompt) {
  * @param {string} sheetName - シート名（デフォルト "Keywords"）
  * @returns {Array} { keyword, active } 配列
  */
+/**
+ * getWeightedKeywords (修正版: 曜日列対応)
+ * 【責務】Keywordsシートから有効キーワードと配信曜日を取得
+ * 【変更】C列(曜日)も読み込むように拡張
+ */
 function getWeightedKeywords(sheetName = "Keywords") {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) return [];
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
-  return values.map(([keyword, activeFlag]) => ({
+  
+  // ★変更: 3列目(C列)まで取得
+  const values = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  
+  return values.map(([keyword, activeFlag, daySpec]) => ({
     keyword: String(keyword).trim(),
-    active: String(activeFlag).trim() !== ""
+    active: String(activeFlag).trim() !== "",
+    day: String(daySpec).trim() // ★追加: 曜日指定（例: "月", "水"）
   })).filter(obj => obj.keyword);
 }
 
@@ -1294,24 +1463,47 @@ function computeHeuristicScore(article, articleKeywordMap) {
 }
 
 /**
- * markdownToHtml
- * 【責務】Markdown → HTML 変換
- * 【対応】h3見出し、太字、リンク、区切り線、箇条書き
- * @param {string} md - Markdown テキスト
- * @returns {string} HTML テキスト
+ * markdownToHtml (改良版: メール向けリッチデザイン)
+ * 【責務】Markdown → HTML 変換 (インラインCSS付き)
+ * 【改善】メールでの可読性を高めるため、見出しや太字にスタイルを適用
  */
 function markdownToHtml(md) {
   if (!md) return "";
+  
+  // スタイル定義
+  const S = {
+    H3: 'font-size: 18px; font-weight: bold; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-top: 20px; margin-bottom: 10px;',
+    STRONG: 'font-weight: bold; color: #e74c3c;', // 太字を少し赤みのある色で強調（お好みで変更可）
+    LINK: 'color: #0066cc; text-decoration: none; border-bottom: 1px dotted #0066cc;',
+    HR: 'border: 0; border-top: 1px solid #eee; margin: 20px 0;',
+    UL: 'padding-left: 20px; margin: 10px 0;',
+    LI: 'margin-bottom: 5px;'
+  };
+
   let html = md
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: #0066cc; text-decoration: none;">$1</a>')
-    .replace(/^\s*---\s*$/gm, '<hr style="border: none; border-top: 1px solid #eee;">')
-    .replace(/^- (.*$)/gim, '&bull; $1')
+    
+    // 見出し (###) -> H3 with style
+    .replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`)
+    
+    // 太字 (**) -> strong with style
+    .replace(/\*\*(.*?)\*\*/g, `<strong style="${S.STRONG}">$1</strong>`)
+    
+    // リンク [text](url) -> a with style
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" style="${S.LINK}">$1</a>`)
+    
+    // 水平線 (---)
+    .replace(/^\s*---\s*$/gm, `<hr style="${S.HR}">`)
+    
+    // リスト ( - 箇条書き)
+    // ※単純置換だと<ul>で囲めないため、簡易的に全行を変換しつつ、改行で表現
+    .replace(/^- (.*$)/gim, `&bull; $1`)
+    
+    // 改行 -> <br>
     .replace(/\n/g, '<br>\n');
+
   return html;
 }
 
@@ -1394,6 +1586,13 @@ function getDateWindow(days) {
  * @param {none}
  * @returns {none}
  */
+/**
+ * collectRssFeeds (修正版: 降順ソート対応)
+ * 【修正点】
+ * 1. 既存データ読み込みを「末尾から」ではなく「先頭(2行目)から」に変更
+ * (日付降順ソートされているため、最新データは上にある)
+ * 2. HTMLデコードやURLパラメータ対応などの強化版ロジックは維持
+ */
 function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.RSS_LIST);
   const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
@@ -1405,27 +1604,41 @@ function collectRssFeeds() {
     AppConfig.get().RssListSheet.DataRange.NUM_COLS
   ).getValues();
 
-  // 既存URL取得（正規化してSetに格納）
+  // 重複チェック用Set
   const existingUrlSet = new Set();
+  const existingTitleSet = new Set();
+  
   const lastRow = collectSheet.getLastRow();
   
-  // 【修正】直近 10,000件のURLをチェック対象とする (過去の重複を拾いやすくするため)
-  if (lastRow >= AppConfig.get().CollectSheet.DataRange.START_ROW) {
-    const checkLimit = 10000; 
-    const startRow = Math.max(2, lastRow - checkLimit + 1);
-    const numRows = lastRow - startRow + 1;
-
-    const existingData = collectSheet.getRange(
-      startRow,
-      AppConfig.get().CollectSheet.Columns.URL, // C列
-      numRows,
-      1
-    ).getValues();
+  // --- 既存データの読み込み ---
+  if (lastRow >= 2) { 
+    const checkLimit = 3000; 
     
-    // 【最重要】シート上のURLも正規化してセットに登録する
+    // ★修正箇所: 降順ソート(最新が上)なので、常に2行目から読み込む
+    const startRow = 2; 
+    // 読み込む行数は、データ残数と上限の小さい方
+    const numRows = Math.min(lastRow - 1, checkLimit);
+
+    // B列(Title) と C列(URL) を取得
+    const existingData = collectSheet.getRange(startRow, 2, numRows, 2).getValues();
+    
     existingData.forEach(row => {
-      if (row[0]) existingUrlSet.add(normalizeUrl(row[0])); 
+      const title = row[0]; // B列
+      const url = row[1];   // C列
+      
+      if (url) {
+        existingUrlSet.add(normalizeUrl(url)); 
+        existingUrlSet.add(normalizeUrl(url).split('?')[0]); 
+      }
+      if (title) {
+        const normTitle = decodeHtmlEntities(String(title)).trim().toLowerCase();
+        existingTitleSet.add(normTitle);
+      }
     });
+    Logger.log(`既存データ読込完了: ${existingData.length}件 (StartRow:${startRow} / 最新記事からチェック)`);
+    if (existingData.length > 0) {
+      Logger.log(`[最新データサンプル] Title: "${existingData[0][0]}"`);
+    }
   }
   
   let totalNewCount = 0;
@@ -1438,9 +1651,7 @@ function collectRssFeeds() {
     if (!rssUrl) continue;
 
     const items = fetchAndParseRss(rssUrl);
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      continue;
-    }
+    if (!items || !Array.isArray(items) || items.length === 0) continue;
 
     const feedNewItems = [];
 
@@ -1448,36 +1659,43 @@ function collectRssFeeds() {
       try {
         if (!item.link || !item.title) continue;
         
-        // 1. 重複チェック（正規化URLで比較）を日付チェックより先に行う
+        // 正規化
         const normalizedLink = normalizeUrl(item.link);
-        if (existingUrlSet.has(normalizedLink)) {
-            continue; // 重複記事としてスキップ
+        const cleanTitle = stripHtml(item.title).trim();
+        const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase(); // 比較用
+
+        // 1. 重複チェック
+        // URL正規化一致(パラメータ有無両方) または タイトル正規化一致 で重複とみなす
+        const isUrlDup = existingUrlSet.has(normalizedLink) || existingUrlSet.has(normalizedLink.split('?')[0]);
+        const isTitleDup = existingTitleSet.has(normTitleToCheck);
+
+        if (isUrlDup || isTitleDup) {
+            continue; 
         }
 
         // 2. 日付チェック
         if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) {
-          // 日付情報がない、または2日より古いためスキップ
           continue; 
         }
         
         // HTML除去
         const cleanDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
-        const cleanTitle = stripHtml(item.title).trim();
 
-        // データ作成: A:日付, B:タイトル, C:URL, D:抜粋, E:空, F:ソース名
         const rowData = [
-          new Date(),      // A列: 収集日時
-          cleanTitle,      // B列: 元タイトル
-          item.link,       // C列: URL (オリジナルをそのまま保存)
-          cleanDescription,// D列: 抜粋
-          "",              // E列: 要約用
-          siteName         // F列: ソース名
+          new Date(),      // A列
+          cleanTitle,      // B列
+          item.link,       // C列
+          cleanDescription,// D列
+          "",              // E列
+          siteName         // F列
         ];
 
         feedNewItems.push(rowData);
         
-        // 重複防止用セットにも正規化URLを追加（同一実行内での重複も防ぐ）
+        // 同一実行内での重複防止のためSetに追加
         existingUrlSet.add(normalizedLink);
+        existingUrlSet.add(normalizedLink.split('?')[0]);
+        existingTitleSet.add(normTitleToCheck);
 
       } catch (err) {
         console.error(`アイテム処理エラー: ${siteName} - ${err.message}`);
@@ -1490,10 +1708,9 @@ function collectRssFeeds() {
       SpreadsheetApp.flush(); 
       
       totalNewCount += feedNewItems.length;
-      Logger.log(`${siteName}: ${feedNewItems.length} 件追加 (過去${DATE_LIMIT_DAYS}日以内)`);
+      Logger.log(`${siteName}: ${feedNewItems.length} 件追加`);
     }
   }
-
   Logger.log(`合計 ${totalNewCount} 件の新しい記事を追加しました。`);
 }
 
@@ -1736,27 +1953,18 @@ function doGet() {
 /**
  * executeWeeklyDigest
  * 【責務】Web UI から呼び出し：キーワード指定で週刊ダイジェスト生成
- * 【変更点】Webからの実行時は、記事数上限と検索期間を拡張して呼び出すように変更
+ * @param {string} keyword - キーワード入力
+ * @returns {string} HTML 本文（またはエラーメッセージ）
  */
 function executeWeeklyDigest(keyword) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
     Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
-
-    // ▼▼▼ 変更箇所: Web UI実行時の特別設定（オーバーライド）を作成 ▼▼▼
-    const webUiSettings = {
-      topN: 100,  // 記事数上限を 100件 に拡大 (通常は20-30)
-      days: 14    // 検索期間を 14日間 に拡大 (通常は7)
-    };
-
-    // 第3引数に設定オーバーライドを渡す
-    const htmlContent = weeklyDigestJob(trimmedKeyword, true, webUiSettings);
-    // ▲▲▲ 変更箇所終了 ▲▲▲
-    
+    const htmlContent = weeklyDigestJob(trimmedKeyword, true);
     return htmlContent || "<div>該当記事がありませんでした。</div>";
   } catch (e) {
     Logger.log(`エラーが発生しました: ${e.toString()}`);
-    return `<div>エラーが発生しました: ${e.message}</div>`;
+    return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
   }
 }
 
@@ -1799,7 +2007,7 @@ function searchAndAnalyzeKeyword(keyword) {
   }
 
   // 3. AIに渡すテキストを作成（直近30件に絞る）
-  const limit = 100;
+  const limit = 30;
   const targetArticles = relevantArticles.slice(0, limit); 
   
   let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
@@ -1943,44 +2151,30 @@ function removeDuplicates() {
   }
 }
 /**
- * normalizeUrl
- * 【責務】URL 正規化（重複判定用）
- * 【処理】
- *   1. URL デコード
- *   2. クエリパラメータ＆フラグメント削除
- *   3. プロトコル・www. 吸収
- * @param {string} url - 対象 URL
- * @returns {string} 正規化済み URL
+ * normalizeUrl (修正版)
+ * 【責務】URL 正規化
+ * 【修正】クエリパラメータ(?)の削除処理を緩和。
+ * RSS記事のユニークIDがパラメータに含まれるケース（例: ?id=123）があるため、
+ * これを削除すると別記事が同一URLとみなされる副作用があるが、
+ * 今回は「重複登録」が問題なので、あえて「パラメータ付き」を維持して比較精度を上げる。
  */
 function normalizeUrl(url) {
   if (!url) return "";
   let s = String(url).trim();
   
-  // 1. 【最重要】URLデコードを実行し、エンコーディングの違いを吸収する
-  try {
-    s = decodeURIComponent(s);
-  } catch (e) {
-    // デコードできなかった場合（既にデコードされている等）は、そのまま続行
-  }
+  // 1. デコード
+  try { s = decodeURIComponent(s); } catch (e) {}
   
-  // 2. クエリパラメータ (?) とフラグメント (#) を削除
-  const queryIndex = s.indexOf('?');
-  if (queryIndex > -1) {
-    s = s.substring(0, queryIndex);
-  }
-  const hashIndex = s.indexOf('#');
-  if (hashIndex > -1) {
-    s = s.substring(0, hashIndex);
-  }
-  
-  // 3. プロトコル削除 (http/httpsの揺れ吸収)
-  s = s.replace(/^https?:\/\//, "//");
-  
-  // 4. www.削除
-  s = s.replace(/\/\/www\./, "//");
-  
-  // 5. 末尾スラッシュ削除
+  // 2. 末尾のスラッシュを削除
   s = s.replace(/\/$/, "");
+
+  // 3. プロトコル(http/https)とwwwの揺らぎを吸収
+  s = s.replace(/^https?:\/\/(www\.)?/, "//");
+
+  // ★変更: クエリパラメータ(?...) は削除しない！
+  // 理由: ?id=xxx で記事を区別するサイトで誤判定の原因になるため。
+  // ただし、utm_source などの分析タグが邪魔な場合は、別途除去ロジックが必要だが、
+  // 「重複して追加される（＝一致しない）」問題の解決には、情報を残すほうが安全。
   
   return s;
 }
@@ -2003,4 +2197,19 @@ function isRecentDate(dateStr, daysLimit) {
   const diffDays = diffTime / (1000 * 60 * 60 * 24);
 
   return diffDays <= daysLimit;
+}
+
+/**
+ * decodeHtmlEntities
+ * 【責務】HTML実体参照（&amp;, &#39; 等）を通常の文字に戻す
+ * 【用途】タイトル比較時の正規化
+ */
+function decodeHtmlEntities(text) {
+  if (!text) return "";
+  return text.replace(/&amp;/g, '&')
+             .replace(/&lt;/g, '<')
+             .replace(/&gt;/g, '>')
+             .replace(/&quot;/g, '"')
+             .replace(/&#039;/g, "'")
+             .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
 }
