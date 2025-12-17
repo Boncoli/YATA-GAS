@@ -1969,9 +1969,12 @@ function executeWeeklyDigest(keyword) {
 }
 
 /**
- * searchAndAnalyzeKeyword
+ * searchAndAnalyzeKeyword (修正版: OR検索対応)
  * 【責務】Web UI から キーワード検索 → LLM 分析
- * 【検索】AND 条件（スペース区切り）
+ * 【検索】AND/OR 条件対応
+ * - "A or B" -> A または B (OR)
+ * - "A and B" -> A かつ B (AND)
+ * - "A B"     -> A かつ B (AND / デフォルト)
  * 【出力】トレンドセクション HTML（LLM生成）
  * @param {string} keyword - 検索キーワード
  * @returns {string} 分析結果 HTML
@@ -1983,23 +1986,52 @@ function searchAndAnalyzeKeyword(keyword) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return "データが存在しません。";
 
-  // 1. キーワードをスペースで分割し、検索語句の配列を作成
-  const searchTerms = keyword.toLowerCase().trim().split(/\s+/).filter(term => term.length > 0);
+  // --- 1. キーワード解析ロジック (AND/OR対応) ---
+  const lowerKey = keyword.toLowerCase().trim();
+  let searchTerms = [];
+  let searchMode = 'AND'; // デフォルト
+
+  if (lowerKey.includes(' or ')) {
+    // " or " が含まれる場合は OR検索
+    searchMode = 'OR';
+    searchTerms = keyword.split(/ or /i).map(t => t.trim()).filter(t => t.length > 0);
+  } else if (lowerKey.includes(' and ')) {
+    // " and " が含まれる場合は AND検索 (明示的)
+    searchMode = 'AND';
+    searchTerms = keyword.split(/ and /i).map(t => t.trim()).filter(t => t.length > 0);
+  } else {
+    // それ以外はスペース区切りの AND検索
+    searchMode = 'AND';
+    searchTerms = keyword.split(/\s+/).map(t => t.trim()).filter(t => t.length > 0);
+  }
+
   if (searchTerms.length === 0) return "有効な検索キーワードが入力されていません。";
 
   // データの取得
   const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
   const values = range.getValues();
 
-  // 2. キーワードでフィルタリング（AND条件）
+  // --- 2. フィルタリング実行 ---
   const relevantArticles = values.filter(row => {
     const title = String(row[1] || "").toLowerCase();
-    const summary = String(row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1] || "").toLowerCase();
+    // E列(要約)があれば使う、なければタイトルを使う
+    const summaryVal = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
+    const summary = String((summaryVal && summaryVal !== "") ? summaryVal : row[1]).toLowerCase();
 
-    // 全ての検索語句がタイトルまたは要約に含まれているかチェック（AND条件）
-    return searchTerms.every(term => {
-      return title.includes(term) || summary.includes(term);
-    });
+    // 検索語句チェック
+    if (searchMode === 'OR') {
+      // OR: どれか1つでもヒットすればOK
+      return searchTerms.some(term => {
+        const t = term.toLowerCase();
+        return title.includes(t) || summary.includes(t);
+      });
+    } else {
+      // AND: すべてヒットする必要あり
+      return searchTerms.every(term => {
+        const t = term.toLowerCase();
+        return title.includes(t) || summary.includes(t);
+      });
+    }
   });
 
   if (relevantArticles.length === 0) {
@@ -2013,12 +2045,12 @@ function searchAndAnalyzeKeyword(keyword) {
   let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
   targetArticles.forEach((row, i) => {
     const date = row[0]; 
-    const title = row[1]; // B列（元の記事タイトル）
-    const summary = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1]; // E列（日本語見出し/要約）
-    const url = row[AppConfig.get().CollectSheet.Columns.URL - 1]; // C列（URL）
+    const url = row[AppConfig.get().CollectSheet.Columns.URL - 1]; // C列
+    // E列(要約)があれば使う、なければタイトル
+    const summaryVal = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
+    const displayTitle = (summaryVal && summaryVal !== "") ? summaryVal : row[1];
 
-    // AIの出力テキストを日本語リンクにするため、タイトル部分に日本語見出しを使用
-    contextText += `[${i+1}] 日付:${date} / タイトル:${summary} / URL:${url}\n---\n`;
+    contextText += `[${i+1}] 日付:${fmtDate(new Date(date))} / タイトル:${displayTitle} / URL:${url}\n---\n`;
   });
 
   // 4. プロンプトの作成（変更なし）
@@ -2049,21 +2081,15 @@ function searchAndAnalyzeKeyword(keyword) {
 `;
 
   try {
-    // LLM呼び出し
     const llmConfig = AppConfig.get().Llm;
-    // モデルは高次分析用 mini を指定
     const model = llmConfig.ModelMini;
-    // Azureのエンドポイント: 高次分析用を指定
     const azureUrl = llmConfig.AzureUrlMini;
-    // 温度を指定
     const options = { temperature: 0.4 };
 
     let analysisResult = LlmService.analyzeKeywordSearch(systemPrompt, contextText, options);
 
-    // 不要なバッククォート削除
     analysisResult = analysisResult.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
 
-    // フォールバック全て失敗時のエラー処理
     if (analysisResult.includes("いずれのLLMでも")) {
         throw new Error("LLMによる分析に失敗しました。詳細はログを確認してください。");
     }
@@ -2071,7 +2097,7 @@ function searchAndAnalyzeKeyword(keyword) {
     return `
       <div style="margin-bottom: 15px;">
         <strong>🔍 分析対象:</strong> ${relevantArticles.length}件中、直近${targetArticles.length}件<br>
-        <strong>🔑 キーワード:</strong> ${keyword} (AND検索)
+        <strong>🔑 キーワード:</strong> ${keyword} (${searchMode}検索)
       </div>
       <hr>
       ${analysisResult}
