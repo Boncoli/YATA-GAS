@@ -83,9 +83,6 @@ const AppConfig = (function() {
         mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
         sheetUrl: props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)",
       },
-      Trend: {
-        detectionEnabled: (props.getProperty("TREND_DETECTION_ENABLED") || 'false').toLowerCase() === 'true',
-      }
     };
     return cache;
   }
@@ -122,9 +119,6 @@ function mainAutomationFlow() {
   // 3. 日付順に並び替え (追加: 最新の記事を上に)
   sortCollectByDateDesc();
 
-  // 4. トレンド検出
-  detectAndRecordTrends();
-  
   Logger.log("--- 自動化フロー完了 ---");
 }
 
@@ -1036,242 +1030,6 @@ function sendDigestEmail(headerLine, finalMdBody, subjectKeywords, daysWindow = 
 
 /**
  * ================================================================================
- * SECTION 3: TREND DETECTION
- * ================================================================================
- * トレンド検出・分析の関数群。
- * 日次の重要キーワード抽出、過去データとの比較、変化率計算、結果記録。
- * ================================================================================
- */
-
-/**
- * detectAndRecordTrends
- * 【責務】日次トレンド検出・記録のエントリポイント
- * 【処理流程】
- *   1. 過去1日分の記事タイトル を取得
- *   2. LLM (NANO) でキーワード抽出
- *   3. 過去7日分の Trendsシート から履歴を取得
- *   4. 出現回数＆新規/既出判定でスコア計算
- *   5. Trendsシート に書き込み
- * 【制御】TREND_DETECTION_ENABLED=true でのみ実行
- * 【副作用】Trendsシート更新、LLM API呼び出し（1回）
- * @param {none}
- * @returns {none}
- */
-function detectAndRecordTrends() {
-  const trendConfig = AppConfig.get().Trend;
-  if (!trendConfig.detectionEnabled) {
-    Logger.log("トレンド検出機能は無効化されています。スキップします。");
-    return;
-  }
-  Logger.log("--- トレンド検出処理開始 ---");
-  const articles = getArticlesForTrendAnalysis(1);
-  if (articles.length === 0) {
-    Logger.log("トレンド分析の対象となる記事がありませんでした。");
-    return;
-  }
-  const titles = articles.map(a => a.title).join("\n");
-  const keywords = extractKeywordsWithLLM(titles);
-  if (!keywords || keywords.length === 0) {
-    Logger.log("LLMによるキーワード抽出に失敗したか、キーワードが見つかりませんでした。");
-    return;
-  }
-  Logger.log(`LLMにより ${keywords.length} 個のキーワードが抽出されました。`);
-  const historicalData = getHistoricalTrendData();
-  const trends = calculateTrendScores(keywords, historicalData);
-  if (trends.length === 0) {
-    Logger.log("トレンドキーワードが見つかりませんでした。");
-    return;
-  }
-  Logger.log(`${trends.length} 件のキーワードを検出し、スコアを計算しました。`);
-  writeTrendsToSheet(trends);
-  Logger.log("--- トレンド検出処理完了 ---");
-}
-/**
- * getArticlesForTrendAnalysis
- * 【責務】トレンド分析対象期間の記事タイトルを取得
- * @param {number} days - 日数（通常 1）
- * @returns {Array} { date, title } 配列
- */
-function getArticlesForTrendAnalysis(days) {
-  const { start, end } = getDateWindow(days);
-  const sh = SpreadsheetApp.getActive().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
-  const vals = sh.getRange(2, 1, lastRow - 1, 2).getValues();
-  const out = [];
-  for (const r of vals) {
-    const date = r[0];
-    if ((date instanceof Date) && date >= start && date < end) {
-      out.push({ date: date, title: r[1] });
-    }
-  }
-  return out;
-}
-/**
- * getHistoricalTrendData
- * 【責務】Trendsシートから過去N日のキーワード履歴を取得
- * 【用途】本日のキーワードが既出か新規かを判定するため
- * @param {number} days - 遡り日数（デフォルト 7）
- * @returns {Map} キーワード→true の Map（存在確認用）
- */
-function getHistoricalTrendData(days = 7) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
-  if (!sheet || sheet.getLastRow() < 2) return new Map();
-  
-  const historicalKeywords = new Map();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const startDate = new Date(today);
-  startDate.setDate(today.getDate() - days);
-  
-  // B列（キーワード）のみを取得
-  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
-  for (const row of data) {
-    const date = new Date(row[0]);
-    date.setHours(0, 0, 0, 0);
-    const keyword = String(row[1]).trim();
-    
-    if (date >= startDate && date < today && keyword) {
-      historicalKeywords.set(keyword, true);  // キーワードの存在を記録
-    }
-  }
-  
-  return historicalKeywords;
-}
-/**
- * calculateTrendScores
- * 【責務】本日キーワードのスコア計算＆ホット判定
- * 【判定ロジック】
- *   - 新規キーワード：🆕 New
- *   - 既出キーワード：✓ 既出
- *   - ホット判定：出現回数 ≥ 2 ならホット
- * @param {Array} todayKeywords - 本日抽出キーワード配列
- * @param {Map} historicalKeywords - 過去キーワード Map
- * @returns {Array} トレンド配列 ({ keyword, count, changeRate, relatedArticles, summary, isHot })
- */
-function calculateTrendScores(todayKeywords, historicalKeywords) {
-  const todayCounts = new Map();
-  todayKeywords.forEach(kw => {
-    todayCounts.set(kw, (todayCounts.get(kw) || 0) + 1);
-  });
-  
-  const trends = [];
-  for (const [keyword, count] of todayCounts.entries()) {
-    let changeRateDisplay = "🆕 New";
-    let isHot = false;
-    
-    // 過去7日分のキーワード一覧にこのキーワードが存在するかチェック
-    const isRecurring = historicalKeywords.has(keyword);
-    
-    if (isRecurring) {
-      changeRateDisplay = "✓ 既出";
-      // 既出かつ出現回数が2回以上ならホット
-      isHot = count >= 2;
-    } else {
-      // 新規キーワード
-      changeRateDisplay = "🆕 New";
-      // 新規で出現回数が2回以上ならホット
-      isHot = count >= 2;
-    }
-    
-    trends.push({
-      keyword: keyword,
-      count: count,
-      changeRate: changeRateDisplay,  // 既出/新規の区別
-      relatedArticles: count,
-      summary: "",
-      isHot: isHot
-    });
-  }
-  return trends;
-}
-
-/**
- * writeTrendsToSheet
- * 【責務】トレンド情報を Trendsシート に書き込み
- * 【仕様】
- *   - A: 日付, B: キーワード, C: 日本語訳（GOOGLETRANSLATE数式）
- *   - D: 出現回数, E: 変化率（新規/既出）, F: 関連記事数, G: 要約
- *   - 既存キーワード（本日同日付）：出現回数を加算
- *   - 新規キーワード：新規行追加
- *   - 最後にD列（出現回数）で降順ソート
- * @param {Array} trends - トレンド配列
- * @returns {none}
- */
-function writeTrendsToSheet(trends) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TRENDS);
-  if (!sheet) {
-    Logger.log("エラー: Trendsシートが見つかりません。");
-    return;
-  }
-  
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayTimeMs = today.getTime();
-  
-  const lastRow = sheet.getLastRow();
-  
-  // 本日の日付で既に存在するキーワード行を取得
-  const todayData = new Map();
-  if (lastRow >= 2) {
-    const existingData = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
-    for (let i = 0; i < existingData.length; i++) {
-      let date = existingData[i][0];
-      // Date オブジェクトではなく、シリアル値の場合はそのまま使用
-      if (!(date instanceof Date)) {
-        date = new Date(date);
-      }
-      date.setHours(0, 0, 0, 0);
-      const keyword = String(existingData[i][1]).trim();
-      
-      if (date.getTime() === todayTimeMs) {
-        todayData.set(keyword, i + 2); // シート行番号（1-indexed）
-      }
-    }
-  }
-  
-  // 新規キーワードと既存キーワードを分類
-  const newKeywords = [];
-  const updateKeywords = [];
-  for (const trend of trends) {
-    if (todayData.has(trend.keyword)) {
-      updateKeywords.push({ trend, rowIndex: todayData.get(trend.keyword) });
-    } else {
-      newKeywords.push(trend);
-    }
-  }
-  
-  // 既存キーワードの出現回数を更新
-  for (const { trend, rowIndex } of updateKeywords) {
-    const currentCount = sheet.getRange(rowIndex, 4).getValue();
-    const newCount = currentCount + trend.count;
-    sheet.getRange(rowIndex, 4).setValue(newCount);  // D列（出現回数）を加算
-    sheet.getRange(rowIndex, 5).setValue(trend.changeRate);  // E列（変化率）を更新
-  }
-  
-  // 新規キーワードを追加
-  if (newKeywords.length > 0) {
-    const newRows = newKeywords.map((t, i) => {
-      const rowIndex = lastRow + i + 1;
-      const formula = `=IF(B${rowIndex}="","",GOOGLETRANSLATE(B${rowIndex},"en","ja"))`;
-      return [new Date(), t.keyword, formula, t.count, t.changeRate, t.relatedArticles, t.summary];
-    });
-    sheet.insertRowsAfter(lastRow, newRows.length);
-    sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
-  }
-  
-  // D列（出現回数）を降順でソートして、頻出度が高い順に表示する
-  const finalLastRow = sheet.getLastRow();
-  if (finalLastRow > 2) {
-    sheet.getRange(2, 1, finalLastRow - 1, sheet.getLastColumn()).sort({ column: 4, ascending: false });
-  }
-  
-  // 処理完了ログ（サマリーのみ）
-  Logger.log(`トレンド追記完了: 新規${newKeywords.length}件、更新${updateKeywords.length}件`);
-}
-
-/**
- * ================================================================================
  * SECTION 4: LLM SERVICE LAYER
  * ================================================================================
  * LLM呼び出しに関する全てのロジックを集約したサービスモジュール。
@@ -1409,20 +1167,6 @@ const LlmService = (function() {
       return _callLlmWithFallback(SYSTEM, USER, model);
     },
 
-    /**
-     * テキスト群からLLMで重要キーワード抽出
-     */
-    extractKeywords: function(text) {
-      const model = llmConfig.ModelNano;
-      const SYSTEM = getPromptConfig("TREND_KEYWORD_SYSTEM") || "以下のテキスト群から、重要と思われる技術、製品、イベントなどのキーワード（名詞）を最大50個、重複を除いてリストアップしてください。各キーワードは改行で区切って、リスト形式でのみ出力してください。前書きや後書きは不要です。";
-      const USER = text;
-      const result = _callLlmWithFallback(SYSTEM, USER, model);
-      if (result && !result.includes("エラー")) {
-        return result.split('\n').map(kw => kw.trim()).filter(kw => kw);
-      }
-      return null;
-    },
-
 // LlmService 内の generateTrendSections を更新
 
     /**
@@ -1520,14 +1264,6 @@ function summarizeWithLLM(articleText) {
  */
 function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null) {
   return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary);
-}
-
-/**
- * extractKeywordsWithLLM (ラッパー関数)
- * 【責務】テキスト群からLLMで重要キーワード抽出
- */
-function extractKeywordsWithLLM(text) {
-  return LlmService.extractKeywords(text);
 }
 
 /**
