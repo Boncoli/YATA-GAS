@@ -48,6 +48,7 @@ const AppConfig = (function() {
         PROMPT_CONFIG: "prompt",
         TRENDS: "Trends",
         USERS: "Users",
+        DIGEST_HISTORY: "DigestHistory",
       },
       CollectSheet: {
         Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6 },
@@ -488,6 +489,7 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
 function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false, daysWindow = 7) {
   const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap, hitKeywordsWithCount);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
+
   const articlesGroupedByKeyword = {};
   hitKeywordsWithCount.forEach(kwItem => {
     articlesGroupedByKeyword[kwItem.keyword] = selectedTopN.filter(article => {
@@ -495,28 +497,146 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
       return keywords && keywords.includes(kwItem.keyword);
     });
   });
-  const { reportBody } = generateWeeklyReportWithLLM(selectedTopN, hitKeywordsWithCount, articlesGroupedByKeyword);
-  const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-  let keywordSection = "";
-  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
-    keywordSection = "\n\n### 今週の注目キーワード\n";
-    hitKeywordsWithCount.forEach(item => {
-      keywordSection += `- **${item.keyword}** (${item.count}件)\n`;
-    });
-    keywordSection += "\n\n---\n\n";
+
+  const allKeywords = hitKeywordsWithCount.map(item => item.keyword);
+  let finalReportMdBody = `## 週刊トレンドレポート\n\n`;
+
+  // --- ▼▼▼ 新しいロジック: キーワードごとに処理を完結させる ▼▼▼ ---
+  for (const keyword of allKeywords) {
+    const articlesForKeyword = articlesGroupedByKeyword[keyword] || [];
+    if (articlesForKeyword.length === 0) continue;
+
+    // 1. 履歴取得
+    const previousSummary = _getLatestHistory(keyword);
+
+    // 2. 詳細レポート生成 (LLM①)
+    const { reportBody: singleReportBody } = generateWeeklyReportWithLLM(
+      articlesForKeyword,
+      [{ keyword: keyword, count: articlesForKeyword.length }],
+      { [keyword]: articlesForKeyword },
+      previousSummary
+    );
+
+    if (!singleReportBody || singleReportBody.trim() === "") continue;
+
+    // 3. 要点サマリー生成 (LLM②)
+    const tldrSummary = _summarizeReport(singleReportBody);
+
+    // 4. 履歴保存
+    if (tldrSummary) {
+      _writeHistory(keyword, tldrSummary);
+    }
+
+    // 5. メール本文パートの構築
+    finalReportMdBody += `### キーワード「${keyword}」の今週の動向\n\n`;
+
+    if (tldrSummary) {
+      finalReportMdBody += `**今週のハイライト:**\n${tldrSummary}\n\n---\n\n`;
+    }
+
+    finalReportMdBody += `**詳細レポート:**\n${singleReportBody}\n\n---\n\n`;
   }
-  const fullMdBody = keywordSection + reportBody;
+  // --- ▲▲▲ ここまで ▲▲▲ ---
+
+  // 最後の区切り線を削除
+  finalReportMdBody = finalReportMdBody.replace(/\n\n---\n\n$/, '');
+  
+  const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
   const htmlHeader = headerLine.replace(/\n/g, '<br>');
-  const htmlContent = markdownToHtml(fullMdBody);
+  const htmlContent = markdownToHtml(finalReportMdBody);
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
   
   if (returnHtmlOnly) return fullHtmlBody;
   
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    // [REFACTORED] Call the new unified function with the complete body
-    sendDigestEmail(headerLine, fullMdBody, hitKeywordsWithCount, daysWindow); 
+    sendDigestEmail(headerLine, finalReportMdBody, hitKeywordsWithCount, daysWindow); 
   }
 }
+
+/**
+ * _summarizeReport
+ * 【責務】詳細レポートから要点サマリー(tl;dr)を生成する
+ * @param {string} reportText - 詳細レポートの全文
+ * @returns {string} - 箇条書きの要点サマリー
+ */
+function _summarizeReport(reportText) {
+  if (!reportText || reportText.trim() === "") return "";
+  
+  Logger.log("詳細レポートから要点サマリーの生成を開始します。");
+  const model = AppConfig.get().Llm.ModelNano; // 軽量モデルで十分
+  
+  const SYSTEM_PROMPT = getPromptConfig("DIGEST_SUMMARY_SYSTEM");
+  if (!SYSTEM_PROMPT) {
+      Logger.log("要点サマリーのプロンプト(DIGEST_SUMMARY_SYSTEM)が見つかりません。");
+      return "";
+  }
+  
+  // LlmServiceの公開メソッドを呼び出す
+  // ここでは汎用的な _callLlmWithFallback を直接使うか、新しい専用メソッドをLlmServiceに作る
+  // 今回は直接呼び出すヘルパー関数（callDailyDigestLlmなど）の構造に倣い、LlmService.summarizeReportなどを呼び出す形が望ましい
+  // LlmServiceに `summarizeReport` を追加する。
+  const summary = LlmService.summarizeReport(SYSTEM_PROMPT, reportText);
+
+  Logger.log(`要点サマリーを生成しました: ${summary}`);
+  return summary;
+}
+
+/**
+ * _getLatestHistory
+ * 【責務】DigestHistoryシートから指定キーワードの最新の要約を取得
+ * @param {string} keyword - 検索対象のキーワード
+ * @returns {string|null} - 見つかった場合は要約テキスト、なければnull
+ */
+function _getLatestHistory(keyword) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.DIGEST_HISTORY);
+    if (!sheet) {
+      Logger.log("DigestHistoryシートが見つかりません。履歴機能はスキップされます。");
+      return null;
+    }
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return null;
+
+    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+    
+    // 下から(新しいものから)探索
+    for (let i = data.length - 1; i >= 0; i--) {
+      // B列のキーワードが一致するかチェック
+      const historyKeyword = String(data[i][1]).trim();
+      if (historyKeyword === keyword) {
+        Logger.log(`履歴発見: キーワード「${keyword}」の前回要約を読み込みました。`);
+        return String(data[i][2]); // C列の要約を返す
+      }
+    }
+    Logger.log(`履歴なし: キーワード「${keyword}」の前回要約は見つかりませんでした。`);
+    return null;
+  } catch (e) {
+    _logError("_getLatestHistory", e, "ダイジェスト履歴の読み込み中にエラーが発生しました。");
+    return null;
+  }
+}
+
+/**
+ * _writeHistory
+ * 【責務】DigestHistoryシートに新しい要約を書き込む
+ * @param {string} keyword - 保存するキーワード
+ * @param {string} summary - 保存する要約テキスト
+ */
+function _writeHistory(keyword, summary) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.DIGEST_HISTORY);
+    if (!sheet) {
+      Logger.log("DigestHistoryシートが見つからないため、履歴を書き込めません。");
+      return;
+    }
+    // [日付, キーワード, 要約] の形式で追記
+    sheet.appendRow([new Date(), keyword, summary]);
+    Logger.log(`履歴保存: キーワード「${keyword}」の要約をDigestHistoryシートに書き込みました。`);
+  } catch (e) {
+    _logError("_writeHistory", e, "ダイジェスト履歴の書き込み中にエラーが発生しました。");
+  }
+}
+
 
 
 /**
@@ -828,10 +948,10 @@ function calculateLevenshteinSimilarity(s1, s2) {
  * @param {Object} articlesGroupedByKeyword - キーワード→記事配列 の Object
  * @returns {Object} { reportBody: Markdown本文 }
  */
-function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword) {
+function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword, previousSummary = null) {
   const LINKS_PER_TREND = 3;
   const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
-  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords);
+  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords, previousSummary);
   return { reportBody: trends };
 }
 
@@ -1306,17 +1426,23 @@ const LlmService = (function() {
 // LlmService 内の generateTrendSections を更新
 
     /**
-     * generateTrendSections (改良版)
-     * 【改良点】抜粋(Abstract)の代わりにAI見出し(Headline)を使用し、トークンを節約
+     * generateTrendSections (改良版: 比較分析対応)
+     * 【改良点】
+     * - 抜粋(Abstract)の代わりにAI見出し(Headline)を使用
+     * - 先週の要約(previousSummary)をインプットし、差分分析を指示
      */
-    generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
+    generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null) {
       const model = llmConfig.ModelMini;
       const azureWeeklyUrl = llmConfig.AzureUrlMini;
       const SYSTEM = getPromptConfig("TREND_SYSTEM");
-      const USER_TEMPLATE = getPromptConfig("TREND_USER_TEMPLATE");
-      
+
+      // --- プロンプトの動的切り替え ---
+      const USER_TEMPLATE_KEY = previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE";
+      const USER_TEMPLATE = getPromptConfig(USER_TEMPLATE_KEY);
+      // --------------------------------
+
       if (!SYSTEM || !USER_TEMPLATE) {
-        return "プロンプト設定エラー";
+        return "プロンプト設定エラー: " + (!SYSTEM ? "TREND_SYSTEM " : "") + (!USER_TEMPLATE ? USER_TEMPLATE_KEY : "");
       }
 
       const allTrends = [];
@@ -1325,35 +1451,39 @@ const LlmService = (function() {
         const articles = articlesGroupedByKeyword[keyword];
         if (!articles || articles.length === 0) continue;
 
-        // ★ここが変更点: 入力データを圧縮
-        // 記事の「要約」として、D列(Abstract)ではなくE列(Headline/tldr)を優先使用する
-        // これによりトークン消費量を大幅に削減
         const articleListForLlm = articles.map(a => {
-          // AI見出しがあればそれを、なければ抜粋、それもなければタイトルを使用
           const summaryContent = a.headline && a.headline.length > 10 ? a.headline : (a.abstractText || a.title);
           return `- タイトル: ${a.title}\n  要点: ${summaryContent}\n  URL: ${a.url}`;
         }).join("\n\n");
 
-        const keywordHeader = `キーワード「${keyword}」\n`;
-        
-        // 記事数が多すぎる場合(例: 40件超)は、分割処理のロジックを入れるか、
-        // 上記 rankAndSelectArticles で既に絞られている前提でそのまま送る。
-        
-        const user = [
-          USER_TEMPLATE,
-          `対象キーワード: ${keyword}`,
-          "",
-          "【分析対象記事リスト】",
-          articleListForLlm
-        ].join("\n");
+        let userPrompt = USER_TEMPLATE;
+        if (previousSummary) {
+          userPrompt = userPrompt.replace('{previous_summary}', previousSummary);
+        }
 
-        const txt = _callLlmWithFallback(SYSTEM, user, model, azureWeeklyUrl);
+        // 記事リストの挿入 (後方互換性のため、プレースホルダーがなければ末尾に追加)
+        if (userPrompt.includes('{article_list}')) {
+          userPrompt = userPrompt.replace('{article_list}', articleListForLlm);
+        } else {
+          userPrompt += '\n' + articleListForLlm;
+        }
+
+        const txt = _callLlmWithFallback(SYSTEM, userPrompt, model, azureWeeklyUrl);
         
         if (txt && txt.trim()) {
-          allTrends.push(keywordHeader + txt.trim());
+          // キーワードヘッダーはプロンプト内で生成される前提なので、ここでは追加しない
+          allTrends.push(txt.trim());
         }
       }
       return allTrends.join("\n\n---\n\n");
+    },
+
+    /**
+     * 詳細レポートから要点サマリーを生成
+     */
+    summarizeReport: function(systemPrompt, reportText) {
+      const model = llmConfig.ModelNano; // 軽量モデルを使用
+      return _callLlmWithFallback(systemPrompt, reportText, model);
     },
     
     /**
@@ -1388,8 +1518,8 @@ function summarizeWithLLM(articleText) {
  * _llmMakeTrendSections (ラッパー関数)
  * 【責務】キーワード毎にLLMでトレンドセクション生成
  */
-function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords) {
-  return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords);
+function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null) {
+  return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary);
 }
 
 /**
