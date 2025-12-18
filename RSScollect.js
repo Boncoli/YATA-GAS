@@ -189,6 +189,11 @@ function dailyDigestJob() {
  */
 // function weeklyDigestJob を置き換え
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
+  // ★追加: トリガー実行時は webUiKeyword にオブジェクトが入ってしまうため、文字列でない場合は無効化する
+  if (typeof webUiKeyword !== 'string') {
+    webUiKeyword = null;
+  }
+
   const config = AppConfig.get().Digest;
   const DAYS_WINDOW = config.days; // 7日間
 
@@ -481,7 +486,7 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
  * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
 function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false, daysWindow = 7) {
-  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap);
+  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap, hitKeywordsWithCount);
   Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
   const articlesGroupedByKeyword = {};
   hitKeywordsWithCount.forEach(kwItem => {
@@ -729,37 +734,52 @@ function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) {
  * @returns {Object} { selectedTopN: 選抜記事配列 }
  */
 /**
- * rankAndSelectArticles (改良版)
- * 【責務】記事をスコア付けし、類似記事を排除しながら多様な上位記事を選抜
+ * rankAndSelectArticles (シンプル版: 各キーワードにTOP Nを割り当て)
+ * 【責務】キーワードごとに設定値(TOP N)ぶんの記事枠を確保する
+ * 【特徴】全体の上限リミットを撤廃。キーワード数 × N件 が最大となる。
  */
-function rankAndSelectArticles(relevantArticles, config, articleKeywordMap) {
-  const topN = config.topN || 30; // 以前より少し多めに取れるように設定
+function rankAndSelectArticles(relevantArticles, config, articleKeywordMap, hitKeywordsWithCount) {
   
-  // 1. まずスコア順に並べる
+  // ★設定値 (DIGEST_TOP_N) を「キーワードごとの上限」として使う
+  // 設定がない場合はデフォルト20件
+  const LIMIT_PER_KEYWORD = config.topN || 20;
+  
+  const selectedArticlesMap = new Map(); 
+
+  // 1. まず全記事のスコアを計算しておく
   const scoredArticles = relevantArticles.map(a => ({
     ...a,
     heuristicScore: computeHeuristicScore(a, articleKeywordMap)
-  })).sort((a, b) => b.heuristicScore - a.heuristicScore);
+  }));
 
-  const selectedArticles = [];
-  const selectedTitles = [];
+  // 2. キーワードごとにループして、それぞれ上位 N 件を確保
+  const keywords = hitKeywordsWithCount || [];
+  
+  keywords.forEach(kwItem => {
+    const keyword = kwItem.keyword;
 
-  // 2. 類似度チェックを行いながら選抜
-  for (const article of scoredArticles) {
-    if (selectedArticles.length >= topN) break;
-
-    // 既に選ばれた記事の中に、非常に似ているタイトルがないか確認
-    const isDuplicate = selectedTitles.some(selectedTitle => {
-      return calculateLevenshteinSimilarity(selectedTitle, article.title) > 0.6; // 60%以上一致なら重複とみなす
+    // このキーワードに関連する記事だけを抽出
+    const articlesForThisKeyword = scoredArticles.filter(a => {
+      const kws = articleKeywordMap.get(a.url);
+      return kws && kws.includes(keyword);
     });
 
-    if (!isDuplicate) {
-      selectedArticles.push(article);
-      selectedTitles.push(article.title);
-    } else {
-      Logger.log(`類似記事スキップ: ${article.title}`);
-    }
-  }
+    // スコア順に並び替え
+    articlesForThisKeyword.sort((a, b) => b.heuristicScore - a.heuristicScore);
+
+    // ★各キーワードの上位 N 件を取得
+    const candidates = articlesForThisKeyword.slice(0, LIMIT_PER_KEYWORD);
+
+    // 選抜リストに追加（URLで重複排除しながら統合）
+    candidates.forEach(a => {
+      if (!selectedArticlesMap.has(a.url)) {
+        selectedArticlesMap.set(a.url, a);
+      }
+    });
+  });
+
+  // 3. 全体リミットによる足切りは行わず、統合した結果をそのまま返す
+  const selectedArticles = Array.from(selectedArticlesMap.values());
 
   return { selectedTopN: selectedArticles };
 }
@@ -854,7 +874,7 @@ function getArticlesInDateWindow(start, end) {
  * @returns {none}
  */
 /**
- * sendWeeklyDigestEmail (修正版: Usersシート対応)
+ * sendWeeklyDigestEmail (修正版: 件名にキーワードを追加)
  */
 function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
   const digestConfig = AppConfig.get().Digest;
@@ -865,13 +885,27 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWin
     Logger.log("配信先(MAIL_TO または Usersシート)が設定されていないためメール送信しません。"); 
     return; 
   }
+  
   // プレフィックスを動的に変更
   const prefixBase = daysWindow === 1 ? "日刊" : "週間";
-  // プロパティが設定されていればそれを使い、なければ動的に生成
-  const subjectPrefix = digestConfig.mailSubjectPrefix || `【${prefixBase}RSS】`;
+  const subjectPrefix = digestConfig.mailSubjectPrefix || `【${prefixBase}TrendNEWS】`;
   const senderName = digestConfig.mailSenderName;
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl = digestConfig.sheetUrl;
+
+  // ★追加: ヒットしたキーワードを件名用の文字列にする
+  let keywordSubjectPart = "";
+  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
+    // 複数のキーワードがある場合は「,」で区切る（例: "AI, Python"）
+    const kwList = hitKeywordsWithCount.map(item => item.keyword).join(", ");
+    // 件名用に整形（例: " [AI, Python]"）
+    keywordSubjectPart = ` [${kwList}]`;
+  }
+
+  // ★変更: 件名にキーワードを含める
+  // 例: 【週間RSS】 [AI, Python] 2025/12/18
+  const finalSubject = subjectPrefix + keywordSubjectPart + " " + today;
+
   let keywordSection = "";
   if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
     keywordSection = "\n\n### 今週の注目キーワード\n";
@@ -880,14 +914,16 @@ function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWin
     });
     keywordSection += "\n\n---\n\n";
   }
+  
   const fullMdBody = keywordSection + mdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
   const textBody = headerLine + "\n\n" + fullMdBody;
-  const finalSubject = subjectPrefix + today;
+  
   const htmlHeader = headerLine.replace(/\n/g, '<br>');
   const htmlContent = markdownToHtml(fullMdBody);
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
+  
   GmailApp.sendEmail(to, finalSubject, textBody, { name: senderName, htmlBody: fullHtmlBody });
-  Logger.log(`メール送信（${prefixBase}ダイジェスト）完了: ${to}`);
+  Logger.log(`メール送信（${prefixBase}ダイジェスト）完了: ${to} / 件名: ${finalSubject}`);
 }
 
 /**
