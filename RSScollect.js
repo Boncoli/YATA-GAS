@@ -509,9 +509,12 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
   const htmlHeader = headerLine.replace(/\n/g, '<br>');
   const htmlContent = markdownToHtml(fullMdBody);
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
+  
   if (returnHtmlOnly) return fullHtmlBody;
+  
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendWeeklyDigestEmail(headerLine, reportBody, hitKeywordsWithCount, daysWindow); 
+    // [REFACTORED] Call the new unified function with the complete body
+    sendDigestEmail(headerLine, fullMdBody, hitKeywordsWithCount, daysWindow); 
   }
 }
 
@@ -621,7 +624,8 @@ ${batchSummaries.join("\n\n---\n\n")}
   } catch(e) { /* エラー処理 */ }
 
   const headerLine = `集計期間：${fmtDate(start)}〜${fmtDate(new Date(end.getTime() - 1))} (全${allArticles.length}記事)`;
-  sendWeeklyDigestEmail(headerLine, reportBody, null, daysWindow);
+  // [REFACTORED] Call the new unified function
+  sendDigestEmail(headerLine, reportBody, null, daysWindow);
 }
 
 /**
@@ -719,8 +723,8 @@ function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) {
   const reportBody = daysWindow === 1 ? "本日のダイジェスト対象となる記事はありませんでした。" : "今週のダイジェスト対象となる記事はありませんでした。";
   
   if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    // daysWindowを渡す
-    sendWeeklyDigestEmail(headerLine, reportBody, null, daysWindow);
+    // [REFACTORED] Call the new unified function
+    sendDigestEmail(headerLine, reportBody, null, daysWindow);
   }
 }
 
@@ -861,65 +865,49 @@ function getArticlesInDateWindow(start, end) {
 }
 
 /**
- * sendWeeklyDigestEmail
+ * sendDigestEmail
  * 【責務】ダイジェストメール送信（日刊・週刊両対応）
  * 【仕様】
  *   - Markdown→HTML変換してリッチメール送信
  *   - プレフィックスを daysWindow で自動切り替え（「日刊RSS」 or 「週間RSS」）
- *   - キーワード注記セクション含む
+ *   - 件名にキーワードを自動挿入
  * @param {string} headerLine - ヘッダー（期間表示）
- * @param {string} mdBody - Markdown本文
- * @param {Array} hitKeywordsWithCount - キーワード毎ヒット数（null可）
- * @param {number} daysWindow - 1=日刊, 7=週刊（メール件名・本文用）
+ * @param {string} finalMdBody - 本文（キーワードセクション等もすべて結合済みの完全なMarkdown）
+ * @param {Array|null} subjectKeywords - 件名に含めるキーワード配列 { keyword, count }（null可）
+ * @param {number} daysWindow - 1=日刊, 7=週刊（メール件名用）
  * @returns {none}
  */
-/**
- * sendWeeklyDigestEmail (修正版: 件名にキーワードを追加)
- */
-function sendWeeklyDigestEmail(headerLine, mdBody, hitKeywordsWithCount, daysWindow = 7) {
+function sendDigestEmail(headerLine, finalMdBody, subjectKeywords, daysWindow = 7) {
   const digestConfig = AppConfig.get().Digest;
-  
-  const to = getRecipients(); 
+  const to = getRecipients();
   
   if (!to) { 
     Logger.log("配信先(MAIL_TO または Usersシート)が設定されていないためメール送信しません。"); 
     return; 
   }
   
-  // プレフィックスを動的に変更
   const prefixBase = daysWindow === 1 ? "日刊" : "週間";
   const subjectPrefix = digestConfig.mailSubjectPrefix || `【${prefixBase}TrendNEWS】`;
   const senderName = digestConfig.mailSenderName;
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl = digestConfig.sheetUrl;
 
-  // ★追加: ヒットしたキーワードを件名用の文字列にする
+  // キーワードを件名用の文字列にする
   let keywordSubjectPart = "";
-  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
-    // 複数のキーワードがある場合は「,」で区切る（例: "AI, Python"）
-    const kwList = hitKeywordsWithCount.map(item => item.keyword).join(", ");
-    // 件名用に整形（例: " [AI, Python]"）
+  if (subjectKeywords && subjectKeywords.length > 0) {
+    const kwList = subjectKeywords.map(item => item.keyword).join(", ");
     keywordSubjectPart = ` [${kwList}]`;
   }
 
-  // ★変更: 件名にキーワードを含める
-  // 例: 【週間RSS】 [AI, Python] 2025/12/18
   const finalSubject = subjectPrefix + keywordSubjectPart + " " + today;
-
-  let keywordSection = "";
-  if (hitKeywordsWithCount && hitKeywordsWithCount.length > 0) {
-    keywordSection = "\n\n### 今週の注目キーワード\n";
-    hitKeywordsWithCount.forEach(item => {
-      keywordSection += `- **${item.keyword}** (${item.count}件)\n`;
-    });
-    keywordSection += "\n\n---\n\n";
-  }
   
-  const fullMdBody = keywordSection + mdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
-  const textBody = headerLine + "\n\n" + fullMdBody;
+  // フッターを追加
+  const fullMdBodyWithFooter = finalMdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
+  
+  const textBody = headerLine + "\n\n" + fullMdBodyWithFooter;
   
   const htmlHeader = headerLine.replace(/\n/g, '<br>');
-  const htmlContent = markdownToHtml(fullMdBody);
+  const htmlContent = markdownToHtml(fullMdBodyWithFooter);
   const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
   
   GmailApp.sendEmail(to, finalSubject, textBody, { name: senderName, htmlBody: fullHtmlBody });
