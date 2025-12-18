@@ -46,7 +46,6 @@ const AppConfig = (function() {
         RSS_LIST: "RSS",
         TREND_DATA: "collect",
         PROMPT_CONFIG: "prompt",
-        TRENDS: "Trends",
         USERS: "Users",
         DIGEST_HISTORY: "DigestHistory",
       },
@@ -728,20 +727,9 @@ ${batchSummaries.join("\n\n---\n\n")}
     reportBody = callDailyDigestLlm(systemPromptTemplate, finalPrompt);
   }
 
-  // 結果の保存とメール送信（既存コードと同じ）
-  try {
-    const writeData = [
-      new Date(), "日刊ダイジェスト", start, end, 
-      "Topics (All Articles)", reportBody, allArticles.length
-    ];
-    digestSheet.appendRow(writeData);
-  } catch(e) { /* エラー処理 */ }
-
-  const headerLine = `集計期間：${fmtDate(start)}〜${fmtDate(new Date(end.getTime() - 1))} (全${allArticles.length}記事)`;
-  // [REFACTORED] Call the new unified function
-  sendDigestEmail(headerLine, reportBody, null, daysWindow);
-}
-
+    // [REFACTORED] Call the new unified function
+    sendDigestEmail(headerLine, reportBody, null, daysWindow);
+  }
 /**
  * ヘルパー関数: 記事リストの整形 (AI見出し優先)
  */
