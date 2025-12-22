@@ -181,43 +181,52 @@ function dailyDigestJob() {
  * @param {boolean} returnHtmlOnly - （オプション）HTML返却のみフラグ
  * @returns {string} HTML本文（returnHtmlOnly=true の場合）
  */
-// function weeklyDigestJob を置き換え
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
-  // ★追加: トリガー実行時は webUiKeyword にオブジェクトが入ってしまうため、文字列でない場合は無効化する
   if (typeof webUiKeyword !== 'string') {
     webUiKeyword = null;
   }
 
   const config = AppConfig.get().Digest;
-  const DAYS_WINDOW = config.days; // 7日間
+  const DAYS_WINDOW = config.days; 
 
-  // 実行期間を計算
   const { start, end } = getDateWindow(DAYS_WINDOW);
   const allItems = getArticlesInDateWindow(start, end);
 
   if (allItems.length === 0) {
     Logger.log("週刊ダイジェスト：対象期間に記事がありませんでした。");
-    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
     return;
   }
   
   Logger.log(`週刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
 
-  // キーワードによる記事の分類 (中略)
   const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
 
   if (relevantArticles.length === 0) {
     Logger.log("週刊ダイジェスト：キーワードに合致する記事がありませんでした。");
-    // daysWindowを渡す
     _handleNoArticlesFound(config, start, end, "キーワードに合致する記事がありませんでした。", DAYS_WINDOW);
     return;
   }
+
+  // ★追加ロジック: ヒットしたキーワードに「表示用ラベル」を紐付ける
+  // WebUIからの手動実行時はラベルがないため、キーワードそのものを使う
+  const allConfigured = getWeightedKeywords(); // 全設定を再取得
+  
+  hitKeywordsWithCount.forEach(hit => {
+    if (webUiKeyword) {
+      // 手動実行時はラベルなし（キーワードそのまま）
+      hit.label = hit.keyword;
+    } else {
+      // 自動実行時は設定シートからラベルを探す
+      const configItem = allConfigured.find(c => c.keyword === hit.keyword);
+      // D列があればそれを使う、なければキーワードそのまま
+      hit.label = (configItem && configItem.label) ? configItem.label : hit.keyword;
+    }
+  });
   
   Logger.log(`週刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
   _logKeywordHitCounts(hitKeywordsWithCount);
 
-  // LLMによる要約生成とメール送信
   // daysWindowを渡す
   const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly, DAYS_WINDOW); 
   
@@ -996,16 +1005,16 @@ function sendDigestEmail(headerLine, finalMdBody, subjectKeywords, daysWindow = 
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
   const sheetUrl = digestConfig.sheetUrl;
 
-  // キーワードを件名用の文字列にする
+  // ★修正: キーワードではなく「ラベル」を件名に使う
   let keywordSubjectPart = "";
   if (subjectKeywords && subjectKeywords.length > 0) {
-    const kwList = subjectKeywords.map(item => item.keyword).join(", ");
+    // labelプロパティがあれば使い、なければkeywordを使う
+    const kwList = subjectKeywords.map(item => item.label || item.keyword).join(", ");
     keywordSubjectPart = ` [${kwList}]`;
   }
 
   const finalSubject = subjectPrefix + keywordSubjectPart + " " + today;
   
-  // フッターを追加
   const fullMdBodyWithFooter = finalMdBody + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
   
   const textBody = headerLine + "\n\n" + fullMdBodyWithFooter;
@@ -1293,13 +1302,14 @@ function getWeightedKeywords(sheetName = "Keywords") {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
   
-  // ★変更: 3列目(C列)まで取得
-  const values = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  // ★変更: 4列目(D列)まで取得
+  const values = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
   
-  return values.map(([keyword, activeFlag, daySpec]) => ({
+  return values.map(([keyword, activeFlag, daySpec, label]) => ({
     keyword: String(keyword).trim(),
     active: String(activeFlag).trim() !== "",
-    day: String(daySpec).trim() // ★追加: 曜日指定（例: "月", "水"）
+    day: String(daySpec).trim(),
+    label: String(label).trim() // ★追加: 件名用ラベル
   })).filter(obj => obj.keyword);
 }
 
