@@ -2212,7 +2212,7 @@ function getRecipients() {
  * 【実行サイクル】週1回（推奨）
  */
 function maintenanceDeleteOldArticles() {
-  const KEEP_MONTHS = 12; // ★ここを残したい月数に変更（例: 3ヶ月）
+  const KEEP_MONTHS = 6; // ★ここを残したい月数に変更（例: 3ヶ月）
   
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
