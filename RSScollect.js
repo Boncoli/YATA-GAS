@@ -1031,7 +1031,7 @@ const LlmService = (function() {
 
   function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
     Logger.log("Azure OpenAIを試行中...");
-    const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 2048 };
+    const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 4096 };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     try {
       const res = UrlFetchApp.fetch(azureUrl, fetchOptions);
@@ -1055,7 +1055,7 @@ const LlmService = (function() {
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     Logger.log("OpenAI APIを試行中...");
-    const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 2048, temperature: options.temperature ?? undefined };
+    const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 4096, temperature: options.temperature ?? undefined };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     try {
       const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", fetchOptions);
@@ -1081,7 +1081,7 @@ const LlmService = (function() {
     Logger.log("Gemini APIを試行中...");
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-    const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 2048 } };
+    const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 4096 } };
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
     try {
       const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
@@ -1934,9 +1934,9 @@ function searchAndAnalyzeKeyword(keyword) {
     return `<p>キーワード「<strong>${keyword}</strong>」に関連する記事は見つかりませんでした。</p>`;
   }
 
-  // 3. AIに渡すテキストを作成（直近30件に絞る）
-  const limit = AppConfig.get().Digest.topN || 30;
-  const targetArticles = relevantArticles.slice(0, limit);
+  // 3. AIに渡すテキストを作成
+  const WEB_ANALYSIS_LIMIT = 60; // 50〜60件あれば、活発な分野でも1ヶ月分程度カバーできます
+  const targetArticles = relevantArticles.slice(0, WEB_ANALYSIS_LIMIT);
   
   let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
   targetArticles.forEach((row, i) => {
@@ -2194,3 +2194,44 @@ function getRecipients() {
   return finalRecipients;
 }
 
+/**
+ * maintenanceDeleteOldArticles
+ * 【責務】指定期間（デフォルト12ヶ月）より古い記事をcollectシートから削除する
+ * 【実行サイクル】週1回（推奨）
+ */
+function maintenanceDeleteOldArticles() {
+  const KEEP_MONTHS = 12; // ★ここを残したい月数に変更（例: 3ヶ月）
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow < 2) return;
+
+  // 日付の閾値を計算
+  const thresholdDate = new Date();
+  thresholdDate.setMonth(thresholdDate.getMonth() - KEEP_MONTHS);
+  
+  // データ取得（A列の日付のみ）
+  // ※日付降順でソートされている前提で、下から（古い方から）チェックすると効率が良いですが、
+  // 安全のため上からスキャンして「削除対象の開始行」を探します。
+  const dates = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  
+  let deleteStartRow = -1;
+  
+  // 日付降順（最新が上）と仮定して、上から見ていき、閾値より古い日付が出たらそこから下を全部消す
+  for (let i = 0; i < dates.length; i++) {
+    const rowDate = new Date(dates[i][0]);
+    if (rowDate < thresholdDate) {
+      deleteStartRow = i + 2; // 行番号は(インデックス + 2)
+      break;
+    }
+  }
+
+  if (deleteStartRow !== -1) {
+    const numRowsToDelete = lastRow - deleteStartRow + 1;
+    sheet.deleteRows(deleteStartRow, numRowsToDelete);
+    Logger.log(`メンテナンス: ${fmtDate(thresholdDate)} 以前の記事、計 ${numRowsToDelete} 件を削除しました。`);
+  } else {
+    Logger.log("メンテナンス: 削除対象の古い記事はありませんでした。");
+  }
+}

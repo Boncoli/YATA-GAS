@@ -7,14 +7,8 @@
   <style>
     body { font-family: sans-serif; padding: 20px; }
     input[type="text"] { width: 300px; padding: 8px; margin-bottom: 10px; }
-    button { padding: 10px 15px; cursor: pointer; margin-right: 10px; }
-    #output, #analysis-output { 
-      margin-top: 20px; 
-      padding: 10px; 
-      border: 1px solid #ccc; 
-      background: #f9f9f9; 
-      min-height: 50px;
-    }
+    button { padding: 10px 15px; cursor: pointer; }
+    #output { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9; }
     .loading { color: #888; }
     /* ローディングスピナーのスタイル */
     .spinner {
@@ -24,7 +18,7 @@
       width: 20px;
       height: 20px;
       animation: spin 1s linear infinite;
-      display: none; /* 初期状態では非表示 */
+      display: inline-block; /* テキストと並べるため */
       vertical-align: middle; /* テキストと中央揃え */
       margin-left: 10px;
     }
@@ -39,79 +33,100 @@
       background-color: #cccccc;
       cursor: not-allowed;
     }
+
+    /* 分析レポート用のスタイル */
+    .summary-section {
+      background-color: #eef2f5;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 25px;
+    }
+    .summary-title {
+      margin-top: 0;
+      color: #34495e;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .section-header {
+      border-bottom: 2px solid #3498db;
+      padding-bottom: 8px;
+      color: #2980b9;
+      margin-top: 30px;
+    }
+    .tech-card {
+      margin-bottom: 20px;
+      border: 1px solid #ddd;
+      padding: 15px;
+      border-radius: 5px;
+      border-left: 5px solid #3498db;
+      background-color: #fff;
+    }
+    .tech-title {
+      margin: 0 0 10px 0;
+      color: #2c3e50;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .tech-meta {
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .tech-link {
+      margin-top: 10px;
+      font-size: 12px;
+      text-align: right;
+    }
+    .tech-link a {
+      color: #3498db;
+      text-decoration: none;
+    }
+
   </style>
 </head>
 <body>
-  <h2>RSS 処理ツール</h2>
+  <h2>RSS ダイジェスト実行</h2>
 
   <label for="keyword">キーワード:</label><br>
   <input type="text" id="keyword" name="keyword" placeholder="検索キーワードを入力してください"><br><br>
 
-  <button id="runButton" onclick="runDigestJob()">ダイジェスト実行</button>
-  <button id="runAnalysisButton" onclick="runAnalysisJob()">分析実行</button>
-  <div id="loadingSpinner" class="spinner"></div>
+  <button id="runButton" onclick="runDigestJob()">実行</button>
 
-  <h3>ダイジェスト実行結果</h3>
-  <div id="output">待機中</div>
-  
-  <h3>分析実行結果</h3>
-  <div id="analysis-output">待機中</div>
+  <div id="output">ステータス: 待機中</div>
+  <div id="loadingSpinner" class="spinner" style="display: none;"></div>
 
   <script>
-    function disableButtons(disabled) {
-      document.getElementById('runButton').disabled = disabled;
-      document.getElementById('runAnalysisButton').disabled = disabled;
-      document.getElementById('loadingSpinner').style.display = disabled ? 'inline-block' : 'none';
-    }
-
     function runDigestJob() {
       const keyword = document.getElementById('keyword').value;
       const output = document.getElementById('output');
+      const runButton = document.getElementById('runButton'); 
+      const loadingSpinner = document.getElementById('loadingSpinner'); 
 
       if (!keyword.trim()) {
-        output.innerHTML = 'キーワードを入力してください。';
+        output.innerHTML = 'ステータス: 待機中<br><span style="color:red;">キーワードを入力してください。</span>';
         return;
       }
 
-      output.innerHTML = '<span class="loading">実行中...</span>';
-      disableButtons(true);
+      // UIを読み込みモードに変更
+      output.innerHTML = '<span class="loading">シート内を検索し、AI分析を実行中... (30秒〜1分ほどかかります)</span>';
+      runButton.disabled = true; 
+      loadingSpinner.style.display = 'inline-block'; 
 
+      // サーバー側の searchAndAnalyzeKeyword を呼び出す
       google.script.run
         .withSuccessHandler(function(result) {
-          output.innerHTML = result || '<div>該当記事がありませんでした。</div>';
-          disableButtons(false);
+          // 成功時の表示
+          output.innerHTML = result; // サーバーから返ってきたHTMLをそのまま表示
+          runButton.disabled = false;
+          loadingSpinner.style.display = 'none';
         })
         .withFailureHandler(function(error) {
+          // エラー時の表示
           const msg = (error && error.message) ? error.message : String(error);
-          output.innerHTML = '<strong>エラー:</strong><br>' + msg;
-          disableButtons(false);
+          output.innerHTML = '<span style="color:red;">エラーが発生しました: ' + msg + '</span>';
+          runButton.disabled = false; 
+          loadingSpinner.style.display = 'none'; 
         })
-        .executeWeeklyDigest(keyword);
-    }
-    
-    function runAnalysisJob() {
-      const keyword = document.getElementById('keyword').value;
-      const output = document.getElementById('analysis-output');
-
-      if (!keyword.trim()) {
-        output.innerHTML = 'キーワードを入力してください。';
-        return;
-      }
-
-      output.innerHTML = '<span class="loading">分析中...</span>';
-      disableButtons(true);
-
-      google.script.run
-        .withSuccessHandler(function(result) {
-          output.innerHTML = result || '<div>分析結果がありませんでした。</div>';
-          disableButtons(false);
-        })
-        .withFailureHandler(function(error) {
-          const msg = (error && error.message) ? error.message : String(error);
-          output.innerHTML = '<strong>エラー:</strong><br>' + msg;
-          disableButtons(false);
-        })
-        .searchAndAnalyzeKeyword(keyword);
+        .searchAndAnalyzeKeyword(keyword); // ここでバックエンドの関数名を指定
     }
   </script>
 </body>
