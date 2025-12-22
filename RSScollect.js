@@ -248,40 +248,34 @@ function processSummarization() {
   const lastRow = trendDataSheet.getLastRow();
   if (lastRow < 2) return;
 
-  // --- 改善点: 実行開始時刻を記録 ---
   const startTime = new Date().getTime();
-  const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分（GASの制限6分に対し余裕を持たせる）
+  const TIME_LIMIT_MS = 5 * 60 * 1000; 
 
   const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, trendDataSheet.getLastColumn());
   const values = dataRange.getValues();
   const articlesToSummarize = [];
 
-  // 1. まず全行をスキャンして、要約が必要な記事を特定する（ここは高速なのでそのまま）
+  // 1. 要約が必要な記事を特定
   values.forEach((row, index) => {
     const currentHeadline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
-    // 見出しが空の場合のみ処理
     if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // C列の左隣(B列)がタイトルと仮定
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; 
       const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1];
       
-      // 記事が短すぎる、または「抜粋なし」の場合はAIを使わず簡易処理
       const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
       
       if (isShort) {
         let newHeadline;
         const sheetRowNumber = index + 2;
         if (title && String(title).trim() !== "") {
-          // タイトルがあればそれを使う（英語なら翻訳）
           newHeadline = isLikelyEnglish(String(title)) ? `=GOOGLETRANSLATE(B${sheetRowNumber},"auto","ja")` : String(title).trim();
         } else if (abstractText && abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT) {
           newHeadline = isLikelyEnglish(String(abstractText)) ? `=GOOGLETRANSLATE(D${sheetRowNumber},"auto","ja")` : String(abstractText).trim();
         } else {
           newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
         }
-        // 即座に配列を更新
         values[index][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
-        // AI要約対象としてリストに追加
         articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
       }
     }
@@ -289,17 +283,14 @@ function processSummarization() {
 
   let apiCallCount = 0;
 
-  // 2. AI要約の実行（ここが一番重いので制限時間をチェックする）
+  // 2. AI要約の実行
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
     
-    // forEachではなく for...of を使用して break できるように変更
     for (const article of articlesToSummarize) {
-      
-      // --- 改善点: 制限時間をチェック ---
       if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
-        Logger.log(`タイムアウト回避のため、処理を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。残りは次回実行されます。`);
-        break; // ループを抜けて保存処理へ移行
+        Logger.log(`タイムアウト回避のため、処理を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。`);
+        break; 
       }
 
       const articleText = `Title: ${article.title}\nAbstract: ${article.abstractText}`;
@@ -307,30 +298,39 @@ function processSummarization() {
       apiCallCount++;
 
       let newHeadline = null;
-      if (jsonString && !jsonString.includes("エラー") && !jsonString.includes("いずれのLLMでも")) {
+      
+      // ★修正: 単純な「エラー」という文字チェックをやめ、特定のシステムエラー文言のみをチェック
+      const isSystemError = String(jsonString).includes("API Error") || String(jsonString).includes("いずれのLLMでも");
+
+      if (jsonString && !isSystemError) {
         try {
-          const parsedJson = JSON.parse(jsonString);
-          newHeadline = parsedJson.tldr || parsedJson.summary;
+          // ★修正: JSON.parse ではなく cleanAndParseJSON を使用
+          const parsedJson = cleanAndParseJSON(jsonString);
+          if (parsedJson) {
+             newHeadline = parsedJson.tldr || parsedJson.summary;
+          }
+          // パースできたが中身がない、またはパース失敗時のフォールバック
           if (!newHeadline) newHeadline = String(jsonString).trim();
         } catch (e) {
           Logger.log(`JSONパース失敗 (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
+          // JSONじゃなかった場合、テキストそのものを見出しとして採用してみる
           newHeadline = String(jsonString).trim();
         }
       } else {
-        Logger.log(`見出し生成失敗 (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
+        Logger.log(`見出し生成システムエラー (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
       }
 
-      if (newHeadline && String(newHeadline).trim() !== "" && String(newHeadline).indexOf("エラー") === -1) {
+      // 最終チェック: 生成結果がエラー文言そのものでないか
+      if (newHeadline && String(newHeadline).trim() !== "" && !String(newHeadline).includes("API Error")) {
         values[article.originalRowIndex][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
       } else {
-        Logger.log(`見出し生成結果が空またはエラーのためスキップ (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
+        Logger.log(`スキップしました (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
       
       Utilities.sleep(AppConfig.get().Llm.DELAY_MS);
     }
   }
 
-  // 3. 結果をシートに書き戻す（途中終了した場合も、そこまでの進捗は保存される）
   if (lastRow > 1) {
     dataRange.setValues(values);
     Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
@@ -338,7 +338,6 @@ function processSummarization() {
     Logger.log("見出し生成が必要な記事は見つかりませんでした。");
   }
 }
-
 /**
  * ================================================================================
  * SECTION 2: WEEKLY DIGEST PROCESSORS
@@ -727,6 +726,9 @@ ${batchSummaries.join("\n\n---\n\n")}
     reportBody = callDailyDigestLlm(systemPromptTemplate, finalPrompt);
   }
 
+    // ★追加: headerLine をここで定義する
+    const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+    
     // [REFACTORED] Call the new unified function
     sendDigestEmail(headerLine, reportBody, null, daysWindow);
   }
@@ -1041,7 +1043,7 @@ const LlmService = (function() {
         _logError("_callAzureLlm", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
         return null;
       }
-      const json = JSON.parse(txt);
+      const json = cleanAndParseJSON(txt);
       if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
         return String(json.choices[0].message.content).trim();
       }
@@ -1065,7 +1067,7 @@ const LlmService = (function() {
         _logError("_callOpenAiLlm", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
         return null;
       }
-      const json = JSON.parse(txt);
+      const json = cleanAndParseJSON(txt);
       if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
         return String(json.choices[0].message.content).trim();
       }
@@ -1085,7 +1087,7 @@ const LlmService = (function() {
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
     try {
       const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
-      const json = JSON.parse(response.getContentText());
+      const json = cleanAndParseJSON(response.getContentText());
       let text = null;
       if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
         text = json.candidates[0].content.parts[0].text;
@@ -2233,5 +2235,31 @@ function maintenanceDeleteOldArticles() {
     Logger.log(`メンテナンス: ${fmtDate(thresholdDate)} 以前の記事、計 ${numRowsToDelete} 件を削除しました。`);
   } else {
     Logger.log("メンテナンス: 削除対象の古い記事はありませんでした。");
+  }
+}
+
+/**
+ * LLMのレスポンスからMarkdown記号を除去してJSONパースする関数
+ */
+function cleanAndParseJSON(text) {
+  if (!text) return null;
+  
+  // 1. Markdownのコードブロック ```json や ``` を削除
+  let cleaned = text.replace(/```json/gi, "").replace(/```/g, "");
+  
+  // 2. 最初の中括弧 { から 最後の中括弧 } までを切り出す
+  // (AIが「はい、これがJSONです」のような前置きを入れても無視できるようにする)
+  const firstOpen = cleaned.indexOf('{');
+  const lastClose = cleaned.lastIndexOf('}');
+  
+  if (firstOpen !== -1 && lastClose !== -1) {
+    cleaned = cleaned.substring(firstOpen, lastClose + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    Logger.log("JSON Parse Error (Raw text): " + text);
+    throw e; // エラーを呼び出し元に返す
   }
 }
