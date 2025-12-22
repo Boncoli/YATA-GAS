@@ -1483,6 +1483,16 @@ function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.RSS_LIST);
   const collectSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   
+  // ★追加: データがない場合は処理を終了
+  if (rssListSheet.getLastRow() < AppConfig.get().RssListSheet.DataRange.START_ROW) {
+    Logger.log("RSSリストが空のため、収集をスキップします。");
+    return;
+  }
+
+  // 行数計算
+  const numRows = rssListSheet.getLastRow() - AppConfig.get().RssListSheet.DataRange.START_ROW + 1;
+  if (numRows < 1) return;
+  
   const rssData = rssListSheet.getRange(
     AppConfig.get().RssListSheet.DataRange.START_ROW, 
     AppConfig.get().RssListSheet.DataRange.START_COL, 
@@ -2142,16 +2152,18 @@ function decodeHtmlEntities(text) {
  * 2. `Users` シートから「有効(C列!=空)」なアドレスを取得
  * 3. 重複を除去してカンマ区切り文字列で返す
  */
+/**
+ * 修正版: getRecipients
+ * 行数チェックを厳密に行う
+ */
 function getRecipients() {
-  const adminMail = AppConfig.get().Digest.mailTo; // プロパティの管理者アドレス
+  const adminMail = AppConfig.get().Digest.mailTo; 
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.USERS);
   
-  // 重複排除用のSet
   const recipientSet = new Set();
 
   // 1. 管理者アドレスを追加
   if (adminMail) {
-    // カンマ区切りで複数指定されている場合にも対応
     adminMail.split(',').forEach(email => {
       const trimmed = email.trim();
       if (trimmed) recipientSet.add(trimmed);
@@ -2159,23 +2171,25 @@ function getRecipients() {
   }
 
   // 2. シートからユーザーを追加
+  // ★ここが重要: 最終行が2未満（ヘッダーのみ、または空）の場合はスキップ
   if (sheet && sheet.getLastRow() >= 2) {
-    // A列:名前, B列:Email, C列:有効フラグ
-    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+    // 取得行数を計算 (LastRow - 1)
+    const numRows = sheet.getLastRow() - 1;
     
-    data.forEach(row => {
-      const email = String(row[1]).trim();
-      const isActive = String(row[2]).trim() !== ""; // C列に何か文字があれば有効
+    if (numRows > 0) { // 念のため再確認
+      const data = sheet.getRange(2, 1, numRows, 3).getValues();
       
-      if (email && isActive) {
-        recipientSet.add(email);
-      }
-    });
+      data.forEach(row => {
+        const email = String(row[1]).trim();
+        const isActive = String(row[2]).trim() !== ""; 
+        if (email && isActive) {
+          recipientSet.add(email);
+        }
+      });
+    }
   }
 
-  // Setを配列に戻してカンマ区切りにする
   const finalRecipients = Array.from(recipientSet).join(',');
-  
   Logger.log(`配信先リスト生成: ${recipientSet.size} 件 (${finalRecipients})`);
   return finalRecipients;
 }
