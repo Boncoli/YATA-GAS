@@ -378,8 +378,19 @@ function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleK
   const allKeywords = hitKeywordsWithCount.map(item => item.keyword);
   let finalReportMdBody = `## 週刊トレンドレポート\n\n`;
 
+  // タイムアウト監視用 (GASの6分制限対策)
+  const procStartTime = new Date().getTime();
+  const TIME_LIMIT_MS = 280 * 1000; // 4分40秒で打ち切り
+
   // --- ▼▼▼ 新しいロジック: キーワードごとに処理を完結させる ▼▼▼ ---
   for (const keyword of allKeywords) {
+    // タイムアウトチェック
+    if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
+      Logger.log("時間制限に到達したため、残りのキーワード処理を中断してメール送信へ移行します。");
+      finalReportMdBody += `\n\n⚠️ **システム通知:**\n実行時間制限のため、一部のキーワード分析がスキップされました。\n\n---\n\n`;
+      break;
+    }
+
     const articlesForKeyword = articlesGroupedByKeyword[keyword] || [];
     if (articlesForKeyword.length === 0) continue;
 
@@ -1731,6 +1742,9 @@ function searchAndAnalyzeKeyword(keyword) {
         throw new Error("LLMによる分析に失敗しました。詳細はログを確認してください。");
     }
     
+    // XSS対策: 危険なタグを無効化
+    analysisResult = sanitizeHtmlForWeb(analysisResult);
+
     return `
       <div style="margin-bottom: 15px;">
         <strong>🔍 分析対象:</strong> ${relevantArticles.length}件中、直近${targetArticles.length}件<br>
@@ -1958,6 +1972,31 @@ function maintenanceDeleteOldArticles() {
 }
 
 /**
+ * sanitizeHtmlForWeb
+ * 【責務】Web UI表示用に危険なHTMLタグを除去 (簡易XSS対策)
+ * @param {string} html - 入力HTML
+ * @returns {string} サニタイズ済みHTML
+ */
+function sanitizeHtmlForWeb(html) {
+  if (!html) return "";
+  let clean = html;
+  
+  // 危険なタグを削除 (大文字小文字無視)
+  clean = clean.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, "")
+               .replace(/<iframe\b[^>]*>([\s\S]*?)<\/iframe>/gim, "")
+               .replace(/<object\b[^>]*>([\s\S]*?)<\/object>/gim, "")
+               .replace(/<embed\b[^>]*>([\s\S]*?)<\/embed>/gim, "")
+               .replace(/<form\b[^>]*>([\s\S]*?)<\/form>/gim, ""); 
+
+  // イベントハンドラ (onClickなど) を無効化
+  clean = clean.replace(/\s+on[a-z]+="[^"]*"/gim, "")
+               .replace(/\s+on[a-z]+='[^']*'/gim, "")
+               .replace(/\s+javascript:/gim, "");
+
+  return clean;
+}
+
+/**
  * LLMのレスポンスからMarkdown記号を除去してJSONパースする関数
  */
 /**
@@ -1977,8 +2016,10 @@ function cleanAndParseJSON(text) {
   // 3. 最後の中括弧 } を探す (初期値は一番後ろのもの)
   let lastClose = cleaned.lastIndexOf('}');
   
-  // トライ＆エラーでパースを試みる
-  while (lastClose > firstOpen) {
+  let loopCount = 0;
+  // トライ＆エラーでパースを試みる (最大10回まで)
+  while (lastClose > firstOpen && loopCount < 10) {
+    loopCount++;
     try {
       // 候補となる文字列を切り出す
       const candidate = cleaned.substring(firstOpen, lastClose + 1);
