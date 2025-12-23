@@ -24,13 +24,14 @@
 * **目的**: 能動的なリサーチ。直近の「新規技術」や「ブレイクスルー」の発掘。
 * **特徴**:
     * キーワードに関連する**直近60件**（約1ヶ月分相当）の記事を総ざらい分析。
+    * **高度な検索**: `AND`検索（例: `AI 創薬`）だけでなく、`OR`検索（例: `がん or 腫瘍`）にも対応。
     * **「新規性（Novelty）」**にフォーカスし、既存技術との違いやインパクトを抽出。
     * CSS分離型の軽量HTMLによる、視認性の高いカード形式レポート。
 
 ### 2. 週刊トレンドレポート（Trend Tracking）
 * **目的**: 受動的な定点観測。登録キーワードの「変化」の把握。
 * **特徴**:
-    * **毎週月曜日**（設定可）に、キーワードごとの動向レポートをメール配信。
+    * **柔軟な配信スケジュール**: `Keywords`シートの設定により、キーワードごとに「毎週月曜日」「月・木のみ」「毎日」など配信曜日を細かく指定可能。
     * **記事数厳選（Top 20）**: メールで読み切れる量に情報を凝縮。
     * **進捗タグ**: `[⚡ 新規]` `[🚀 進展]` `[➡️ 継続]` などのタグで、ステータス変化を一目で理解可能（プロンプト設定に依存）。
 
@@ -53,10 +54,82 @@
 |---|---|
 | `RSS` | 収集対象のRSSフィードURL一覧。 |
 | `collect` | 収集した全記事データ（データベース）。 |
-| `Keywords`| 週刊レポートの観測対象キーワード。 |
+| `Keywords`| 週刊レポートの観測対象キーワード（配信曜日の指定も可能）。 |
 | `prompt` | AIへの指示（プロンプト）テンプレート。 |
 | `DigestHistory` | 週ごとの分析結果を蓄積し、次週の比較に使用。 |
 | `Users` | メール配信先ユーザー管理（有効/無効設定）。 |
+
+## 技術仕様（Architecture Highlights）
+
+### 1. マルチティア・LLMフォールバック
+API障害やレート制限による停止を防ぐため、3段階のフォールバックシステムを実装しています。
+1. **Azure OpenAI**: 高速・安定・セキュア（Primary）。
+2. **OpenAI API**: Azure障害時のバックアップ（Secondary）。
+3. **Google Gemini**: 上記すべてが利用不可な場合の最終防衛ライン（Tertiary）。
+
+### 2. 堅牢なRSS収集エンジン
+* **全フォーマット対応**: RSS 1.0, 2.0, Atom形式を自動判別してパース。
+* **自己修復機能**: XMLパースエラー発生時、制御文字や不正なタグを自動除去して再試行する強力なサニタイズ処理を搭載。
+* **Web互換性**: 一般的なブラウザ（User-Agent）を偽装し、Bot対策されたフィードも収集可能。
+
+## アーキテクチャとロジックフロー
+
+本システムのデータフローと処理ロジックの概要図です。
+メンテナンスや機能追加の際の全体像把握にご利用ください。
+
+```mermaid
+graph TD
+    %% データソース
+    RSS[RSS Feeds] -->|collectRssFeeds| DB[(collect Sheet)];
+
+    %% 日次自動処理フロー
+    subgraph Daily Automation
+        DB -->|processSummarization| AI_HEADLINE[AI Headline Gen];
+        AI_HEADLINE -->|Update| DB;
+        DB -->|sortCollectByDateDesc| DB;
+    end
+
+    %% 週刊レポート生成フロー
+    subgraph Weekly Reporting
+        DB -->|weeklyDigestJob| FILTER{Keyword Filter};
+        CONFIG[Keywords Sheet] --> FILTER;
+        FILTER -->|Hit Articles| AI_ANALYSIS[AI Trend Analysis];
+        AI_ANALYSIS -->|Generate Report| MAIL[Email Digest];
+        AI_ANALYSIS -->|Save History| HISTORY[(DigestHistory Sheet)];
+    end
+
+    %% Web UI フロー
+    subgraph Web UI On-Demand
+        USER((User)) -->|Search| WEB_UI[Web Interface];
+        WEB_UI -->|searchAndAnalyzeKeyword| DB;
+        DB -->|Retrieve| WEB_AI[AI Deep Dive];
+        WEB_AI -->|HTML Report| WEB_UI;
+    end
+
+    %% 依存関係
+    PROMPT[prompt Sheet] -.-> AI_HEADLINE;
+    PROMPT -.-> AI_ANALYSIS;
+    PROMPT -.-> WEB_AI;
+    
+    %% スタイル定義
+    classDef sheet fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef process fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    class DB,CONFIG,HISTORY,PROMPT sheet;
+    class AI_HEADLINE,AI_ANALYSIS,WEB_AI process;
+```
+
+### 主要関数リファレンス
+
+開発・メンテナンス時に参照すべき主要な関数です。
+
+| 関数名 | 役割・ロジック概要 | 依存シート |
+|---|---|---|
+| `collectRssFeeds` | RSS/Atomフィードを巡回・パースし、重複を除外してDBに追記。 | `RSS`, `collect` |
+| `processSummarization` | 記事の「見出し」をAI生成。短い記事はルールベースで処理し、APIコストを抑制。 | `collect`, `prompt` |
+| `weeklyDigestJob` | キーワードに基づくトレンド分析レポートを作成しメール配信。履歴との差分比較も行う。 | `Keywords`, `DigestHistory` |
+| `searchAndAnalyzeKeyword` | **Web UI用**。指定キーワードでDBを検索し、直近記事をAI分析してHTMLを返す。 | `collect`, `prompt` |
+| `maintenanceDeleteOldArticles` | 保存期間（`KEEP_MONTHS`）を過ぎた古い記事を物理削除し、スプレッドシートを軽量化。 | `collect` |
+| `LlmService` (Module) | Azure/OpenAI/Geminiの切り替えを行う通信レイヤー。エラーハンドリングを一元管理。 | (Script Properties) |
 
 ## セットアップ手順
 
