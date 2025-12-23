@@ -1,8 +1,9 @@
 /**
- * @file RSScollect.js - RSS Feed Collector with AI Summarization
- * @version 2.8
+ * @file YATA.js - AI-Driven News Intelligence Platform
+ * @version 2.8.1
  * @date 2025-12-23
- * @description RSS collection → AI headline generation → Weekly digest with keyword analysis
+ * @description YATA (The Three-Legged Guide to the Web)
+ *              RSS collection → AI headline generation → Weekly digest with keyword analysis
  *
  * Script Properties (LLM Configuration):
  *   - EXECUTION_CONTEXT: 'COMPANY' | 'PERSONAL' (LLM priority order)
@@ -61,7 +62,7 @@ const AppConfig = (function() {
         notifyChannel: (props.getProperty("NOTIFY_CHANNEL_WEEKLY") || "email").toLowerCase(),
         mailTo: props.getProperty("MAIL_TO"),
         mailSubjectPrefix: props.getProperty("MAIL_SUBJECT_PREFIX"), // デフォルトはnull/undefined
-        mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "RSS要約ボット",
+        mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "YATA (AI Intelligence Bot)",
         sheetUrl: props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)",
       },
     };
