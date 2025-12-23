@@ -1,6 +1,6 @@
 /**
  * @file RSScollect.js - RSS Feed Collector with AI Summarization
- * @version 2.7.1 (optimized)
+ * @version 2.8
  * @date 2025-12-23
  * @description RSS collection → AI headline generation → Weekly digest with keyword analysis
  *
@@ -1283,7 +1283,7 @@ function collectRssFeeds() {
   }
   
   let totalNewCount = 0;
-  const DATE_LIMIT_DAYS = 2; 
+  const DATE_LIMIT_DAYS = 7; 
 
   for (const row of rssData) {
     const siteName = row[0];
@@ -1351,6 +1351,7 @@ function collectRssFeeds() {
       totalNewCount += feedNewItems.length;
       Logger.log(`${siteName}: ${feedNewItems.length} 件追加`);
     }
+    Utilities.sleep(1000); // 1秒待機（相手サーバーへの負荷軽減）
   }
   Logger.log(`合計 ${totalNewCount} 件の新しい記事を追加しました。`);
 }
@@ -1393,13 +1394,15 @@ function fetchAndParseRss(url) {
       'validateHttpsCertificates': false,
       // ★追加: User-Agentを一般的なブラウザに偽装する
       'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
       }
     };
     
     const response = UrlFetchApp.fetch(url, options);
     const responseCode = response.getResponseCode();
-    
+
     if (responseCode !== 200) {
       console.warn(`RSS取得失敗 (${responseCode}): ${url}`);
       return [];
@@ -1449,9 +1452,19 @@ function fetchAndParseRss(url) {
       });
     } else if (root.getName() === 'feed' || root.getName() === 'RDF') {
       // Atom または RSS 1.0 (RDF)
-      // RDFの場合は item はルート直下にあることが多いが、ここでは簡略化のため getChildren で探索
       let entries = root.getChildren('entry');
-      if (entries.length === 0) entries = root.getChildren('item');
+      
+      // ★修正: RSS 1.0 (RDF) の名前空間対応を追加
+      if (entries.length === 0) {
+        // まず、RSS 1.0 の名前空間を指定して取得を試みる
+        const rss1Ns = XmlService.getNamespace('http://purl.org/rss/1.0/');
+        entries = root.getChildren('item', rss1Ns);
+        
+        // それでも取れない場合のみ、名前空間なしで取得（フォールバック）
+        if (entries.length === 0) {
+          entries = root.getChildren('item');
+        }
+      }
       
       items = entries.map(entry => {
         let link = getChildText(entry, 'link');
@@ -1904,7 +1917,7 @@ function getRecipients() {
 
 /**
  * maintenanceDeleteOldArticles
- * 【責務】指定期間（デフォルト12ヶ月）より古い記事をcollectシートから削除する
+ * 【責務】指定期間（デフォルト6ヶ月）より古い記事をcollectシートから削除する
  * 【実行サイクル】週1回（推奨）
  */
 function maintenanceDeleteOldArticles() {
@@ -1947,25 +1960,106 @@ function maintenanceDeleteOldArticles() {
 /**
  * LLMのレスポンスからMarkdown記号を除去してJSONパースする関数
  */
+/**
+ * LLMのレスポンスからMarkdown記号を除去してJSONパースする関数
+ * 【修正版】末尾に余計な '}' がある場合でもリカバリしてパースする
+ */
 function cleanAndParseJSON(text) {
   if (!text) return null;
   
   // 1. Markdownのコードブロック ```json や ``` を削除
   let cleaned = text.replace(/```json/gi, "").replace(/```/g, "");
   
-  // 2. 最初の中括弧 { から 最後の中括弧 } までを切り出す
-  // (AIが「はい、これがJSONです」のような前置きを入れても無視できるようにする)
+  // 2. 最初の中括弧 { を探す
   const firstOpen = cleaned.indexOf('{');
-  const lastClose = cleaned.lastIndexOf('}');
+  if (firstOpen === -1) return null; // JSON開始記号がない
+
+  // 3. 最後の中括弧 } を探す (初期値は一番後ろのもの)
+  let lastClose = cleaned.lastIndexOf('}');
   
-  if (firstOpen !== -1 && lastClose !== -1) {
-    cleaned = cleaned.substring(firstOpen, lastClose + 1);
+  // トライ＆エラーでパースを試みる
+  while (lastClose > firstOpen) {
+    try {
+      // 候補となる文字列を切り出す
+      const candidate = cleaned.substring(firstOpen, lastClose + 1);
+      return JSON.parse(candidate); // 成功したらここでリターン
+    } catch (e) {
+      // パース失敗時：
+      // もしエラーが「末尾にゴミがある(Unexpected token...)」系なら、
+      // 最後の '}' が余計だった可能性が高いので、一つ前の '}' を探して再挑戦する
+      lastClose = cleaned.lastIndexOf('}', lastClose - 1);
+    }
   }
 
+  // ループを抜けてもダメだった場合は、最初のエラー情報をログに出すために
+  // 最も広範囲で切り出したもので再度エラーを発生させるか、ログを出力して終了
+  Logger.log("JSON Parse Error (Raw text): " + text);
+  // 必要であれば throw e; してもよいが、nullを返してスキップ扱いにするのが安全
+  return null; 
+}
+
+/**
+ * RSSフィード診断ツール
+ * 指定したURLの中身を覗き見して、GASがどう認識しているかテストします。
+ */
+function debugRssFeed() {
+  // ▼ここに「収集できないFeedBurnerのURL」を入れてください
+  const TEST_URL = "https://connect.medrxiv.org/medrxiv_xml.php?subject=All"; 
+  
+  Logger.log(`--- テスト開始: ${TEST_URL} ---`);
+  
   try {
-    return JSON.parse(cleaned);
+    const response = UrlFetchApp.fetch(TEST_URL, {muteHttpExceptions: true});
+    const code = response.getResponseCode();
+    Logger.log(`レスポンスコード: ${code}`);
+    
+    if (code !== 200) {
+      Logger.log("【原因】: サーバーエラーです。URLが間違っているか、ブロックされています。");
+      return;
+    }
+    
+    let xml = response.getContentText();
+    Logger.log(`取得データの先頭500文字:\n${xml.substring(0, 500)}`);
+    
+    // 擬似的なサニタイズ（本番と同じ処理）
+    xml = xml.replace(/<[a-zA-Z0-9]+:/g, '<').replace(/<\/[a-zA-Z0-9]+:/g, '</');
+    
+    const doc = XmlService.parse(xml);
+    const root = doc.getRootElement();
+    Logger.log(`ルート要素名: ${root.getName()}`);
+    
+    let items = root.getChildren('item');
+    if (items.length === 0 && root.getChild('channel')) {
+      items = root.getChild('channel').getChildren('item');
+    }
+    
+    Logger.log(`検出された記事数: ${items.length} 件`);
+    
+    if (items.length > 0) {
+      const item = items[0];
+      const title = item.getChildText('title');
+      const dateStr = item.getChildText('pubDate') || item.getChildText('date') || "見つかりません";
+      const dateObj = new Date(dateStr);
+      
+      Logger.log(`\n【先頭の記事データ】`);
+      Logger.log(`タイトル: ${title}`);
+      Logger.log(`日付文字列: ${dateStr}`);
+      Logger.log(`日付判定結果: ${dateObj.toString()}`);
+      
+      const now = new Date();
+      const diffDays = (now - dateObj) / (1000 * 60 * 60 * 24);
+      Logger.log(`現在との差: 約 ${Math.floor(diffDays)} 日前`);
+      
+      if (diffDays > 30) {
+         Logger.log("【判定】: 記事が30日以上古いため、設定によりスキップされています。");
+      } else {
+         Logger.log("【判定】: 日付は期間内です。これで収集されない場合は「重複」とみなされている可能性があります。");
+      }
+    } else {
+      Logger.log("【原因】: 記事データ(item)が1つも見つかりませんでした。FeedBurnerがまだデータを取得できていない可能性があります。");
+    }
+    
   } catch (e) {
-    Logger.log("JSON Parse Error (Raw text): " + text);
-    throw e; // エラーを呼び出し元に返す
+    Logger.log(`【エラー】: 解析中にエラーが発生しました。\n${e.toString()}`);
   }
 }
