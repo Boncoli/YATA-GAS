@@ -18,6 +18,11 @@
  */
 
 // AppConfig Singleton: Configuration cache and loader
+/**
+ * AppConfig
+ * 【責務】スクリプトプロパティや固定設定を保持し、システム全体で共有する。
+ * シングルトンパターンを採用し、実行中の負荷を軽減。
+ */
 const AppConfig = (function() {
   let cache = null;
   function load() {
@@ -72,25 +77,6 @@ const AppConfig = (function() {
 })();
 
 /** トリガーエントリーポイント: mainAutomationFlow, dailyDigestJob, weeklyDigestJob */
-
-/** mainAutomationFlow: 日次自動化 - RSS収集 → 見出し生成 → トレンド検出 */
-
-/**
-function mainAutomationFlow() {
-  Logger.log("--- 自動化フロー開始 ---");
-  
-  // 1. RSS収集
-  collectRssFeeds();
-  
-  // 2. AI見出し生成
-  processSummarization();
-  
-  // 3. 日付順に並び替え (追加: 最新の記事を上に)
-  sortCollectByDateDesc();
-
-  Logger.log("--- 自動化フロー完了 ---");
-}
-*/
 
 /**
  * トリガーA: 収集専用 (Collection Job)
