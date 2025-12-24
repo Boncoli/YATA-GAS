@@ -1907,27 +1907,48 @@ function sanitizeHtmlForWeb(html) {
 /**
  * cleanAndParseJSON
  * 【責務】LLMのレスポンスからJSON部分を抽出し、パースする。
- * 末尾のゴミ（余計な中括弧など）をリカバリする機能を持つ。
+ * 【自己修復】標準的なパースに失敗した場合、正規表現で強引に内容を抽出する。
  */
 function cleanAndParseJSON(text) {
   if (!text) return null;
   
-  let cleaned = text.replace(/```json/gi, "").replace(/```/g, "");
+  // 1. Markdownのコードブロック ```json や ``` を削除
+  let cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
   
-  const firstOpen = cleaned.indexOf('{');
-  if (firstOpen === -1) return null;
+  // 2. 文字列内の「本物の改行」をエスケープ文字（\n）に置換してパースしやすくする
+  // ※JSON.parseは文字列中の生改行を許可しないため
+  const preProcessed = cleaned.replace(/\n/g, "\\n");
 
-  let lastClose = cleaned.lastIndexOf('}');
+  // 3. 標準的なパース試行
+  const firstOpen = cleaned.indexOf('{');
+  const lastClose = cleaned.lastIndexOf('}');
   
-  let loopCount = 0;
-  while (lastClose > firstOpen && loopCount < 10) {
-    loopCount++;
+  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+    let candidate = cleaned.substring(firstOpen, lastClose + 1);
     try {
-      const candidate = cleaned.substring(firstOpen, lastClose + 1);
       return JSON.parse(candidate);
     } catch (e) {
-      lastClose = cleaned.lastIndexOf('}', lastClose - 1);
+      // 標準パース失敗時は下で正規表現による抽出へ
     }
+  }
+
+  // 4. 【自己修復ロジック】正規化して "tldr": "内容" の部分を直接抜き出す
+  // JSONの形が崩れていても（閉じ引用符がなくても）内容を救出する
+  try {
+    // "tldr" または "summary" の後ろにあるダブルクォートで囲まれた（または囲まれかけの）中身を探す
+    // 改行を考慮し、最短一致で探すが、末尾が崩れているケースも想定
+    const regex = /"(?:tldr|summary)"\s*:\s*"([\s\S]*?)(?:"\s*\}|"$|(?=\s*\}))/i;
+    const match = cleaned.match(regex);
+    
+    if (match && match[1]) {
+      let recoveredText = match[1].trim();
+      // もし末尾にゴミ（ } や " ）が残っていたら掃除
+      recoveredText = recoveredText.replace(/"?\s*\}?\s*$/, "");
+      Logger.log("JSON修復成功: " + recoveredText.substring(0, 30) + "...");
+      return { "tldr": recoveredText };
+    }
+  } catch (err) {
+    Logger.log("自己修復失敗: " + err.toString());
   }
 
   Logger.log("JSON Parse Error (Raw text): " + text);
