@@ -146,6 +146,35 @@ YATA/
 `mainAutomationFlow` を日次、`weeklyDigestJob` を週次（月曜朝など）に設定することを推奨します。
 
 ---
+## 📊 YATA 収集ソース構成マップ
+このシステムは、以下の 5つの情報レイヤー を24時間体制で監視しています。
 
+### 1. 🤖 ビッグテック・AIコア (AI Core & Tech Giants)
+「AI技術そのものの震源地」 GoogleやNVIDIAなど、世界のAIトレンドを牽引する企業の一次情報源です。創薬や医療に応用される前の、純粋なアルゴリズムの進化や計算基盤のトレンドをここでキャッチします。
+
+    主なソース: Google DeepMind, Google Research, NVIDIA Developer Blog, Hugging Face, MIT Tech Review
+
+### 2. 🧬 バイオインフォマティクス・計算科学 (Bio-IT & Informatics)
+「AIとバイオの交差点」 最新のアルゴリズムをどうやって生命科学に応用するか？という「実装・解析手法」に特化した専門誌群です。ドライ解析（計算）の現場で今何が流行っているかが分かります。
+
+    主なソース: Bioinformatics (Oxford), Nature Computational Science, Patterns (Cell Press), Bio-IT World, Briefings in Bioinformatics
+
+### 3. 🔬 アカデミア・トップジャーナル (Academic Frontiers)
+「科学的な質の担保と新規性」 世界最高峰の学術誌と、論文になる前のプレプリント（速報）です。信頼性の高い科学的発見（Nature/Cell）と、スピード重視の最新研究（bioRxiv）を両取りします。
+
+    主なソース: Nature/Cell/Science系列, bioRxiv, medRxiv, PubMed (AI×病理・臨床検査クエリ)
+
+### 4. 🏥 臨床開発・メドテック (Clinical & MedTech)
+「現場実装とデバイス開発」 臨床検査機器、診断薬、医療機器（MedTech）の開発動向に特化した情報源です。検査室の自動化や、コンパニオン診断薬のトレンドなど、我々の業務に直結する情報を拾います。
+
+    主なソース: Clinical Lab Products, MedTech Intelligence, MobiHealthNews, Nature (Clinical)
+
+### 5. 💼 ビジネス・規制・市場 (Pharma Business & Regulatory)
+「競合動向とルールメイキング」 「他社がどこを買収したか」「FDA/PMDAがどんな規制を出したか」という市場の動きです。技術だけでなく、ビジネスとしての勝ち筋やリスク管理に必要な情報を網羅します。
+
+    主なソース: Endpoints News, Fierce Biotech, BioPharma Dive, Front Line Genomics, FDA/PMDA Updates
+
+---
 ## 🤝 Contribution
 Bug reports and pull requests are welcome on GitHub at https://github.com/Boncoli/RSScollect.
+

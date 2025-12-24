@@ -89,6 +89,29 @@ function mainAutomationFlow() {
   Logger.log("--- 自動化フロー完了 ---");
 }
 
+/**
+ * トリガーA: 収集専用 (Collection Job)
+ * 頻度の目安: 1〜4時間ごと
+ * 役割: RSSを巡回してシートに追記し、並び替えまで行います。AI要約はしません。
+ */
+function runCollectionJob() {
+  Logger.log("--- 収集ジョブ開始 ---");
+  collectRssFeeds();       // RSS巡回
+  sortCollectByDateDesc(); // 日付順に並び替え
+  Logger.log("--- 収集ジョブ完了 ---");
+}
+
+/**
+ * トリガーB: AI要約専用 (Summarization Job)
+ * 頻度の目安: 4〜6時間ごと
+ * 役割: シートを見て「見出しがない記事」を見つけ、AIで生成します。
+ */
+function runSummarizationJob() {
+  Logger.log("--- 要約ジョブ開始 ---");
+  processSummarization();  // 未処理記事のAI要約
+  Logger.log("--- 要約ジョブ完了 ---");
+}
+
 /** dailyDigestJob: 日刊ダイジェスト生成 - 過去24時間の全記事（キーワードフィルタリングなし） */
 function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
@@ -1363,7 +1386,30 @@ function collectRssFeeds() {
       totalNewCount += feedNewItems.length;
       Logger.log(`${siteName}: ${feedNewItems.length} 件追加`);
     }
-    Utilities.sleep(1000); // 1秒待機（相手サーバーへの負荷軽減）
+
+    // --- スマート・ウエイト (Smart Wait) ---
+    // 相手サーバーの厳しさに応じて待機時間を調整
+    let waitTime = 2000; // 基本: 2秒 (ニュースサイト等)
+
+    // 1. 超・警戒 (アカデミックサーバー) -> 5秒
+    // bioRxiv, medRxiv は連続アクセスに非常に厳しい
+    if (rssUrl.includes("medrxiv") || rssUrl.includes("biorxiv")) {
+      waitTime = 5000; 
+    } 
+    // 2. 警戒 (大手ジャーナル・PubMed) -> 3秒
+    // Oxford, Nature, Cell, Science, NCBI はWAFがしっかりしている
+    else if (rssUrl.includes("ncbi") || rssUrl.includes("academic.oup") || rssUrl.includes("nature.com") || rssUrl.includes("cell.com") || rssUrl.includes("science.org")) {
+      waitTime = 3000;
+    } 
+    // 3. 攻め (テックジャイアント) -> 0.5秒
+    // Google, NVIDIA, HuggingFace はインフラが強いので遠慮なく
+    else if (rssUrl.includes("google") || rssUrl.includes("nvidia") || rssUrl.includes("huggingface")) {
+      waitTime = 500;  
+    }
+
+    Logger.log(`待機: ${waitTime}ms (URL: ${rssUrl})`);
+    Utilities.sleep(waitTime);
+    
   }
   Logger.log(`合計 ${totalNewCount} 件の新しい記事を追加しました。`);
 }
@@ -1404,11 +1450,18 @@ function fetchAndParseRss(url) {
     const options = {
       'muteHttpExceptions': true,
       'validateHttpsCertificates': false,
-      // ★追加: User-Agentを一般的なブラウザに偽装する
+      // ★修正: 偽装設定をより現代的かつ自然なものに強化
       'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        // Chromeのバージョンを 91 -> 120以降 に更新
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        
+        // Google検索から飛んできたふりをする (Referer追加)
+        'Referer': 'https://www.google.com/',
+        
+        // 言語設定の優先度(q)を上げる
+        'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+        
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
       }
     };
     
