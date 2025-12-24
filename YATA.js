@@ -74,6 +74,8 @@ const AppConfig = (function() {
 /** トリガーエントリーポイント: mainAutomationFlow, dailyDigestJob, weeklyDigestJob */
 
 /** mainAutomationFlow: 日次自動化 - RSS収集 → 見出し生成 → トレンド検出 */
+
+/**
 function mainAutomationFlow() {
   Logger.log("--- 自動化フロー開始 ---");
   
@@ -88,6 +90,7 @@ function mainAutomationFlow() {
 
   Logger.log("--- 自動化フロー完了 ---");
 }
+*/
 
 /**
  * トリガーA: 収集専用 (Collection Job)
@@ -113,6 +116,7 @@ function runSummarizationJob() {
 }
 
 /** dailyDigestJob: 日刊ダイジェスト生成 - 過去24時間の全記事（キーワードフィルタリングなし） */
+/**
 function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
   
@@ -141,61 +145,185 @@ function dailyDigestJob() {
   
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
+*/
 
 /** weeklyDigestJob: 週刊ダイジェスト生成 - キーワード関連記事分析
  * @param {string} webUiKeyword - Web UIからの手動キーワード入力（オプション）
  * @param {boolean} returnHtmlOnly - true時はHTML返却のみ（メール送信なし）
  */
 function weeklyDigestJob(webUiKeyword = null, returnHtmlOnly = false) {
-  if (typeof webUiKeyword !== 'string') {
-    webUiKeyword = null;
-  }
-
   const config = AppConfig.get().Digest;
   const DAYS_WINDOW = config.days; 
-
   const { start, end } = getDateWindow(DAYS_WINDOW);
-  const allItems = getArticlesInDateWindow(start, end);
+  const allArticles = getArticlesInDateWindow(start, end);
 
-  if (allItems.length === 0) {
+  if (allArticles.length === 0) {
     Logger.log("週刊ダイジェスト：対象期間に記事がありませんでした。");
-    _handleNoArticlesFound(config, start, end, "対象期間に記事がありませんでした。", DAYS_WINDOW); 
-    return;
-  }
-  
-  Logger.log(`週刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
-
-  const { relevantArticles, hitKeywordsWithCount, articleKeywordMap } = _filterRelevantArticles(allItems, webUiKeyword);
-
-  if (relevantArticles.length === 0) {
-    Logger.log("週刊ダイジェスト：キーワードに合致する記事がありませんでした。");
-    _handleNoArticlesFound(config, start, end, "キーワードに合致する記事がありませんでした。", DAYS_WINDOW);
+    // 必要ならここに通知処理
     return;
   }
 
-  // ★追加ロジック: ヒットしたキーワードに「表示用ラベル」を紐付ける
-  // WebUIからの手動実行時はラベルがないため、キーワードそのものを使う
-  const allConfigured = getWeightedKeywords(); // 全設定を再取得
+  // 1. 対象キーワードのリストアップ
+  let targetItems = [];
   
-  hitKeywordsWithCount.forEach(hit => {
-    if (webUiKeyword) {
-      // 手動実行時はラベルなし（キーワードそのまま）
-      hit.label = hit.keyword;
+  if (webUiKeyword) {
+    // 手動実行
+    targetItems.push({ query: String(webUiKeyword).trim(), label: String(webUiKeyword).trim() });
+  } else {
+    // 自動実行 (今日配信すべきキーワードを取得)
+    const allConfigured = getWeightedKeywords();
+    const dayMap = ["日", "月", "火", "水", "木", "金", "土"];
+    const todayDay = dayMap[new Date().getDay()];
+    
+    targetItems = allConfigured
+      .filter(kw => {
+        if (!kw.active) return false;
+        const targetDay = kw.day;
+        return (!targetDay || targetDay === "毎日" || targetDay.includes(todayDay));
+      })
+      .map(kw => ({ query: kw.keyword, label: kw.label || kw.keyword }));
+  }
+
+  if (targetItems.length === 0) {
+    Logger.log("本日の配信対象キーワードはありません。");
+    return;
+  }
+
+  // 2. ★共通エンジンでレポート生成
+  const htmlContent = generateTrendReportHtml(allArticles, targetItems, start, end);
+
+  if (returnHtmlOnly) return htmlContent || "<div>該当記事なし</div>";
+  
+  if (htmlContent && (config.notifyChannel === "email" || config.notifyChannel === "both")) {
+    // メール送信 (sendDigestEmailを少し汎用的に使うか、ここで直接呼ぶ)
+    const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+    const subjectPrefix = config.mailSubjectPrefix || "【週刊TrendNEWS】";
+    const subject = `${subjectPrefix} AI Analysis (${fmtDate(new Date())})`;
+    
+    GmailApp.sendEmail(getRecipients(), subject, htmlContent, {
+      name: config.mailSenderName,
+      htmlBody: htmlContent
+    });
+  }
+}
+
+/**
+ * SECTION: パーソナライズ配信 (AI分析レポート版)
+ * 役割: ユーザーごとのキーワードに基づいて記事を抽出し、
+ * 単なるリストではなく「LLMによる分析レポート」を生成して配信する。
+ * トリガー: 毎日 朝8時
+ */
+function sendPersonalizedReport() {
+  const ADMIN_EMAIL = PropertiesService.getScriptProperties().getProperty('ADMIN_EMAIL') || 'your_email@example.com'; 
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const usersSheet = sheet.getSheetByName(AppConfig.get().SheetNames.USERS);
+  const keywordsSheet = sheet.getSheetByName("Keywords");
+  
+  if (!usersSheet || !keywordsSheet) return;
+
+  // 1. 日付・マスター設定取得
+  const daysMap = ["日", "月", "火", "水", "木", "金", "土"];
+  const today = new Date();
+  const currentDayStr = daysMap[today.getDay()];
+  
+  const lastRowKw = keywordsSheet.getLastRow();
+  const masterData = lastRowKw >= 2 ? keywordsSheet.getRange(2, 1, lastRowKw - 1, 4).getValues() : [];
+  
+  // 今日のデフォルト配信対象
+  const todaysMasterItems = masterData.filter(row => {
+    const flag = String(row[1]).trim();
+    const day  = String(row[2]).trim();
+    return day === currentDayStr && (flag === '〇' || flag === 'TRUE');
+  }).map(row => ({ query: String(row[0]).trim(), label: String(row[3]).trim() || String(row[0]).trim() }));
+
+  const todaysQueries = todaysMasterItems.map(item => item.query).filter(String);
+  const todaysLabels  = todaysMasterItems.map(item => item.label);
+
+  // 2. ユーザー取得
+  const lastRowUsr = usersSheet.getLastRow();
+  const users = lastRowUsr >= 2 ? usersSheet.getRange(2, 1, lastRowUsr - 1, 4).getValues() : [];
+
+  // 3. ユーザーごとのループ
+  users.forEach(user => {
+    const name = user[0];
+    const email = user[1];
+    const userDay = String(user[2]).trim();
+    const userKeywordsRaw = String(user[3]).trim();
+
+    if (!email) return;
+
+    let targetQueries = [];
+    let displayLabels = []; // queryと対になるラベル
+    let isPersonalized = false;
+
+    // --- 分岐ロジック (日刊/週刊判定) ---
+    if (userDay === "") {
+      // ■ 日刊モード
+      if (userKeywordsRaw !== "") {
+        // [カスタム日刊] キーワード指定あり -> 毎日そのキーワードで分析
+        targetQueries = userKeywordsRaw.split(',').map(k => k.trim());
+        displayLabels = targetQueries; // カスタムはラベル=クエリ
+        isPersonalized = true;
+      } else {
+        // [デフォルト日刊] 指定なし -> 今日のマスタースケジュール
+        if (todaysQueries.length > 0) {
+          targetQueries = todaysQueries;
+          displayLabels = todaysLabels;
+        } else {
+          return; // 今日は対象なし
+        }
+      }
     } else {
-      // 自動実行時は設定シートからラベルを探す
-      const configItem = allConfigured.find(c => c.keyword === hit.keyword);
-      // D列があればそれを使う、なければキーワードそのまま
-      hit.label = (configItem && configItem.label) ? configItem.label : hit.keyword;
+      // ■ 週刊モード
+      if (userDay === currentDayStr) {
+        if (userKeywordsRaw !== "") {
+          targetQueries = userKeywordsRaw.split(',').map(k => k.trim());
+          displayLabels = targetQueries;
+          isPersonalized = true;
+        } else {
+          // デフォルト週刊（今回は実装省略）
+          return; 
+        }
+      } else {
+        return; // 曜日違い
+      }
+    }
+
+    // --- ここが修正点: 必要なデータを準備してから呼び出す ---
+    const DAYS_RANGE = 7; 
+    
+    // 1. 期間を定義して記事を取得 (これが抜けていました)
+    const { start, end } = getDateWindow(DAYS_RANGE);
+    const allArticles = getArticlesInDateWindow(start, end);
+
+    // 2. targetQueries と displayLabels を {query, label} のオブジェクト配列に変換 (これも抜けていました)
+    const targetItems = targetQueries.map((q, i) => ({ query: q, label: displayLabels[i] }));
+    
+    // 3. 共通エンジン呼び出し
+    const reportHtml = generateTrendReportHtml(allArticles, targetItems, start, end);
+
+    if (!reportHtml) {
+      Logger.log(`[Skip] ${name}様: 分析対象の記事なし`);
+      return;
+    }
+
+    // 件名
+    const labelSummary = displayLabels.slice(0, 3).join(', ') + (displayLabels.length > 3 ? '...' : '');
+    const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'MM/dd');
+    let subjectPrefix = isPersonalized ? "【YATA】My AI Report: " : "【YATA】Daily Trend: ";
+    const subject = `${subjectPrefix}${labelSummary} (${dateStr})`;
+    
+    try {
+      GmailApp.sendEmail(email, subject, reportHtml, {
+        name: AppConfig.get().Digest.mailSenderName,
+        htmlBody: reportHtml,
+        bcc: ADMIN_EMAIL
+      });
+      Logger.log(`[Sent] ${name}様へAIレポート送信完了`);
+    } catch (e) {
+      Logger.log(`[Error] ${name}様への送信失敗: ${e.message}`);
     }
   });
-  
-  Logger.log(`週刊ダイジェスト：キーワードに合致する記事が ${relevantArticles.length} 件見つかりました。`);
-  _logKeywordHitCounts(hitKeywordsWithCount);
-
-  // daysWindowを渡す
-  const result = _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly, DAYS_WINDOW); 
-  
-  if (returnHtmlOnly) return result;
 }
 
 /** processSummarization: AI見出し生成（E列）
@@ -305,77 +433,6 @@ function processSummarization() {
 
 /** SECTION 2: 週刊ダイジェストプロセッサー - キーワード関連記事フィルタリング、記事選抜、LLM分析 */
 
-/** _filterRelevantArticles: キーワード照合で関連記事をフィルタリング（AND/OR論理演算対応） */
-function _filterRelevantArticles(allItems, webUiKeyword = null) {
-  let activeKeywords = [];
-  
-  if (webUiKeyword && String(webUiKeyword).trim() !== "") {
-    // 1. Web UIからの手動実行時 -> 曜日は無視してそのキーワードで実行
-    activeKeywords = [String(webUiKeyword).trim()];
-    Logger.log(`フィルタリング(手動): キーワード「${activeKeywords[0]}」を使用します。`);
-  } else {
-    // 2. 自動実行時 -> 「本日の曜日」に一致するキーワードのみ抽出
-    const allConfigured = getWeightedKeywords();
-    
-    // 今日の曜日を取得 (例: "月", "火"...)
-    const dayMap = ["日", "月", "火", "水", "木", "金", "土"];
-    const todayDay = dayMap[new Date().getDay()];
-    
-    activeKeywords = allConfigured
-      .filter(kw => {
-        if (!kw.active) return false; // 無効なものは除外
-        
-        // 曜日指定チェック
-        const targetDay = kw.day;
-        // 空欄または「毎日」なら、どの曜日でも実行
-        if (!targetDay || targetDay === "毎日") return true;
-        
-        // 指定された文字が含まれていれば実行 (例: "月,木" なら月曜と木曜にヒット)
-        return targetDay.includes(todayDay);
-      })
-      .map(kw => kw.keyword);
-
-    if (activeKeywords.length === 0) {
-      Logger.log(`本日は配信設定されているキーワードがありません。（曜日: ${todayDay}）`);
-      // 記事ゼロ扱いで終了させるために空の結果を返す
-      return { relevantArticles: [], hitKeywordsWithCount: [], articleKeywordMap: new Map() };
-    }
-
-    Logger.log(`フィルタリング(自動): 本日(${todayDay}曜日)の対象キーワード ${activeKeywords.length} 件を使用します。`);
-  }
-
-  // --- 以下、既存の処理と同じ ---
-  const relevantArticles = [];
-  const keywordHitCounts = {};
-  const articleKeywordMap = new Map();
-  const parseKeywordCondition = (keywordCell) => {
-    const lower = keywordCell.toLowerCase();
-    if (lower.includes(' and ')) return { type: 'and', words: keywordCell.split(/ and /i).map(w => w.trim()) };
-    if (lower.includes(' or ')) return { type: 'or', words: keywordCell.split(/ or /i).map(w => w.trim()) };
-    return { type: 'single', words: [keywordCell.trim()] };
-  };
-  const keywordConditions = activeKeywords.map(k => ({ original: k, ...parseKeywordCondition(k) }));
-  
-  allItems.forEach(article => {
-    const text = `${article.title} ${article.abstractText} ${article.headline}`;
-    const hitKeywordsForArticle = new Set();
-    keywordConditions.forEach(cond => {
-      const isMatch = (cond.type === 'and' && cond.words.every(word => new RegExp(word.replace(/[.*+?^${}()|[\\]/g, '\\$&'), 'i').test(text))) ||
-                      (cond.type === 'or' && cond.words.some(word => new RegExp(word.replace(/[.*+?^${}()|[\\]/g, '\\$&'), 'i').test(text))) ||
-                      (cond.type === 'single' && new RegExp(cond.words[0].replace(/[.*+?^${}()|[\\]/g, '\\$&'), 'i').test(text));
-      if (isMatch) hitKeywordsForArticle.add(cond.original);
-    });
-    if (hitKeywordsForArticle.size > 0) {
-      relevantArticles.push(article);
-      articleKeywordMap.set(article.url, Array.from(hitKeywordsForArticle));
-      hitKeywordsForArticle.forEach(keyword => {
-        keywordHitCounts[keyword] = (keywordHitCounts[keyword] || 0) + 1;
-      });
-    }
-  });
-  const hitKeywordsWithCount = Object.entries(keywordHitCounts).map(([keyword, count]) => ({ keyword, count })).sort((a, b) => b.count - a.count);
-  return { relevantArticles, hitKeywordsWithCount, articleKeywordMap };
-}
 
 /** _logKeywordHitCounts: キーワード別ヒット件数をログ出力 */
 function _logKeywordHitCounts(hitKeywordsWithCount) {
@@ -385,86 +442,6 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
   });
   Logger.log(hitLog.trim());
 }
-
-/** _generateAndSendDigest: 週刊ダイジェスト生成・送信 - 記事選抜 → キーワード別分類 → LLM分析 → メール送信 */
-function _generateAndSendDigest(relevantArticles, hitKeywordsWithCount, articleKeywordMap, config, start, end, returnHtmlOnly = false, daysWindow = 7) {
-  const { selectedTopN } = rankAndSelectArticles(relevantArticles, config, articleKeywordMap, hitKeywordsWithCount);
-  Logger.log(`週間ダイジェスト：選抜された記事は ${selectedTopN.length} 件です。`);
-
-  const articlesGroupedByKeyword = {};
-  hitKeywordsWithCount.forEach(kwItem => {
-    articlesGroupedByKeyword[kwItem.keyword] = selectedTopN.filter(article => {
-      const keywords = articleKeywordMap.get(article.url);
-      return keywords && keywords.includes(kwItem.keyword);
-    });
-  });
-
-  const allKeywords = hitKeywordsWithCount.map(item => item.keyword);
-  let finalReportMdBody = `## 週刊トレンドレポート\n\n`;
-
-  // タイムアウト監視用 (GASの6分制限対策)
-  const procStartTime = new Date().getTime();
-  const TIME_LIMIT_MS = 280 * 1000; // 4分40秒で打ち切り
-
-  // --- ▼▼▼ 新しいロジック: キーワードごとに処理を完結させる ▼▼▼ ---
-  for (const keyword of allKeywords) {
-    // タイムアウトチェック
-    if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
-      Logger.log("時間制限に到達したため、残りのキーワード処理を中断してメール送信へ移行します。");
-      finalReportMdBody += `\n\n⚠️ **システム通知:**\n実行時間制限のため、一部のキーワード分析がスキップされました。\n\n---\n\n`;
-      break;
-    }
-
-    const articlesForKeyword = articlesGroupedByKeyword[keyword] || [];
-    if (articlesForKeyword.length === 0) continue;
-
-    // 1. 履歴取得
-    const previousSummary = _getLatestHistory(keyword);
-
-    // 2. 詳細レポート生成 (LLM①)
-    const { reportBody: singleReportBody } = generateWeeklyReportWithLLM(
-      articlesForKeyword,
-      [{ keyword: keyword, count: articlesForKeyword.length }],
-      { [keyword]: articlesForKeyword },
-      previousSummary
-    );
-
-    if (!singleReportBody || singleReportBody.trim() === "") continue;
-
-    // 3. 要点サマリー生成 (LLM②)
-    const tldrSummary = _summarizeReport(singleReportBody);
-
-    // 4. 履歴保存
-    if (tldrSummary) {
-      _writeHistory(keyword, tldrSummary);
-    }
-
-    // 5. メール本文パートの構築
-    finalReportMdBody += `### キーワード「${keyword}」の今週の動向\n\n`;
-
-    if (tldrSummary) {
-      finalReportMdBody += `**今週のハイライト:**\n${tldrSummary}\n\n---\n\n`;
-    }
-
-    finalReportMdBody += `**詳細レポート:**\n${singleReportBody}\n\n---\n\n`;
-  }
-  // --- ▲▲▲ ここまで ▲▲▲ ---
-
-  // 最後の区切り線を削除
-  finalReportMdBody = finalReportMdBody.replace(/\n\n---\n\n$/, '');
-  
-  const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
-  const htmlHeader = headerLine.replace(/\n/g, '<br>');
-  const htmlContent = markdownToHtml(finalReportMdBody);
-  const fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
-  
-  if (returnHtmlOnly) return fullHtmlBody;
-  
-  if (config.notifyChannel === "email" || config.notifyChannel === "both") {
-    sendDigestEmail(headerLine, finalReportMdBody, hitKeywordsWithCount, daysWindow); 
-  }
-}
-
 
 /** _summarizeReport: 詳細レポートから要点サマリー（tl;dr）を生成 */
 function _summarizeReport(reportText) {
@@ -621,18 +598,6 @@ function formatArticlesForLlm(articles) {
   }).join('\n\n');
 }
 
-/** callDailyDigestLlm: 日刊ダイジェスト用LLM呼び出し（MINIモデル、フォールバック付き） */
-function callDailyDigestLlm(systemPrompt, userPrompt) {
-  const llmConfig = AppConfig.get().Llm;
-  const openAiModelDaily = llmConfig.ModelMini;
-  const azureDailyUrl = llmConfig.AzureUrlMini;
-
-  const result = callLlmWithFallback(systemPrompt, userPrompt, openAiModelDaily, azureDailyUrl);
-
-  // 返却は文字列（エラー文言含む）
-  return result;
-}
-
 /**
  * getDailyDigestPrompts
  * 【責務】promptシートから日刊ダイジェスト用プロンプト取得
@@ -762,11 +727,13 @@ function calculateLevenshteinSimilarity(s1, s2) {
   return (longerLength - costs[shorter.length]) / longerLength;
 }
 
-/** generateWeeklyReportWithLLM: LLMラッパー経由でトレンドセクション生成（_llmMakeTrendSections） */
-function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword, previousSummary = null) {
+/** * generateWeeklyReportWithLLM (オプション対応) 
+ */
+function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword, previousSummary = null, options = {}) {
   const LINKS_PER_TREND = 3;
   const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
-  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords, previousSummary);
+  // optionsを渡す
+  const trends = _llmMakeTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords, previousSummary, options);
   return { reportBody: trends };
 }
 
@@ -983,18 +950,28 @@ const LlmService = (function() {
      * - 抜粋(Abstract)の代わりにAI見出し(Headline)を使用
      * - 先週の要約(previousSummary)をインプットし、差分分析を指示
      */
-    generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null) {
+/**
+     * generateTrendSections (改良版: オプション対応)
+     * 【改良点】promptKeysオプションがあれば、指定されたプロンプトキーを使用する
+     */
+    generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null, options = {}) {
       const model = llmConfig.ModelMini;
       const azureWeeklyUrl = llmConfig.AzureUrlMini;
-      const SYSTEM = getPromptConfig("TREND_SYSTEM");
+      
+      // ★オプションで指定があればそれを使う、なければデフォルト
+      const systemKey = (options.promptKeys && options.promptKeys.system) || "TREND_SYSTEM";
+      
+      let userKey = (options.promptKeys && options.promptKeys.user);
+      if (!userKey) {
+        // 指定がない場合、履歴の有無でデフォルトを切り替え
+        userKey = previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE";
+      }
 
-      // --- プロンプトの動的切り替え ---
-      const USER_TEMPLATE_KEY = previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE";
-      const USER_TEMPLATE = getPromptConfig(USER_TEMPLATE_KEY);
-      // --------------------------------
+      const SYSTEM = getPromptConfig(systemKey);
+      const USER_TEMPLATE = getPromptConfig(userKey);
 
       if (!SYSTEM || !USER_TEMPLATE) {
-        return "プロンプト設定エラー: " + (!SYSTEM ? "TREND_SYSTEM " : "") + (!USER_TEMPLATE ? USER_TEMPLATE_KEY : "");
+        return "プロンプト設定エラー: " + (!SYSTEM ? systemKey : "") + " " + (!USER_TEMPLATE ? userKey : "");
       }
 
       const allTrends = [];
@@ -1009,11 +986,11 @@ const LlmService = (function() {
         }).join("\n\n");
 
         let userPrompt = USER_TEMPLATE;
-        if (previousSummary) {
+        // 履歴プレースホルダーがあれば置換
+        if (previousSummary && userPrompt.includes('{previous_summary}')) {
           userPrompt = userPrompt.replace('{previous_summary}', previousSummary);
         }
 
-        // 記事リストの挿入 (後方互換性のため、プレースホルダーがなければ末尾に追加)
         if (userPrompt.includes('{article_list}')) {
           userPrompt = userPrompt.replace('{article_list}', articleListForLlm);
         } else {
@@ -1021,9 +998,7 @@ const LlmService = (function() {
         }
 
         const txt = _callLlmWithFallback(SYSTEM, userPrompt, model, azureWeeklyUrl);
-        
         if (txt && txt.trim()) {
-          // キーワードヘッダーはプロンプト内で生成される前提なので、ここでは追加しない
           allTrends.push(txt.trim());
         }
       }
@@ -1059,6 +1034,105 @@ const LlmService = (function() {
 })();
 
 /**
+ * 【共通エンジン】キーワード分析・履歴保存プロセッサー (オプション対応)
+ * options: { enableHistory: boolean, promptKeys: { system: string, user: string } }
+ */
+function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
+  // 1. 履歴取得 (Web検索など ad-hoc な場合は options.enableHistory = false でスキップ可能)
+  let previousSummary = null;
+  // デフォルトは履歴有効(true)。明示的に false が指定された場合のみ無効化
+  if (options.enableHistory !== false) {
+    previousSummary = _getLatestHistory(keyword);
+  }
+
+  // 2. 詳細レポート生成
+  const { reportBody } = generateWeeklyReportWithLLM(
+    articles,
+    [{ keyword: keyword, count: articles.length }],
+    { [keyword]: articles },
+    previousSummary,
+    options // optionsを渡す
+  );
+
+  if (!reportBody || reportBody.trim() === "") return null;
+
+  // 3. 要点サマリー生成
+  const tldrSummary = _summarizeReport(reportBody);
+
+  // 4. 履歴保存 (履歴有効の場合のみ保存)
+  if (options.enableHistory !== false && tldrSummary) {
+    _writeHistory(keyword, tldrSummary);
+  }
+
+  return { reportBody, summary: tldrSummary };
+}
+
+/**
+ * 【共通エンジン】トレンドレポートHTML生成 (オプション対応)
+ */
+function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, options = {}) {
+  if (!allArticles || allArticles.length === 0) return null;
+  
+  let hasContent = false;
+  let finalHtmlBody = `<div style="font-family: sans-serif;">
+    <h3 style="border-bottom:2px solid #3498db; padding-bottom:5px; color:#2c3e50;">🤖 AI Trend Analysis</h3>
+    <p style="color:#666; font-size:12px;">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p><br>`;
+
+  const procStartTime = new Date().getTime();
+  const TIME_LIMIT_MS = 280 * 1000;
+
+  for (const item of targetItems) {
+    if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
+      finalHtmlBody += `<p style="color:red; font-weight:bold;">⚠️ 時間制限のため、一部のトピック解析を中断しました。</p>`;
+      break;
+    }
+
+    const query = item.query;
+    const label = item.label || query;
+
+    const matched = allArticles.filter(art => {
+      const content = (art.title + " " + art.headline + " " + art.abstractText);
+      return isTextMatchQuery(content, query);
+    });
+
+    if (matched.length === 0) continue;
+
+    const result = processKeywordAnalysisWithHistory(query, matched, options);
+    
+    if (result && result.reportBody) {
+      hasContent = true;
+      let contentBody = result.reportBody;
+      
+      // キーワード置換
+      if (query !== label) {
+        contentBody = contentBody.split(query).join(label);
+      }
+
+      // ★修正: HTMLフラグがある場合は、Markdown変換(エスケープ)をスキップ
+      let htmlSection;
+      if (options.isHtmlOutput) {
+        // AIが念の為 ```html ... ``` で囲んでくる場合があるので除去
+        htmlSection = contentBody.replace(/```html/gi, "").replace(/```/g, "");
+      } else {
+        // 通常メール用（Markdown -> HTML変換）
+        htmlSection = markdownToHtml(contentBody);
+      }
+      
+      finalHtmlBody += `
+        <div style="margin-bottom:30px;">
+          <h4 style="background-color:#f0f8ff; padding:8px; border-left:5px solid #3498db; margin:0;">トピック: ${label} (${matched.length}件)</h4>
+          ${htmlSection}
+        </div><hr style="border:0; border-top:1px dashed #ccc; margin:20px 0;">`;
+    }
+  }
+
+  if (!hasContent) return null;
+
+  finalHtmlBody += `<p style="font-size:11px; color:#999;">※YATA AI Auto-Generated Report</p></div>`;
+  return finalHtmlBody;
+}
+
+/**
  * summarizeWithLLM (ラッパー関数)
  * 【責務】記事テキストをLLMで要約（見出し生成）
  */
@@ -1067,11 +1141,10 @@ function summarizeWithLLM(articleText) {
 }
 
 /**
- * _llmMakeTrendSections (ラッパー関数)
- * 【責務】キーワード毎にLLMでトレンドセクション生成
+ * _llmMakeTrendSections (ラッパー関数: オプション対応)
  */
-function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null) {
-  return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary);
+function _llmMakeTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null, options = {}) {
+  return LlmService.generateTrendSections(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary, options);
 }
 
 /**
@@ -1104,6 +1177,30 @@ function getWeightedKeywords(sheetName = "Keywords") {
     day: String(daySpec).trim(),
     label: String(label).trim()
   })).filter(obj => obj.keyword);
+}
+
+/**
+ * 【共通部品】テキストが検索クエリにマッチするか判定する
+ * AND / OR 検索に対応
+ * @param {string} text - 検索対象のテキスト（タイトル+要約など）
+ * @param {string} query - 検索クエリ（例: "A OR B", "A B"）
+ * @returns {boolean}
+ */
+function isTextMatchQuery(text, query) {
+  if (!query || !text) return false;
+  
+  const content = text.toLowerCase();
+  const qLower = query.toLowerCase().trim();
+  
+  if (qLower.includes(' or ')) {
+    // OR検索
+    const words = qLower.split(' or ').map(s => s.trim()).filter(s => s !== "");
+    return words.some(w => content.includes(w));
+  } else {
+    // AND検索 (" and " またはスペース区切り)
+    const words = qLower.split(/ and | /).map(s => s.trim()).filter(s => s !== "");
+    return words.every(w => content.includes(w));
+  }
 }
 
 /**
@@ -1387,24 +1484,24 @@ function collectRssFeeds() {
       Logger.log(`${siteName}: ${feedNewItems.length} 件追加`);
     }
 
-    // --- スマート・ウエイト (Smart Wait) ---
+    // --- スマート・ウエイト (Smart Wait) [時短調整版] ---
     // 相手サーバーの厳しさに応じて待機時間を調整
-    let waitTime = 2000; // 基本: 2秒 (ニュースサイト等)
+    let waitTime = 1000; // 基本: 1秒 (2秒→1秒に短縮)
 
-    // 1. 超・警戒 (アカデミックサーバー) -> 5秒
-    // bioRxiv, medRxiv は連続アクセスに非常に厳しい
+    // 1. 超・警戒 (アカデミックサーバー) -> 3秒
+    // 5秒は長すぎました。通信自体が遅いので3秒で十分です。
     if (rssUrl.includes("medrxiv") || rssUrl.includes("biorxiv")) {
-      waitTime = 5000; 
+      waitTime = 3000; 
     } 
-    // 2. 警戒 (大手ジャーナル・PubMed) -> 3秒
-    // Oxford, Nature, Cell, Science, NCBI はWAFがしっかりしている
+    // 2. 警戒 (大手ジャーナル・PubMed) -> 1.5秒
+    // ここも少し攻めます。
     else if (rssUrl.includes("ncbi") || rssUrl.includes("academic.oup") || rssUrl.includes("nature.com") || rssUrl.includes("cell.com") || rssUrl.includes("science.org")) {
-      waitTime = 3000;
+      waitTime = 1500;
     } 
-    // 3. 攻め (テックジャイアント) -> 0.5秒
-    // Google, NVIDIA, HuggingFace はインフラが強いので遠慮なく
+    // 3. 攻め (テックジャイアント) -> 0.1秒
+    // Googleなどは人間業じゃない速度でも受け付けてくれるので、ほぼ待ちなしにします。
     else if (rssUrl.includes("google") || rssUrl.includes("nvidia") || rssUrl.includes("huggingface")) {
-      waitTime = 500;  
+      waitTime = 100;  
     }
 
     Logger.log(`待機: ${waitTime}ms (URL: ${rssUrl})`);
@@ -1650,7 +1747,6 @@ function sortCollectByDateDesc() {
   }
 }
 
-
 /** SECTION 7: ウェブUI - ウェブアプリケーション UI エントリーポイント（doGet, executeWeeklyDigest, searchAndAnalyzeKeyword） */
 
 /** doGet: ウェブUI エントリーポイント - Index.htmlをレンダリング */
@@ -1663,153 +1759,29 @@ function executeWeeklyDigest(keyword) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
     Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
-    const htmlContent = weeklyDigestJob(trimmedKeyword, true);
-    return htmlContent || "<div>該当記事がありませんでした。</div>";
+
+    const WEB_DAYS_WINDOW = 30;
+    const { start, end } = getDateWindow(WEB_DAYS_WINDOW);
+    
+    const allArticles = getArticlesInDateWindow(start, end);
+    const targetItems = [{ query: trimmedKeyword, label: trimmedKeyword }];
+    
+    const webOptions = {
+      enableHistory: false,
+      promptKeys: {
+        system: "WEB_ANALYSIS_SYSTEM", 
+        user: "WEB_ANALYSIS_USER"
+      },
+      // ★追加: AIがHTMLを直接返してくることを知らせるフラグ
+      isHtmlOutput: true
+    };
+
+    const htmlContent = generateTrendReportHtml(allArticles, targetItems, start, end, webOptions);
+    
+    return htmlContent || "<div>該当記事がありませんでした。(過去30日間)</div>";
   } catch (e) {
     Logger.log(`エラーが発生しました: ${e.toString()}`);
     return `<h1>処理中にエラーが発生しました</h1><p>${e.toString()}</p>`;
-  }
-}
-
-
-/** searchAndAnalyzeKeyword: ウェブUI キーワード検索・LLM分析（AND/OR論理対応） */
-function searchAndAnalyzeKeyword(keyword) {
-  if (!keyword) return "キーワードが入力されていません。";
-
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return "データが存在しません。";
-
-  // --- 1. キーワード解析ロジック (AND/OR対応) ---
-  const lowerKey = keyword.toLowerCase().trim();
-  let searchTerms = [];
-  let searchMode = 'AND'; // デフォルト
-
-  if (lowerKey.includes(' or ')) {
-    // " or " が含まれる場合は OR検索
-    searchMode = 'OR';
-    searchTerms = keyword.split(/ or /i).map(t => t.trim()).filter(t => t.length > 0);
-  } else if (lowerKey.includes(' and ')) {
-    // " and " が含まれる場合は AND検索 (明示的)
-    searchMode = 'AND';
-    searchTerms = keyword.split(/ and /i).map(t => t.trim()).filter(t => t.length > 0);
-  } else {
-    // それ以外はスペース区切りの AND検索
-    searchMode = 'AND';
-    searchTerms = keyword.split(/\s+/).map(t => t.trim()).filter(t => t.length > 0);
-  }
-
-  if (searchTerms.length === 0) return "有効な検索キーワードが入力されていません。";
-
-  // データの取得
-  const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
-  const values = range.getValues();
-
-  // --- 2. フィルタリング実行 ---
-  const relevantArticles = values.filter(row => {
-    const title = String(row[1] || "").toLowerCase();
-    // E列(要約)があれば使う、なければタイトルを使う
-    const summaryVal = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
-    const summary = String((summaryVal && summaryVal !== "") ? summaryVal : row[1]).toLowerCase();
-
-    // 検索語句チェック
-    if (searchMode === 'OR') {
-      // OR: どれか1つでもヒットすればOK
-      return searchTerms.some(term => {
-        const t = term.toLowerCase();
-        return title.includes(t) || summary.includes(t);
-      });
-    } else {
-      // AND: すべてヒットする必要あり
-      return searchTerms.every(term => {
-        const t = term.toLowerCase();
-        return title.includes(t) || summary.includes(t);
-      });
-    }
-  });
-
-  if (relevantArticles.length === 0) {
-    return `<p>キーワード「<strong>${keyword}</strong>」に関連する記事は見つかりませんでした。</p>`;
-  }
-
-  // 3. AIに渡すテキストを作成
-  const WEB_ANALYSIS_LIMIT = 60; // 50〜60件あれば、活発な分野でも1ヶ月分程度カバーできます
-  const targetArticles = relevantArticles.slice(0, WEB_ANALYSIS_LIMIT);
-  
-  let contextText = `【分析対象のキーワード】: ${keyword}\n\n【記事リスト】:\n`;
-  targetArticles.forEach((row, i) => {
-    const date = row[0]; 
-    const url = row[AppConfig.get().CollectSheet.Columns.URL - 1]; // C列
-    // E列(要約)があれば使う、なければタイトル
-    const summaryVal = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
-    const displayTitle = (summaryVal && summaryVal !== "") ? summaryVal : row[1];
-
-    contextText += `[${i+1}] 日付:${fmtDate(new Date(date))} / タイトル:${displayTitle} / URL:${url}\n---\n`;
-  });
-
-// --- 4. プロンプトの取得 (★ここを修正) ---
-  
-  // まずシートから取得を試みる
-  let systemPrompt = getPromptConfig("WEB_ANALYSIS_SYSTEM");
-  
-  // もしシートに設定がなければ、コード内のデフォルト値(フォールバック)を使う
-  if (!systemPrompt) {
-    Logger.log("警告: promptシートに 'WEB_ANALYSIS_SYSTEM' が見つかりません。デフォルトのプロンプトを使用します。");
-    systemPrompt = `
-      あなたは、臨床検査・バイオ技術分野の専門アナリストです。
-      提供されたキーワードと、そのキーワードに関連する記事群を基に、業界の重要な動向を抽出し、分類し、**客観的な事実**と**価値あるインサイト**をもって読者に分かりやすく解説する役割を担います。
-
-      【指示】
-      以下のキーワードに関連する記事リストを分析し、主要な技術・市場トレンドを**記事群のテーマに応じて最低1つ、最大2つ**に分類してください。
-      記事が少ない場合（3記事以下など）は、1つにまとめてください。
-
-      出力は**HTML形式**のみで行ってください（Markdownは使用しないでください）。
-      以下のフォーマットに従ってください：
-
-      <div class="trend-section">
-        <h3>【トレンド名】（15〜25文字のキャッチーな名称）</h3>
-        <p>
-          （解説文: 150〜200文字程度。なぜ今重要か、具体的な進展、社会への価値、今後の見通しを統合して記述。キーワードを自然に含めること。）
-        </p>
-        <ul>
-          <li><a href="記事URL" target="_blank">記事タイトル1</a></li>
-          <li><a href="記事URL" target="_blank">記事タイトル2</a></li>
-        </ul>
-      </div>
-
-      ※ これをトレンドの数だけ繰り返してください。
-      ※ 前置きや挨拶は不要です。HTMLタグから始めてください。
-      `;
-  }
-  
-  try {
-    const llmConfig = AppConfig.get().Llm;
-    const model = llmConfig.ModelMini;
-    const azureUrl = llmConfig.AzureUrlMini;
-    const options = { temperature: 0.4 };
-
-    let analysisResult = LlmService.analyzeKeywordSearch(systemPrompt, contextText, options);
-
-    analysisResult = analysisResult.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
-
-    if (analysisResult.includes("いずれのLLMでも")) {
-        throw new Error("LLMによる分析に失敗しました。詳細はログを確認してください。");
-    }
-    
-    // XSS対策: 危険なタグを無効化
-    analysisResult = sanitizeHtmlForWeb(analysisResult);
-
-    return `
-      <div style="margin-bottom: 15px;">
-        <strong>🔍 分析対象:</strong> ${relevantArticles.length}件中、直近${targetArticles.length}件<br>
-        <strong>🔑 キーワード:</strong> ${keyword} (${searchMode}検索)
-      </div>
-      <hr>
-      ${analysisResult}
-    `;
-  } catch (e) {
-    Logger.log(`searchAndAnalyzeKeywordでエラー: ${e.stack}`);
-    return `分析中にエラーが発生しました: ${e.message}`;
   }
 }
 
@@ -2157,4 +2129,9 @@ function debugRssFeed() {
   } catch (e) {
     Logger.log(`【エラー】: 解析中にエラーが発生しました。\n${e.toString()}`);
   }
+}
+
+// Index.html からの呼び出し互換性のためのエイリアス
+function searchAndAnalyzeKeyword(keyword) {
+  return executeWeeklyDigest(keyword);
 }
