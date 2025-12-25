@@ -60,6 +60,11 @@ const AppConfig = (function() {
         AzureKey: props.getProperty("OPENAI_API_KEY") || null,
         OpenAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
         GeminiKey: props.getProperty("GEMINI_API_KEY") || null,
+        // ★【追加】Embedding設定
+        Embedding: {
+          AzureEndpoint: props.getProperty("AZURE_EMBEDDING_ENDPOINT"), // Azure用エンドポイントURL
+          OpenAiModel: props.getProperty("OPENAI_EMBEDDING_MODEL") || "text-embedding-3-small" // OpenAI用モデル名
+        }
       },
       Digest: {
         days: parseInt(props.getProperty("DIGEST_DAYS") || "7", 10),
@@ -355,8 +360,9 @@ function sendPersonalizedReport() {
   });
 }
 
-/** processSummarization: AI見出し生成（E列）
+/** processSummarization: AI見出し生成（E列）＆ ベクトル生成（G列）
  * 【責務】シート内の「要約（見出し）」が空の記事を特定し、AI(LlmService)を使用して自動生成する。
+ * さらに、生成された要約とタイトルを元にベクトル（Embedding）を生成し、G列に保存する。
  * 短い記事：タイトルまたはスプレッドシート数式(=GOOGLETRANSLATE)を使用。
  * 長い記事：LLM(ModelNano)を呼び出して要約を生成。
  * 【実行制限】GASの実行時間オーバーを避けるため、5分のタイムアウト制限を設けている。
@@ -374,20 +380,31 @@ function processSummarization() {
   const startTime = new Date().getTime();
   const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分制限
 
-  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, trendDataSheet.getLastColumn());
+  // ベクトル保存用の列インデックス (G列 = 6)
+  const VECTOR_COL_INDEX = 6; 
+
+  // データ範囲を取得（列数が足りない場合も想定して最大列まで取得）
+  // 読み込み時にG列が含まれるように、getLastColumn() と VECTOR_COL_INDEX + 1 の大きい方をとる
+  const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
+  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
   const values = dataRange.getValues();
+  
   const articlesToSummarize = [];
+  const summaryColIndex = AppConfig.get().CollectSheet.Columns.SUMMARY - 1; // E列 (4)
 
   // 1. 要約が必要な記事を特定
   values.forEach((row, index) => {
-    const currentHeadline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1];
+    const currentHeadline = row[summaryColIndex];
+    
+    // 見出しが空、あるいは未設定の場合
     if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; 
-      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1];
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // B列
+      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1]; // D列
       
       const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
       
       if (isShort) {
+        // 短い記事は翻訳やタイトル転記で済ませる（ベクトル化はスキップまたは後で実施も可だが、ここでは要約フローに合わせる）
         let newHeadline;
         const sheetRowNumber = index + 2;
         if (title && String(title).trim() !== "") {
@@ -397,20 +414,23 @@ function processSummarization() {
         } else {
           newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
         }
-        values[index][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
+        values[index][summaryColIndex] = newHeadline;
       } else {
+        // AI要約対象としてリストに追加
         articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
       }
     }
   });
 
   let apiCallCount = 0;
+  let vectorCount = 0;
 
-  // 2. AI要約の実行
+  // 2. AI要約 & ベクトル生成の実行
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
     
     for (const article of articlesToSummarize) {
+      // タイムアウトチェック
       if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
         Logger.log(`タイムアウト回避のため、処理を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。`);
         break; 
@@ -421,7 +441,6 @@ function processSummarization() {
       apiCallCount++;
 
       let newHeadline = null;
-      
       const isSystemError = String(jsonString).includes("API Error") || String(jsonString).includes("いずれのLLMでも");
 
       if (jsonString && !isSystemError) {
@@ -439,8 +458,32 @@ function processSummarization() {
         Logger.log(`見出し生成システムエラー (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
       }
 
+      // 要約が生成できた場合、シートを更新し、さらにベクトルを生成する
       if (newHeadline && String(newHeadline).trim() !== "" && !String(newHeadline).includes("API Error")) {
-        values[article.originalRowIndex][AppConfig.get().CollectSheet.Columns.SUMMARY - 1] = newHeadline;
+        // 要約を配列にセット
+        values[article.originalRowIndex][summaryColIndex] = newHeadline;
+
+        // ★★★ 追加機能: ベクトル生成プロセス ★★★
+        try {
+          const textToEmbed = `Title: ${article.title}\nSummary: ${newHeadline}`;
+          
+          // LlmServiceに追加した generateVector を呼び出す
+          const vector = LlmService.generateVector(textToEmbed);
+          
+          if (vector) {
+            // 行データ配列が短い場合は拡張する
+            while (values[article.originalRowIndex].length <= VECTOR_COL_INDEX) {
+              values[article.originalRowIndex].push("");
+            }
+            // ベクトルをカンマ区切り文字列として保存
+            values[article.originalRowIndex][VECTOR_COL_INDEX] = vector.join(',');
+            vectorCount++;
+          }
+        } catch (e) {
+          Logger.log(`ベクトル生成エラー (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
+        }
+        // ★★★★★★★★★★★★★★★★★★★★★★★★★
+
       } else {
         Logger.log(`スキップしました (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
       }
@@ -449,9 +492,12 @@ function processSummarization() {
     }
   }
 
+  // 3. シートへの一括書き込み
   if (lastRow > 1) {
-    dataRange.setValues(values);
-    Logger.log(`LLMコール数: ${apiCallCount} 回。E列を更新しました。`);
+    // データ範囲を拡張した可能性があるため、書き込み範囲を再定義
+    const outputRange = trendDataSheet.getRange(2, 1, lastRow - 1, values[0].length);
+    outputRange.setValues(values);
+    Logger.log(`処理完了: 要約生成 ${apiCallCount} 件 / ベクトル生成 ${vectorCount} 件。シートを更新しました。`);
   } else {
     Logger.log("見出し生成が必要な記事は見つかりませんでした。");
   }
@@ -865,6 +911,58 @@ const LlmService = (function() {
     }
   }
   
+  // ★【追加】Azure Embedding API 呼び出し
+  function _callAzureEmbedding(text, endpoint, apiKey) {
+    if (!endpoint || !apiKey) return null;
+    Logger.log("Azure Embedding APIを試行中...");
+    const payload = { input: text };
+    const fetchOptions = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "api-key": apiKey },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    try {
+      const res = UrlFetchApp.fetch(endpoint, fetchOptions);
+      const json = JSON.parse(res.getContentText());
+      if (json.data && json.data.length > 0 && json.data[0].embedding) {
+        return json.data[0].embedding;
+      }
+      _logError("_callAzureEmbedding", new Error(res.getContentText()), "ベクトル生成失敗");
+      return null;
+    } catch (e) {
+      _logError("_callAzureEmbedding", e, "Azure Embedding例外");
+      return null;
+    }
+  }
+
+  // ★【追加】OpenAI Embedding API 呼び出し
+  function _callOpenAiEmbedding(text, model, apiKey) {
+    if (!apiKey) return null;
+    Logger.log("OpenAI Embedding APIを試行中...");
+    const payload = { model: model, input: text };
+    const fetchOptions = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "Authorization": `Bearer ${apiKey}` },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    try {
+      const res = UrlFetchApp.fetch("https://api.openai.com/v1/embeddings", fetchOptions);
+      const json = JSON.parse(res.getContentText());
+      if (json.data && json.data.length > 0 && json.data[0].embedding) {
+        return json.data[0].embedding;
+      }
+      _logError("_callOpenAiEmbedding", new Error(res.getContentText()), "ベクトル生成失敗");
+      return null;
+    } catch (e) {
+      _logError("_callOpenAiEmbedding", e, "OpenAI Embedding例外");
+      return null;
+    }
+  }
+
   function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
     Logger.log("Gemini APIを試行中...");
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
@@ -1011,6 +1109,39 @@ const LlmService = (function() {
         const model = llmConfig.ModelMini;
         const azureUrl = llmConfig.AzureUrlMini;
         return _callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
+    },
+    // ★【追加】パブリックメソッド: generateVector
+    generateVector: function(text) {
+      // 既存の Context 設定 (COMPANY or PERSONAL) に従って優先順位を決定
+      const context = llmConfig.Context;
+      const embConfig = llmConfig.Embedding;
+      
+      let vector = null;
+
+      if (context === 'PERSONAL') {
+        // PERSONAL優先: OpenAI -> Azure
+        if (llmConfig.OpenAiKey) {
+          vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
+          if (vector) return vector;
+        }
+        if (embConfig.AzureEndpoint && llmConfig.AzureKey) {
+          vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
+          if (vector) return vector;
+        }
+      } else {
+        // COMPANY優先 (デフォルト): Azure -> OpenAI
+        if (embConfig.AzureEndpoint && llmConfig.AzureKey) {
+          vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
+          if (vector) return vector;
+        }
+        if (llmConfig.OpenAiKey) {
+          vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
+          if (vector) return vector;
+        }
+      }
+      
+      Logger.log("エラー: いずれのサービスでもベクトルを生成できませんでした。");
+      return null;
     }
   };
 })();
@@ -1686,6 +1817,8 @@ function sortCollectByDateDesc() {
   }
 }
 
+
+
 /** SECTION 7: ウェブUI - ウェブアプリケーション UI エントリーポイント（doGet, executeWeeklyDigest, searchAndAnalyzeKeyword） */
 
 function doGet() {
@@ -2011,4 +2144,147 @@ function debugRssFeed() {
  */
 function searchAndAnalyzeKeyword(keyword, options) {
   return executeWeeklyDigest(keyword, options);
+}
+
+/**
+ * コサイン類似度計算
+ * @param {number[]} vecA - ベクトルA
+ * @param {number[]} vecB - ベクトルB
+ * @returns {number} 類似度 (-1.0 〜 1.0)
+ */
+function calculateCosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return -1;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  return (normA === 0 || normB === 0) ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * ベクトル文字列をパースする
+ * @param {string|number[]} val - シートから取得した値
+ * @returns {number[]} 数値配列
+ */
+function parseVector(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim() !== "") {
+    return val.split(',').map(Number);
+  }
+  return null;
+}
+
+/**
+ * 過去記事のベクトル生成（バックフィル用）
+ * 実行時間制限(5分)を考慮し、未処理の記事を少しずつ処理します。
+ */
+function backfillVectors() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+  const lastRow = sheet.getLastRow();
+  const VECTOR_COL_INDEX = 6; // G列 (0-indexed)
+
+  if (lastRow < 2) return;
+
+  // 全データを取得
+  const dataRange = sheet.getRange(2, 1, lastRow - 1, Math.max(7, sheet.getLastColumn()));
+  const values = dataRange.getValues();
+  
+  const startTime = new Date().getTime();
+  const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分
+  let processedCount = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    // タイムアウトチェック
+    if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
+      Logger.log(`時間制限のため中断します。残り記事があります。(処理数: ${processedCount})`);
+      break;
+    }
+
+    const row = values[i];
+    const headline = row[4]; // E列
+    const currentVector = row[VECTOR_COL_INDEX]; // G列
+
+    // 見出しがあり、かつベクトルが空の場合に処理
+    if (headline && String(headline).trim() !== "" && (!currentVector || String(currentVector).trim() === "")) {
+      const title = row[1]; // B列
+      const textToEmbed = `Title: ${title}\nSummary: ${headline}`;
+      
+      const vector = LlmService.generateVector(textToEmbed);
+      if (vector) {
+        values[i][VECTOR_COL_INDEX] = vector.join(',');
+        processedCount++;
+        Utilities.sleep(500); // レート制限考慮
+      }
+    }
+  }
+
+  // 結果を書き戻し
+  if (processedCount > 0) {
+    dataRange.setValues(values);
+    Logger.log(`バックフィル完了: ${processedCount} 件の記事をベクトル化しました。`);
+  } else {
+    Logger.log("ベクトル化が必要な記事はありませんでした。");
+  }
+}
+
+/**
+ * セマンティック検索を実行する
+ * @param {string} queryKeyword 検索クエリ
+ * @param {Date} startDate 開始日
+ * @param {Date} endDate 終了日
+ * @param {number} topN 上位何件取得するか
+ * @returns {Array} 類似度順にソートされた記事リスト
+ */
+function performSemanticSearch(queryKeyword, startDate, endDate, topN = 20) {
+  // 1. クエリをベクトル化
+  const queryVector = LlmService.generateVector(queryKeyword);
+  if (!queryVector) {
+    Logger.log("クエリのベクトル化に失敗しました。");
+    return [];
+  }
+
+  // 2. 期間内の記事とベクトルを取得
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  // A列(日付)〜G列(ベクトル)まで取得
+  const values = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  
+  const candidates = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const date = new Date(row[0]);
+    
+    // 日付フィルタ
+    if (date >= startDate && date <= endDate) {
+      const vectorStr = row[6]; // G列
+      const vector = parseVector(vectorStr);
+      
+      if (vector) {
+        const similarity = calculateCosineSimilarity(queryVector, vector);
+        candidates.push({
+          date: date,
+          title: row[1],
+          url: row[2],
+          abstractText: row[3],
+          headline: row[4],
+          source: row[5],
+          similarity: similarity
+        });
+      }
+    }
+  }
+
+  // 3. 類似度順にソート
+  candidates.sort((a, b) => b.similarity - a.similarity);
+
+  // 4. 上位N件を返す
+  return candidates.slice(0, topN);
 }
