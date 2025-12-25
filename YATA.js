@@ -1176,19 +1176,23 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
 }
 
 /**
- * 【共通エンジン】トレンドレポートHTML生成 (オプション対応)
+ * 【共通エンジン】トレンドレポートHTML生成 (セマンティック検索対応・完全版)
  */
 function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, options = {}) {
-  if (!allArticles || allArticles.length === 0) return null;
+  // 検索対象の記事がない場合は早期リターン（ただしセマンティック検索ではallArticlesを使わず直接シートを見に行くため、nullチェックは本来不要だが念のため残す）
+  if (!allArticles) return null;
   
   let hasContent = false;
-  let finalHtmlBody = ""; // 初期値を空にする
+  let finalHtmlBody = ""; 
 
+  // --- HTMLヘッダー作成 ---
   if (!options.isHtmlOutput) {
+    // メール送信時などのヘッダー
     finalHtmlBody += `<div style="font-family: sans-serif;">
-      <h3 style="border-bottom:2px solid #3498db; padding-bottom:5px; color:#2c3e50;">🤖 AI Trend Analysis</h3>
+      <h3 style="border-bottom:2px solid #3498db; padding-bottom:5px; color:#2c3e50;">🤖 AI Trend Analysis (Semantic)</h3>
       <p style="color:#666; font-size:12px;">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p><br>`;
   } else {
+    // Web UI用スタイル定義 (CSS完全版)
     finalHtmlBody += `
     <style>
       .summary-section { background-color: #fff; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
@@ -1205,9 +1209,11 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
   }
 
   const procStartTime = new Date().getTime();
-  const TIME_LIMIT_MS = 280 * 1000;
+  const TIME_LIMIT_MS = 280 * 1000; // 実行時間制限 (約4.5分)
 
+  // ターゲットキーワードごとにループ処理
   for (const item of targetItems) {
+    // 時間制限チェック
     if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
       finalHtmlBody += `<p style="color:red; font-weight:bold;">⚠️ 時間制限のため、一部のトピック解析を中断しました。</p>`;
       break;
@@ -1216,33 +1222,40 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
     const query = item.query;
     const label = item.label || query;
 
-    const matched = allArticles.filter(art => {
-      const content = (art.title + " " + art.headline + " " + art.abstractText);
-      return isTextMatchQuery(content, query);
-    });
+    // ★★★ セマンティック検索の実行 ★★★
+    // 既存のキーワードマッチ (isTextMatchQuery) ではなく、ベクトル検索 (performSemanticSearch) を使用
+    // ※ performSemanticSearchはシートから直接最新データを読み込むため、引数のallArticlesはここでは使用しません
+    const semanticMatches = performSemanticSearch(query, startDate, endDate, 20); // 上位20件を取得
+    const matched = semanticMatches;
 
+    // ヒットなしの場合はスキップ
     if (matched.length === 0) continue;
 
+    // AIによる分析・要約の実行 (履歴機能付き)
     const result = processKeywordAnalysisWithHistory(query, matched, options);
     
     if (result && result.reportBody) {
       hasContent = true;
       let contentBody = result.reportBody;
       
+      // レポート内のキーワード表記をラベルに置換 (例: "query" -> "label")
       if (query !== label) {
         contentBody = contentBody.split(query).join(label);
       }
 
+      // 出力形式に応じたHTML生成
       if (options.isHtmlOutput) {
+        // Web UI向け: コードブロック記法を除去して埋め込み
         const cleanHtml = contentBody.replace(/```html/gi, "").replace(/```/g, "");
         
         finalHtmlBody += `<div style="margin-bottom: 15px; color: #666; font-size: 14px;">
-          <div style="font-weight: bold;">🔍 検索ヒット: ${matched.length}件 (キーワード: ${label})</div>
-          <div style="font-size: 12px; margin-top: 4px;">📅 検索期間: ${options.dateRangeStr || ""}</div>
+          <div style="font-weight: bold;">🔍 AI検索ヒット: ${matched.length}件 (Concept: ${label})</div>
+          <div style="font-size: 12px; margin-top: 4px;">📅 検索期間: ${options.dateRangeStr || fmtDate(startDate) + " 〜 " + fmtDate(endDate)}</div>
         </div>`;
         
         finalHtmlBody += cleanHtml;
       } else {
+        // メール向け: MarkdownをHTMLに変換
         const markdownHtml = markdownToHtml(contentBody);
         finalHtmlBody += `
           <div style="margin-bottom:30px;">
@@ -1253,10 +1266,12 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
     }
   }
 
+  // 結果が1つもない場合
   if (!hasContent) return null;
 
+  // フッター追加
   if (!options.isHtmlOutput) {
-    finalHtmlBody += `<p style="font-size:11px; color:#999;">※YATA AI Auto-Generated Report</p></div>`;
+    finalHtmlBody += `<p style="font-size:11px; color:#999;">※YATA AI Semantic Search Report</p></div>`;
   }
 
   return finalHtmlBody;
