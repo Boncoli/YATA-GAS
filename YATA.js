@@ -1,27 +1,29 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 2.8.5
- * @date 2025-12-24
+ * @version 2.9.0
+ * @date 2025-12-26
  * @description YATA (The Three-Legged Guide to the Web)
- *              RSS collection → AI headline generation → Weekly digest with keyword analysis
+ *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析
  *
- * Script Properties (LLM Configuration):
- *   - EXECUTION_CONTEXT: 'COMPANY' | 'PERSONAL' (LLM priority order)
- *   - OPENAI_MODEL_NANO: lightweight model (headlines, keywords)
- *   - OPENAI_MODEL_MINI: advanced model (digest, analysis)
- *   - AZURE_ENDPOINT_URL_NANO/MINI: Azure OpenAI endpoints
- *   - OPENAI_API_KEY_PERSONAL: OpenAI fallback
- *   - GEMINI_API_KEY: Gemini fallback
- *   - DIGEST_DAYS: window days (default: 7)
- *   - DIGEST_TOP_N: top articles count (default: 20)
- *   - MAIL_TO, MAIL_SUBJECT_PREFIX, MAIL_SENDER_NAME
+ * =============================================================================
+ * 【目次 / Table of Contents】
+ * =============================================================================
+ * 1. CONFIGURATION (AppConfig)  - システム全体の定数・設定管理
+ * 2. ENTRY POINTS (Triggers)    - トリガーから実行されるメインジョブ
+ * 3. WEB UI (doGet)             - 検索画面（Index.html）の表示制御
+ * 4. REPORT SERVICES            - パーソナライズ配信、トレンド分析の核
+ * 5. COLLECTION SERVICES        - RSS収集、シートメンテナンス
+ * 6. AI/LLM SERVICE (LlmService) - 各種LLM APIとの通信・フォールバック
+ * 7. UTILITIES                  - 日付、パース、URL正規化等の共通関数
+ * 8. DEVELOPER TOOLS (Tests)    - ロジック検証用テストスイート
+ * =============================================================================
  */
 
 // AppConfig Singleton: Configuration cache and loader
 /**
- * AppConfig
- * 【責務】スクリプトプロパティや固定設定を保持し、システム全体で共有する。
- * シングルトンパターンを採用し、実行中の負荷を軽減。
+ * SECTION 1: CONFIGURATION
+ * 【役割】スクリプトプロパティや固定設定を一括管理し、システム全体に提供する。
+ * シングルトンパターンを採用し、実行ごとのプロパティ読み込み負荷を最小化。
  */
 const AppConfig = (function() {
   let cache = null;
@@ -38,7 +40,7 @@ const AppConfig = (function() {
         DIGEST_HISTORY: "DigestHistory",
       },
       CollectSheet: {
-        Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6 },
+        Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6, VECTOR: 7 },
         DataRange: { START_ROW: 2, NUM_COLS_FOR_URL: 1 },
       },
       RssListSheet: {
@@ -75,13 +77,90 @@ const AppConfig = (function() {
         mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "YATA (AI Intelligence Bot)",
         sheetUrl: props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)",
       },
+      // ★【追加】システム全体の設定値
+      System: {
+        TimeLimit: {
+          SUMMARIZATION: 5 * 60 * 1000,      // 要約/ベクトル生成の制限時間 (5分)
+          REPORT_GENERATION: 280 * 1000      // レポート生成の制限時間 (GAS制限考慮)
+        },
+        Limits: {
+          RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
+          RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
+          DATA_RETENTION_MONTHS: 6,          // データの保持期間
+          BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
+          LINKS_PER_TREND: 3                 // トレンドレポートに表示するリンク数
+        },
+        DateWindows: {
+          DAILY_REPORT: 2,       // 日刊レポート(sendPersonalizedReport)の対象期間
+          WEEKLY_REPORT: 7,      // 週刊レポートの対象期間
+          DAILY_DIGEST_JOB: 1    // dailyDigestJobの対象期間
+        },
+        SearchScore: {           // 記事の重要度判定ロジック用
+          KEYWORD_MAX: 40,       // キーワード一致スコアの最大値
+          KEYWORD_WEIGHT: 8,     // キーワード1つあたりの加点
+          FRESHNESS_MAX: 40,     // 鮮度スコアの最大値
+          FRESHNESS_DECAY: 7,    // 鮮度が減衰する日数定数 (exp(-days/7))
+          ABSTRACT_BONUS: 20,    // 抜粋ありの場合の最大ボーナス点
+          ABSTRACT_DIVISOR: 100  // 抜粋の文字数を割る数
+        }
+      },
+      // ★【追加】UIデザイン・メッセージ設定
+      UI: {
+        Colors: {
+          PRIMARY: "#3498db",   // メインカラー(青)
+          SECONDARY: "#2c3e50", // サブカラー(濃紺)
+          ACCENT: "#e74c3c",    // アクセント(赤)
+          TEXT_MAIN: "#333333",
+          TEXT_SUB: "#555555",
+          BG_BODY: "#f0f2f5",
+          BG_CARD: "#ffffff",
+          BORDER: "#e1e4e8",
+          LINK: "#0066cc",
+          // バッジ用
+          BADGE_NEW_BG: "#e3f2fd", BADGE_NEW_TXT: "#1565c0",
+          BADGE_UP_BG: "#e8f5e9",  BADGE_UP_TXT: "#2e7d32",
+          BADGE_WARN_BG: "#fff3e0", BADGE_WARN_TXT: "#ef6c00",
+          BADGE_KEEP_BG: "#f5f5f5", BADGE_KEEP_TXT: "#616161"
+        }
+      },
+      Messages: {
+        REPORT_HEADER_PREFIX: "集計期間：",
+        NO_RESULT: "該当記事なし",
+        NO_SUMMARY: "見出しが生成できませんでした。",
+        LINK_MORE_MD: "その他の記事一覧は[こちらのスプレッドシート](${url})でご覧いただけます。"
+      },
+      // ★【追加】各シートの列定義とロジック定数
+      UsersSheet: {
+        Columns: { NAME: 1, EMAIL: 2, DAY: 3, KWS: 4, SEMANTIC: 5 }
+      },
+      KeywordsSheet: {
+        Columns: { QUERY: 1, FLAG: 2, DAY: 3, LABEL: 4 }
+      },
+      RssListSheet: {
+        DataRange: { START_ROW: 2, START_COL: 1, NUM_COLS: 2 },
+        Columns: { NAME: 1, URL: 2 }
+      },
+      Logic: {
+        TRUE_MARKERS: ["TRUE", "〇"],
+        TAGS: {
+          NEW: /\[新規\/?注目\]|\[新規\]/g,
+          UP: /\[進展\]/g,
+          WARN: /\[懸念\]/g,
+          KEEP: /\[継続\]/g
+        }
+      }
     };
     return cache;
   }
   return { get: load };
 })();
 
-/** トリガーエントリーポイント: mainAutomationFlow, dailyDigestJob, weeklyDigestJob */
+/* =============================================================================
+ * SECTION 2: ENTRY POINTS (Triggers)
+ * 【役割】Google Apps Scriptのトリガーから直接呼び出される関数。
+ * システムの主要なワークフロー（収集、要約、ダイジェスト）を制御する。
+ * =============================================================================
+ */
 
 /**
  * トリガーA: 収集専用 (Collection Job)
@@ -112,7 +191,7 @@ function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
   
   // 期間設定: 1日 (24時間)
-  const DAYS_WINDOW = 1; 
+  const DAYS_WINDOW = AppConfig.get().System.DateWindows.DAILY_DIGEST_JOB; 
 
   // 設定と期間の取得
   const config = AppConfig.get().Digest; 
@@ -137,6 +216,50 @@ function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
 */
+
+/* =============================================================================
+ * SECTION 3: WEB UI (Client Interface)
+ * 【役割】Webブラウザからアクセスされた際の画面（Index.html）表示を制御する。
+ * =============================================================================
+ */
+
+/**
+ * doGet
+ * ウェブアプリケーションの起点。Index.htmlを表示する。
+ */
+function doGet() {
+  return HtmlService.createTemplateFromFile('Index').evaluate()
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('YATA - AI Intelligence Platform');
+}
+
+/* =============================================================================
+ * SECTION 4: REPORT SERVICES (Analysis & Dispatch)
+ * 【役割】ユーザーへのパーソナライズ配信や、指定キーワードのトレンド分析など、
+ * 蓄積されたデータから「価値あるレポート」を生成する中核機能。
+ * =============================================================================
+ */
+
+/**
+ * computeHeuristicScore
+ * 【責務】記事のスコア計算（キーワード数 + 新鮮度 + 抜粋長）
+ * 【用途】rankAndSelectArticles() で上位N件選抜に使用
+ * @param {Object} article - 記事オブジェクト
+ * @param {Map} articleKeywordMap - URL→キーワード配列
+ * @returns {number} スコア（0-100）
+ */
+function computeHeuristicScore(article, articleKeywordMap) {
+  const scores = AppConfig.get().System.SearchScore;
+  const now = new Date();
+  const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
+  const matchedKeywords = articleKeywordMap.get(article.url) || [];
+  const keywordScore = Math.min(scores.KEYWORD_MAX, matchedKeywords.length * scores.KEYWORD_WEIGHT);
+  const freshnessScore = scores.FRESHNESS_MAX * Math.exp(-daysOld / scores.FRESHNESS_DECAY);
+  const hasAbstract = article.abstractText && article.abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT;
+  const abstractBonus = hasAbstract ? Math.min(scores.ABSTRACT_BONUS, String(article.abstractText).length / scores.ABSTRACT_DIVISOR) : 0;
+  const rawScore = keywordScore + freshnessScore + abstractBonus;
+  return Math.max(0, Math.min(100, Math.round(rawScore)));
+}
 
 /** runTrendAnalysis: 単発トレンド分析実行 (Web/Manual共通)
  * 【役割】指定されたキーワードに基づき、過去の記事からトレンド分析レポートを生成する。
@@ -198,7 +321,7 @@ function runTrendAnalysis(targetKeyword, options = {}) {
   
   // メール送信 (Web以外からの呼び出し時)
   if (htmlContent && (config.notifyChannel === "email" || config.notifyChannel === "both")) {
-    const headerLine = "集計期間：" + dateRangeStr;
+    const headerLine = AppConfig.get().Messages.REPORT_HEADER_PREFIX + dateRangeStr;
     
     sendDigestEmail(headerLine, htmlContent, null, 7, {
       isHtml: true,
@@ -276,33 +399,39 @@ function sendPersonalizedReport() {
   const today = new Date();
   const currentDayStr = daysMap[today.getDay()];
   
+  const kwCols = AppConfig.get().KeywordsSheet.Columns;
+  const trueMarkers = AppConfig.get().Logic.TRUE_MARKERS;
   const lastRowKw = keywordsSheet.getLastRow();
-  const masterData = lastRowKw >= 2 ? keywordsSheet.getRange(2, 1, lastRowKw - 1, 4).getValues() : [];
+  const masterData = lastRowKw >= 2 ? keywordsSheet.getRange(2, 1, lastRowKw - 1, Object.keys(kwCols).length).getValues() : [];
   
   // 今日のデフォルト配信対象（総合版用）
   const todaysMasterItems = masterData.filter(row => {
-    const flag = String(row[1]).trim();
-    const day  = String(row[2]).trim();
-    return day === currentDayStr && (flag === '〇' || flag === 'TRUE');
-  }).map(row => ({ query: String(row[0]).trim(), label: String(row[3]).trim() || String(row[0]).trim() }));
+    const flag = String(row[kwCols.FLAG - 1]).trim();
+    const day  = String(row[kwCols.DAY - 1]).trim();
+    return day === currentDayStr && trueMarkers.includes(flag.toUpperCase());
+  }).map(row => ({ 
+    query: String(row[kwCols.QUERY - 1]).trim(), 
+    label: String(row[kwCols.LABEL - 1]).trim() || String(row[kwCols.QUERY - 1]).trim() 
+  }));
 
   const todaysQueries = todaysMasterItems.map(item => item.query).filter(String);
   const todaysLabels  = todaysMasterItems.map(item => item.label);
 
-  // 2. ユーザー取得 (E列まで)
+  // 2. ユーザー取得
+  const usrCols = AppConfig.get().UsersSheet.Columns;
   const lastRowUsr = usersSheet.getLastRow();
-  const users = lastRowUsr >= 2 ? usersSheet.getRange(2, 1, lastRowUsr - 1, 5).getValues() : [];
+  const users = lastRowUsr >= 2 ? usersSheet.getRange(2, 1, lastRowUsr - 1, Object.keys(usrCols).length).getValues() : [];
 
   // 3. ユーザーごとのループ
   users.forEach(user => {
-    const name = user[0];
-    const email = user[1];
-    const userDay = String(user[2]).trim();
-    const userKeywordsRaw = String(user[3]).trim();
+    const name = user[usrCols.NAME - 1];
+    const email = user[usrCols.EMAIL - 1];
+    const userDay = String(user[usrCols.DAY - 1]).trim();
+    const userKeywordsRaw = String(user[usrCols.KWS - 1]).trim();
     
-    // セマンティック検索フラグ (E列)
-    const semanticFlag = String(user[4] || "").trim().toUpperCase();
-    const useSemanticForUser = (semanticFlag === "TRUE" || semanticFlag === "〇");
+    // セマンティック検索フラグ
+    const semanticFlag = String(user[usrCols.SEMANTIC - 1] || "").trim().toUpperCase();
+    const useSemanticForUser = trueMarkers.includes(semanticFlag);
 
     if (!email) return;
 
@@ -310,14 +439,14 @@ function sendPersonalizedReport() {
     let displayLabels = [];
     let isPersonalized = false;
     
-    // ★追加: 期間設定用の変数 (デフォルトは週刊=7日)
-    let daysWindow = 7;
+    // ★追加: 期間設定用の変数 (デフォルトは週刊)
+    let daysWindow = AppConfig.get().System.DateWindows.WEEKLY_REPORT;
 
     // --- 分岐ロジック ---
     if (userDay === "") {
       // ■ 日刊モード (毎日配信)
-      // 対象期間: 昨日0:00 〜 今朝 (2日間)
-      daysWindow = 2; 
+      // 対象期間: 昨日0:00 〜 今朝
+      daysWindow = AppConfig.get().System.DateWindows.DAILY_REPORT; 
       
       if (userKeywordsRaw !== "") {
         // 個人設定キーワードあり
@@ -413,10 +542,10 @@ function processSummarization() {
   if (lastRow < 2) return;
 
   const startTime = new Date().getTime();
-  const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分制限
+  const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
 
   // ベクトル保存用の列インデックス (G列 = 6)
-  const VECTOR_COL_INDEX = 6; 
+  const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
 
   // データ範囲を取得
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
@@ -668,7 +797,7 @@ function _generateAndSendDailyDigest(allArticles, config, start, end, daysWindow
   }
 
   let reportBody = "";
-  const BATCH_SIZE = 30; 
+  const BATCH_SIZE = AppConfig.get().System.Limits.BATCH_SIZE; 
 
   if (allArticles.length <= BATCH_SIZE) {
     const articleListText = formatArticlesForLlm(allArticles);
@@ -722,7 +851,7 @@ ${batchSummaries.join("\n\n---\n\n")}
     reportBody = LlmService.generateDailyDigest(systemPromptTemplate, finalPrompt);
   }
 
-    const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+    const headerLine = AppConfig.get().Messages.REPORT_HEADER_PREFIX + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
     
     sendDigestEmail(headerLine, reportBody, null, daysWindow);
   }
@@ -739,7 +868,7 @@ function formatArticlesForLlm(articles) {
 function _handleNoArticlesFound(config, start, end, message, daysWindow = 7) { 
   Logger.log(`ダイジェスト：${message}`);
 
-  const headerLine = "集計期間：" + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
+  const headerLine = AppConfig.get().Messages.REPORT_HEADER_PREFIX + fmtDate(start) + "〜" + fmtDate(new Date(end.getTime() - 1));
   
   const reportBody = daysWindow === 1 ? "本日のダイジェスト対象となる記事はありませんでした。" : "今週のダイジェスト対象となる記事はありませんでした。";
   
@@ -817,7 +946,7 @@ function calculateLevenshteinSimilarity(s1, s2) {
 /** * generateWeeklyReportWithLLM (オプション対応) 
  */
 function generateWeeklyReportWithLLM(articles, hitKeywordsWithCount, articlesGroupedByKeyword, previousSummary = null, options = {}) {
-  const LINKS_PER_TREND = 3;
+  const LINKS_PER_TREND = AppConfig.get().System.Limits.LINKS_PER_TREND;
   const hitKeywords = hitKeywordsWithCount.map(item => item.keyword);
   const trends = LlmService.generateTrendSections(articlesGroupedByKeyword, LINKS_PER_TREND, hitKeywords, previousSummary, options);
   return { reportBody: trends };
@@ -896,14 +1025,15 @@ function sendDigestEmail(headerLine, bodyContent, subjectKeywords, daysWindow = 
   const senderName = digestConfig.mailSenderName;
   const sheetUrl = digestConfig.sheetUrl;
 
+  const footerMd = AppConfig.get().Messages.LINK_MORE_MD.replace("${url}", sheetUrl);
   let fullHtmlBody;
   
   if (options.isHtml) {
     const htmlHeader = headerLine ? headerLine.replace(/\n/g, '<br>') + "<br><br>" : "";
-    fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}${bodyContent}</div>`;
-    fullHtmlBody += `<br><br><hr style="border:0; border-top:1px solid #eee; margin:20px 0;"><div style="font-size:12px; color:#999;">その他の記事一覧は<a href="${sheetUrl}">こちらのスプレッドシート</a>でご覧いただけます。</div>`;
+    const footerHtml = markdownToHtml(`\n---\n${footerMd}`);
+    fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}${bodyContent}<br><br>${footerHtml}</div>`;
   } else {
-    const fullMdBodyWithFooter = bodyContent + `\n\n---\nその他の記事一覧は[こちらのスプレッドシート](${sheetUrl})でご覧いただけます。`;
+    const fullMdBodyWithFooter = bodyContent + `\n\n---\n${footerMd}`;
     const htmlHeader = headerLine ? headerLine.replace(/\n/g, '<br>') : "";
     const htmlContent = markdownToHtml(fullMdBodyWithFooter);
     fullHtmlBody = `<div style="font-family: Meiryo, 'Hiragino Sans', 'MS PGothic', sans-serif; font-size: 14px; line-height: 1.7; color: #333;">${htmlHeader}<br><br>${htmlContent}</div>`;
@@ -925,66 +1055,61 @@ function sendDigestEmail(headerLine, bodyContent, subjectKeywords, daysWindow = 
 }
 
 
-/** SECTION 4: LLMサービスレイヤー - マルチティアフォールバック（Azure → OpenAI → Gemini） */
+/* =============================================================================
+ * SECTION 6: AI/LLM SERVICE (LlmService)
+ * 【役割】複数のLLM（Azure, OpenAI, Gemini）との通信を抽象化するレイヤー。
+ * 自動的なフォールバック（障害時の代替切り替え）と、共通のエラー処理を提供。
+ * =============================================================================
+ */
 const LlmService = (function() {
   const llmConfig = AppConfig.get().Llm;
 
   // --- Private Methods ---
 
+  /**
+   * _httpFetch
+   * 通信・エラーハンドリング・JSONパースを共通化するヘルパー
+   */
+  function _httpFetch(url, options, serviceName) {
+    try {
+      const res = UrlFetchApp.fetch(url, options);
+      const code = res.getResponseCode();
+      const txt = res.getContentText();
+      
+      if (code !== 200) {
+        _logError(serviceName, new Error(`API Error: ${code} - ${txt}`), `${serviceName} APIエラーが発生しました。`);
+        return null;
+      }
+      return cleanAndParseJSON(txt);
+    } catch (e) {
+      _logError(serviceName, e, `${serviceName} 通信中に例外が発生しました。`);
+      return null;
+    }
+  }
+
   function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
     Logger.log("Azure OpenAIを試行中...");
     const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 4096 };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    try {
-      const res = UrlFetchApp.fetch(azureUrl, fetchOptions);
-      const code = res.getResponseCode();
-      const txt = res.getContentText();
-      if (code !== 200) {
-        _logError("_callAzureLlm", new Error(`API Error: ${code} - ${txt}`), "Azure OpenAI APIエラーが発生しました。");
-        return null;
-      }
-      const json = cleanAndParseJSON(txt);
-      if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-        return String(json.choices[0].message.content).trim();
-      }
-      _logError("_callAzureLlm", new Error("No content in response"), "Azure OpenAIから見出しが生成できませんでした。");
-      return null;
-    } catch (e) {
-      _logError("_callAzureLlm", e, "Azure OpenAI呼び出し中に例外が発生しました。");
-      return null;
+    
+    const json = _httpFetch(azureUrl, fetchOptions, "Azure OpenAI");
+    if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+      return String(json.choices[0].message.content).trim();
     }
+    return null;
   }
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     Logger.log("OpenAI APIを試行中...");
     const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 4096, temperature: options.temperature ?? undefined };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    try {
-      const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", fetchOptions);
-      const code = res.getResponseCode();
-      const txt = res.getContentText();
-      if (code !== 200) {
-        _logError("_callOpenAiLlm", new Error(`API Error: ${code} - ${txt}`), "OpenAI APIエラーが発生しました。");
-        return null;
-      }
-      const json = cleanAndParseJSON(txt);
-      if (json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-        const llmResponseContent = String(json.choices[0].message.content).trim();
-        
-        // 空レスポンスチェック
-        if (llmResponseContent === "") {
-          _logError("_callOpenAiLlm", new Error("Empty content"), "OpenAIからの応答が空でした。");
-          return null;
-        }
-
-        return llmResponseContent;
-      }
-      _logError("_callOpenAiLlm", new Error("No content in response"), "OpenAIから見出しが生成できませんでした。");
-      return null;
-    } catch (e) {
-      _logError("_callOpenAiLlm", e, "OpenAI呼び出し中に例外が発生しました。");
-      return null;
+    
+    const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
+    if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+      const content = String(json.choices[0].message.content).trim();
+      return content !== "" ? content : null;
     }
+    return null;
   }
   
   // ★【追加】Azure Embedding API 呼び出し
@@ -999,18 +1124,12 @@ const LlmService = (function() {
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     };
-    try {
-      const res = UrlFetchApp.fetch(endpoint, fetchOptions);
-      const json = JSON.parse(res.getContentText());
-      if (json.data && json.data.length > 0 && json.data[0].embedding) {
-        return json.data[0].embedding;
-      }
-      _logError("_callAzureEmbedding", new Error(res.getContentText()), "ベクトル生成失敗");
-      return null;
-    } catch (e) {
-      _logError("_callAzureEmbedding", e, "Azure Embedding例外");
-      return null;
+    
+    const json = _httpFetch(endpoint, fetchOptions, "Azure Embedding");
+    if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
+      return json.data[0].embedding;
     }
+    return null;
   }
 
   // ★【追加】OpenAI Embedding API 呼び出し
@@ -1025,18 +1144,12 @@ const LlmService = (function() {
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     };
-    try {
-      const res = UrlFetchApp.fetch("https://api.openai.com/v1/embeddings", fetchOptions);
-      const json = JSON.parse(res.getContentText());
-      if (json.data && json.data.length > 0 && json.data[0].embedding) {
-        return json.data[0].embedding;
-      }
-      _logError("_callOpenAiEmbedding", new Error(res.getContentText()), "ベクトル生成失敗");
-      return null;
-    } catch (e) {
-      _logError("_callOpenAiEmbedding", e, "OpenAI Embedding例外");
-      return null;
+    
+    const json = _httpFetch("https://api.openai.com/v1/embeddings", fetchOptions, "OpenAI Embedding");
+    if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
+      return json.data[0].embedding;
     }
+    return null;
   }
 
   function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
@@ -1045,20 +1158,15 @@ const LlmService = (function() {
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
     const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 4096 } };
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
-    try {
-      const response = UrlFetchApp.fetch(API_ENDPOINT, fetchOptions);
-      const json = cleanAndParseJSON(response.getContentText());
-      let text = null;
-      if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
-        text = json.candidates[0].content.parts[0].text;
-      }
-      const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : "見出しが生成できませんでした。");
-      Utilities.sleep(llmConfig.DELAY_MS);
-      return headline;
-    } catch (e) {
-      _logError("_callGeminiLlm", e, "Gemini API呼び出し中に例外が発生しました。");
-      return null;
+    
+    const json = _httpFetch(API_ENDPOINT, fetchOptions, "Gemini");
+    let text = null;
+    if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
+      text = json.candidates[0].content.parts[0].text;
     }
+    const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : AppConfig.get().Messages.NO_SUMMARY);
+    Utilities.sleep(llmConfig.DELAY_MS);
+    return headline;
   }
 
   function _callLlmWithFallback(systemPrompt, userPrompt, openAiModel, azureUrlOverride = null, options = {}) {
@@ -1261,18 +1369,20 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
   
   let hasContent = false;
   let finalHtmlBody = ""; 
+  
+  const C = AppConfig.get().UI.Colors;
 
   // --- スタイル定義 (フル幅・カード型) ---
   const S = {
-    WRAPPER: 'background-color: #f0f2f5; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;',
+    WRAPPER: `background-color: ${C.BG_BODY}; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`,
     CONTAINER: 'width: 100%; max-width: 1200px; margin: 0 auto;',
-    HEADER_CARD: 'background-color: #3498db; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1);',
+    HEADER_CARD: `background-color: ${C.PRIMARY}; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1);`,
     HEADER_TITLE: 'margin: 0; color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: 0.05em;',
     HEADER_SUB: 'margin: 5px 0 0 0; color: #eaf2f8; font-size: 13px;',
     KEYWORD_SECTION: 'margin-bottom: 40px;',
-    KEYWORD_HEAD: 'background-color: #3498db; color: #fff; padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: bold; font-size: 18px; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);',
+    KEYWORD_HEAD: `background-color: ${C.PRIMARY}; color: #fff; padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: bold; font-size: 18px; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);`,
     KEYWORD_CONTENT: 'padding: 0;',
-    FOOTER: 'text-align: center; padding: 20px; font-size: 12px; color: #606770;'
+    FOOTER: `text-align: center; padding: 20px; font-size: 12px; color: ${C.TEXT_SUB};`
   };
 
   // ヘッダー生成（メール/Web分岐）
@@ -1282,15 +1392,15 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
         <div style="${S.CONTAINER}">
           <div style="${S.HEADER_CARD}">
             <h3 style="${S.HEADER_TITLE}">&#129302; AI Trend Analysis</h3>
-            <p style="${S.HEADER_SUB}">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p>
+            <p style="${S.HEADER_SUB}">${AppConfig.get().Messages.REPORT_HEADER_PREFIX}${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p>
           </div>`;
   } else {
     // Web用スタイル (CSS)
-    finalHtmlBody += `<style>.summary-section{background-color:#fff;padding:20px;border-radius:8px;margin-bottom:25px;box-shadow:0 2px 5px rgba(0,0,0,0.05)}.summary-title{margin-top:0;color:#34495e;font-size:18px;font-weight:bold;border-bottom:2px solid #ecf0f1;padding-bottom:10px;margin-bottom:15px}.section-header{border-left:5px solid #3498db;border-bottom:none;padding-left:10px;padding-bottom:0;color:#2c3e50;margin-top:30px;margin-bottom:15px;font-size:20px}.tech-card{margin-bottom:20px;border:none;padding:20px;border-radius:8px;background-color:#fff;box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid #3498db}.tech-title{margin:0 0 15px 0;color:#2c3e50;font-size:17px;font-weight:bold;line-height:1.4}.tech-meta{font-size:15px;line-height:1.7;color:#555}.tech-link{margin-top:15px;text-align:right}.tech-link a{display:inline-block;padding:8px 16px;background-color:#eaf2f8;color:#3498db;text-decoration:none;border-radius:20px;font-size:13px;font-weight:bold}.tech-link a:hover{background-color:#d4e6f1}</style>`;
+    finalHtmlBody += `<style>.summary-section{background-color:${C.BG_CARD};padding:20px;border-radius:8px;margin-bottom:25px;box-shadow:0 2px 5px rgba(0,0,0,0.05)}.summary-title{margin-top:0;color:${C.SECONDARY};font-size:18px;font-weight:bold;border-bottom:2px solid ${C.BORDER};padding-bottom:10px;margin-bottom:15px}.section-header{border-left:5px solid ${C.PRIMARY};border-bottom:none;padding-left:10px;padding-bottom:0;color:${C.SECONDARY};margin-top:30px;margin-bottom:15px;font-size:20px}.tech-card{margin-bottom:20px;border:none;padding:20px;border-radius:8px;background-color:${C.BG_CARD};box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid ${C.PRIMARY}}.tech-title{margin:0 0 15px 0;color:${C.SECONDARY};font-size:17px;font-weight:bold;line-height:1.4}.tech-meta{font-size:15px;line-height:1.7;color:${C.TEXT_SUB}}.tech-link{margin-top:15px;text-align:right}.tech-link a{display:inline-block;padding:8px 16px;background-color:${C.BADGE_NEW_BG};color:${C.PRIMARY};text-decoration:none;border-radius:20px;font-size:13px;font-weight:bold}.tech-link a:hover{background-color:${C.BADGE_NEW_BG}}</style>`;
   }
 
   const procStartTime = new Date().getTime();
-  const TIME_LIMIT_MS = 280 * 1000; 
+  const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.REPORT_GENERATION; 
 
   // ★デフォルト設定: useSemanticが指定されていない場合は false (キーワード一致) とする
   const useSemantic = (options.useSemantic === true);
@@ -1487,26 +1597,6 @@ function getPromptConfig(key) {
 }
 
 /**
- * computeHeuristicScore
- * 【責務】記事のスコア計算（キーワード数 + 新鮮度 + 抜粋長）
- * 【用途】rankAndSelectArticles() で上位N件選抜に使用
- * @param {Object} article - 記事オブジェクト
- * @param {Map} articleKeywordMap - URL→キーワード配列
- * @returns {number} スコア（0-100）
- */
-function computeHeuristicScore(article, articleKeywordMap) {
-  const now = new Date();
-  const daysOld = Math.max(0, Math.floor((now - article.date) / (1000 * 60 * 60 * 24)));
-  const matchedKeywords = articleKeywordMap.get(article.url) || [];
-  const keywordScore = Math.min(40, matchedKeywords.length * 8);
-  const freshnessScore = 40 * Math.exp(-daysOld / 7);
-  const hasAbstract = article.abstractText && article.abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT;
-  const abstractBonus = hasAbstract ? Math.min(20, String(article.abstractText).length / 100) : 0;
-  const rawScore = keywordScore + freshnessScore + abstractBonus;
-  return Math.max(0, Math.min(100, Math.round(rawScore)));
-}
-
-/**
  * markdownToHtml (改良版: バッジ変換 & カード分割機能付き)
  * 【責務】Markdown → HTML 変換
  * 【改善】AIが出力した区切り（**1. トピック**など）を検知し、自動的にdivボックスを分割する
@@ -1514,22 +1604,26 @@ function computeHeuristicScore(article, articleKeywordMap) {
 function markdownToHtml(md) {
   if (!md) return "";
   
+  const C = AppConfig.get().UI.Colors;
+
   // スタイル定義
   const S = {
     // 内部カード（白い箱）
-    CARD: 'background-color: #ffffff; padding: 20px; border-radius: 0 8px 8px 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e1e4e8;',
+    CARD: `background-color: ${C.BG_CARD}; padding: 20px; border-radius: 0 8px 8px 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid ${C.BORDER};`,
     // カード内の見出し
-    H3: 'font-size: 18px; font-weight: bold; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-top: 0; margin-bottom: 15px;',
-    STRONG: 'font-weight: bold; color: #e74c3c;', // 強調色（赤）
-    LINK: 'color: #0066cc; text-decoration: none; border-bottom: 1px dotted #0066cc;',
-    HR: 'border: 0; border-top: 1px solid #eee; margin: 20px 0;',
+    H3: `font-size: 18px; font-weight: bold; color: ${C.SECONDARY}; border-bottom: 2px solid ${C.PRIMARY}; padding-bottom: 5px; margin-top: 0; margin-bottom: 15px;`,
+    STRONG: `font-weight: bold; color: ${C.ACCENT};`, // 強調色
+    LINK: `color: ${C.LINK}; text-decoration: none; border-bottom: 1px dotted ${C.LINK};`,
+    HR: `border: 0; border-top: 1px solid #eee; margin: 20px 0;`,
     // バッジ
     BADGE: 'display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px; vertical-align: middle;',
-    B_NEW: 'background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb;',
-    B_UP:  'background-color: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9;',
-    B_WARN:'background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2;',
-    B_KEEP:'background-color: #f5f5f5; color: #616161; border: 1px solid #e0e0e0;'
+    B_NEW: `background-color: ${C.BADGE_NEW_BG}; color: ${C.BADGE_NEW_TXT}; border: 1px solid ${C.BADGE_NEW_BG};`,
+    B_UP:  `background-color: ${C.BADGE_UP_BG}; color: ${C.BADGE_UP_TXT}; border: 1px solid ${C.BADGE_UP_BG};`,
+    B_WARN:`background-color: ${C.BADGE_WARN_BG}; color: ${C.BADGE_WARN_TXT}; border: 1px solid ${C.BADGE_WARN_BG};`,
+    B_KEEP:`background-color: ${C.BADGE_KEEP_BG}; color: ${C.BADGE_KEEP_TXT}; border: 1px solid ${C.BADGE_KEEP_BG};`
   };
+
+  const L = AppConfig.get().Logic;
 
   // 1. 基本的なHTMLエスケープとMarkdown変換
   let html = md
@@ -1539,10 +1633,10 @@ function markdownToHtml(md) {
     .replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`)
     
     // バッジ変換
-    .replace(/\[新規\/?注目\]|\[新規\]/g, `<span style="${S.BADGE} ${S.B_NEW}">&#9889; 新規</span>`)
-    .replace(/\[進展\]/g, `<span style="${S.BADGE} ${S.B_UP}">&#128200; 進展</span>`)
-    .replace(/\[懸念\]/g, `<span style="${S.BADGE} ${S.B_WARN}">&#9888; 懸念</span>`)
-    .replace(/\[継続\]/g, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`)
+    .replace(L.TAGS.NEW, `<span style="${S.BADGE} ${S.B_NEW}">&#9889; 新規</span>`)
+    .replace(L.TAGS.UP, `<span style="${S.BADGE} ${S.B_UP}">&#128200; 進展</span>`)
+    .replace(L.TAGS.WARN, `<span style="${S.BADGE} ${S.B_WARN}">&#9888; 懸念</span>`)
+    .replace(L.TAGS.KEEP, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`)
     
     .replace(/\*\*(.*?)\*\*/g, `<strong style="${S.STRONG}">$1</strong>`)
     .replace(/\*\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" style="${S.LINK}">$1</a>`)
@@ -1575,16 +1669,6 @@ function markdownToHtml(md) {
 }
 
 /**
- * stripHtml
- * 【責務】HTML タグを除去してテキスト抽出
- * @param {string} html - HTML テキスト
- * @returns {string} プレーンテキスト
- */
-function stripHtml(html) {
-  return html ? html.replace(/<[^>]*>?/gm, '') : '';
-}
-
-/**
  * isLikelyEnglish
  * 【責務】テキストに日本語が含まれているか判定
  * @param {string} text - 判定対象テキスト
@@ -1592,16 +1676,6 @@ function stripHtml(html) {
  */
 function isLikelyEnglish(text) {
   return !(/[぀-ゟ゠-ヿ一-鿿]/.test(text));
-}
-
-/**
- * fmtDate
- * 【責務】Date を "yyyy/MM/dd" 形式にフォーマット
- * @param {Date} d - Date オブジェクト
- * @returns {string} フォーマット済み日付文字列
- */
-function fmtDate(d) {
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
 }
 
 /**
@@ -1616,23 +1690,13 @@ function _logError(functionName, error, message = "") {
   Logger.log(`[ERROR] ${functionName}: ${message} ${error.toString()} Stack: ${error.stack}`);
 }
 
-/**
- * getDateWindow
- * 【責務】"N日前から今日まで"の日付範囲を計算
- * @param {number} days - 遡り日数
- * @returns {Object} { start: Date, end: Date }
+/* =============================================================================
+
+ * SECTION 5: COLLECTION SERVICES (Data Gathering & Maintenance)
+ * 【役割】外部ソース（RSS）からデータを収集し、シート内のデータを整理・維持する。
+ * 定期的なデータ蓄積と、古い記事のクリーンアップを担当。
+ * =============================================================================
  */
-function getDateWindow(days) {
-  const end = new Date();
-  end.setHours(24, 0, 0, 0);
-  const start = new Date(end);
-  start.setDate(start.getDate() - Math.max(1, days));
-  return { start, end };
-}
-
-
-
-/** SECTION 6: RSSコレクター - RSSパース、記事抽出、重複排除、HTML除去 */
 
 /** 
  * collectRssFeeds
@@ -1669,7 +1733,7 @@ function collectRssFeeds() {
   const lastRow = collectSheet.getLastRow();
   
   if (lastRow >= 2) { 
-    const checkLimit = 3000; 
+    const checkLimit = AppConfig.get().System.Limits.RSS_CHECK_ROWS; 
     const startRow = 2; 
     const numRows = Math.min(lastRow - 1, checkLimit); 
 
@@ -1695,11 +1759,12 @@ function collectRssFeeds() {
   }
   
   let totalNewCount = 0;
-  const DATE_LIMIT_DAYS = 7; 
+  const DATE_LIMIT_DAYS = AppConfig.get().System.Limits.RSS_DATE_WINDOW_DAYS; 
+  const rssCols = AppConfig.get().RssListSheet.Columns;
 
   for (const row of rssData) {
-    const siteName = row[0];
-    const rssUrl = row[1];
+    const siteName = row[rssCols.NAME - 1];
+    const rssUrl = row[rssCols.URL - 1];
 
     if (!rssUrl) continue;
 
@@ -1789,13 +1854,28 @@ function getExistingUrls(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return new Set();
 
-  const CHECK_LIMIT = 3000;
+  const CHECK_LIMIT = AppConfig.get().System.Limits.RSS_CHECK_ROWS;
   
   const startRow = Math.max(2, lastRow - CHECK_LIMIT + 1);
   const numRows = lastRow - startRow + 1;
   
   const urls = sheet.getRange(startRow, AppConfig.get().CollectSheet.Columns.URL, numRows, 1).getValues().flat();
   return new Set(urls);
+}
+
+/**
+ * sortCollectByDateDesc
+ * 【責務】collectシートを日付順（新しい順）に並び替える。
+ */
+function sortCollectByDateDesc() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn())
+         .sort({column: 1, ascending: false});
+    Logger.log("collectシートを日付(最新順)で並び替えました。");
+  }
 }
 
 /**
@@ -1936,42 +2016,6 @@ function sanitizeXml(text) {
 }
 
 /**
- * isRecentArticle
- * 【責務】記事の公開日が指定された日数以内であるかチェックする。
- */
-function isRecentArticle(pubDate, daysLimit = 7) {
-  if (!pubDate || !(pubDate instanceof Date)) return false;
-  const now = new Date();
-  const daysOld = Math.floor((now - pubDate) / (1000 * 60 * 60 * 24));
-  return daysOld <= daysLimit;
-}
-
-/**
- * sortCollectByDateDesc
- * 【責務】collectシートを日付順（新しい順）に並び替える。
- */
-function sortCollectByDateDesc() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
-  const lastRow = sheet.getLastRow();
-  
-  if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn())
-         .sort({column: 1, ascending: false});
-    Logger.log("collectシートを日付(最新順)で並び替えました。");
-  }
-}
-
-
-
-/** SECTION 7: ウェブUI - ウェブアプリケーション UI エントリーポイント（doGet, executeWeeklyDigest, searchAndAnalyzeKeyword） */
-
-function doGet() {
-  return HtmlService.createTemplateFromFile('Index').evaluate().setSandboxMode(HtmlService.SandboxMode.IFRAME).setTitle('RSSキーワード検索ツール');
-}
-
-/** SECTION 8: メンテナンスユーティリティー - 重複削除、URL正規化、日付チェック、クリーンアップ */
-
-/**
  * removeDuplicates
  * 【責務】URL正規化により collect シート内の重複記事を削除する。
  * 【仕様】上から順に走査し、正規化URLが重複している行を削除。
@@ -2024,54 +2068,6 @@ function removeDuplicates() {
 }
 
 /**
- * normalizeUrl
- * 【責務】URLを比較用に正規化する。
- * 【処理】末尾スラッシュの削除、プロトコルの揺らぎ吸収など。
- */
-function normalizeUrl(url) {
-  if (!url) return "";
-  let s = String(url).trim();
-  
-  try { s = decodeURIComponent(s); } catch (e) {}
-  
-  s = s.replace(/\/$/, "");
-  s = s.replace(/^https?:\/\/(www\.)?/, "//");
-  
-  return s;
-}
-
-/**
- * isRecentDate
- * 【責務】日付文字列が指定された日数以内であるかチェックする。
- */
-function isRecentDate(dateStr, daysLimit) {
-  if (!dateStr) return false;
-  
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return false;
-
-  const now = new Date();
-  const diffTime = now - date;
-  const diffDays = diffTime / (1000 * 60 * 60 * 24);
-
-  return diffDays <= daysLimit;
-}
-
-/**
- * decodeHtmlEntities
- * 【責務】HTML実体参照（&amp;等）を通常の文字に戻す。
- */
-function decodeHtmlEntities(text) {
-  if (!text) return "";
-  return text.replace(/&amp;/g, '&')
-             .replace(/&lt;/g, '<')
-             .replace(/&gt;/g, '>')
-             .replace(/&quot;/g, '"')
-             .replace(/&#039;/g, "'")
-             .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
-}
-
-/**
  * getRecipients
  * 【責務】配信先メールアドレスリスト（カンマ区切り）を生成する。
  * 【仕様】管理者メールと、Usersシートの有効なユーザーを統合し重複排除。
@@ -2115,7 +2111,7 @@ function getRecipients() {
  * 【責務】指定期間（デフォルト6ヶ月）より古い記事をcollectシートから一括削除する。
  */
 function maintenanceDeleteOldArticles() {
-  const KEEP_MONTHS = 6;
+  const KEEP_MONTHS = AppConfig.get().System.Limits.DATA_RETENTION_MONTHS;
   
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
@@ -2165,6 +2161,141 @@ function sanitizeHtmlForWeb(html) {
                .replace(/\s+javascript:/gim, "");
 
   return clean;
+}
+
+/* =============================================================================
+ * SECTION 7: UTILITIES (Shared Helpers)
+ * 【役割】特定の業務ロジックに依存しない、汎用的な補助関数群。
+ * 文字列操作、JSONパース、URL正規化、セキュリティクリーンアップなど。
+ * =============================================================================
+ */
+
+/**
+ * fmtDate
+ * 【責務】Date を "yyyy/MM/dd" 形式にフォーマット
+ * @param {Date} d - Date オブジェクト
+ * @returns {string} フォーマット済み日付文字列
+ */
+function fmtDate(d) {
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy/MM/dd");
+}
+
+/**
+ * getDateWindow
+ * 【責務】"N日前から今日まで"の日付範囲を計算
+ * @param {number} days - 遡り日数
+ * @returns {Object} { start: Date, end: Date }
+ */
+function getDateWindow(days) {
+  const end = new Date();
+  end.setHours(24, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - Math.max(1, days));
+  return { start, end };
+}
+
+/**
+ * isRecentArticle
+ * 【責務】記事の公開日が指定された日数以内であるかチェックする。
+ */
+function isRecentArticle(pubDate, daysLimit = 7) {
+  if (!pubDate || !(pubDate instanceof Date)) return false;
+  const now = new Date();
+  const daysOld = Math.floor((now - pubDate) / (1000 * 60 * 60 * 24));
+  return daysOld <= daysLimit;
+}
+
+/**
+ * normalizeUrl
+ * 【責務】URLを比較用に正規化する。
+ * 【処理】末尾スラッシュの削除、プロトコルの揺らぎ吸収など。
+ */
+function normalizeUrl(url) {
+  if (!url) return "";
+  let s = String(url).trim();
+  
+  try { s = decodeURIComponent(s); } catch (e) {}
+  
+  // 1. クエリパラメータとアンカーを削除 (比較用)
+  s = s.split('?')[0].split('#')[0];
+  
+  // 2. 末尾スラッシュの削除
+  s = s.replace(/\/$/, "");
+  
+  // 3. プロトコル(http/https)とwwwの揺らぎを排除
+  s = s.replace(/^https?:\/\/(www\.)?/, "//");
+  
+  return s;
+}
+
+/**
+ * isRecentDate
+ * 【責務】日付文字列が指定された日数以内であるかチェックする。
+ */
+function isRecentDate(dateStr, daysLimit) {
+  if (!dateStr) return false;
+  
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return false;
+
+  const now = new Date();
+  const diffTime = now - date;
+  const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
+  return diffDays <= daysLimit;
+}
+
+/**
+ * stripHtml
+ * 【責務】HTML タグを除去してテキスト抽出
+ * @param {string} html - HTML テキスト
+ * @returns {string} プレーンテキスト
+ */
+function stripHtml(html) {
+  return html ? html.replace(/<[^>]*>?/gm, '') : '';
+}
+
+/**
+ * decodeHtmlEntities
+ * 【責務】HTML実体参照（&amp;等）を通常の文字に戻す。
+ */
+function decodeHtmlEntities(text) {
+  if (!text) return "";
+  return text.replace(/&amp;/g, '&')
+             .replace(/&lt;/g, '<')
+             .replace(/&gt;/g, '>')
+             .replace(/&quot;/g, '"')
+             .replace(/&#039;/g, "'")
+             .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+}
+
+/**
+ * calculateCosineSimilarity
+ * 【責務】2つのベクトルのコサイン類似度を計算する。
+ */
+function calculateCosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return -1;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  return (normA === 0 || normB === 0) ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * parseVector
+ * 【責務】ベクトル文字列を数値配列にパースする。
+ */
+function parseVector(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim() !== "") {
+    return val.split(',').map(Number);
+  }
+  return null;
 }
 
 /**
@@ -2291,94 +2422,7 @@ function searchAndAnalyzeKeyword(keyword, options) {
 }
 
 /**
- * コサイン類似度計算
- * @param {number[]} vecA - ベクトルA
- * @param {number[]} vecB - ベクトルB
- * @returns {number} 類似度 (-1.0 〜 1.0)
- */
-function calculateCosineSimilarity(vecA, vecB) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) return -1;
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i] * vecB[i];
-    normA += vecA[i] * vecA[i];
-    normB += vecB[i] * vecB[i];
-  }
-  return (normA === 0 || normB === 0) ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-/**
- * ベクトル文字列をパースする
- * @param {string|number[]} val - シートから取得した値
- * @returns {number[]} 数値配列
- */
-function parseVector(val) {
-  if (Array.isArray(val)) return val;
-  if (typeof val === 'string' && val.trim() !== "") {
-    return val.split(',').map(Number);
-  }
-  return null;
-}
-
-/**
- * 過去記事のベクトル生成（バックフィル用）
- * 実行時間制限(5分)を考慮し、未処理の記事を少しずつ処理します。
- */
-function backfillVectors() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
-  const lastRow = sheet.getLastRow();
-  const VECTOR_COL_INDEX = 6; // G列 (0-indexed)
-
-  if (lastRow < 2) return;
-
-  // 全データを取得
-  const dataRange = sheet.getRange(2, 1, lastRow - 1, Math.max(7, sheet.getLastColumn()));
-  const values = dataRange.getValues();
-  
-  const startTime = new Date().getTime();
-  const TIME_LIMIT_MS = 5 * 60 * 1000; // 5分
-  let processedCount = 0;
-
-  for (let i = 0; i < values.length; i++) {
-    // タイムアウトチェック
-    if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
-      Logger.log(`時間制限のため中断します。残り記事があります。(処理数: ${processedCount})`);
-      break;
-    }
-
-    const row = values[i];
-    const headline = row[4]; // E列
-    const currentVector = row[VECTOR_COL_INDEX]; // G列
-
-    // 見出しがあり、かつベクトルが空の場合に処理
-    if (headline && String(headline).trim() !== "" && (!currentVector || String(currentVector).trim() === "")) {
-      const title = row[1]; // B列
-      const textToEmbed = `Title: ${title}\nSummary: ${headline}`;
-      
-      const vector = LlmService.generateVector(textToEmbed);
-      if (vector) {
-        values[i][VECTOR_COL_INDEX] = vector.join(',');
-        processedCount++;
-        Utilities.sleep(500); // レート制限考慮
-      }
-    }
-  }
-
-  // 結果を書き戻し
-  if (processedCount > 0) {
-    dataRange.setValues(values);
-    Logger.log(`バックフィル完了: ${processedCount} 件の記事をベクトル化しました。`);
-  } else {
-    Logger.log("ベクトル化が必要な記事はありませんでした。");
-  }
-}
-
-/**
- * セマンティック検索を実行する
- * @param {string} queryKeyword 検索クエリ
+ * performSemanticSearch * @param {string} queryKeyword 検索クエリ
  * @param {Date} startDate 開始日
  * @param {Date} endDate 終了日
  * @param {number} topN 上位何件取得するか
@@ -2398,7 +2442,7 @@ function performSemanticSearch(queryKeyword, startDate, endDate, topN = 20) {
   if (lastRow < 2) return [];
 
   // A列(日付)〜G列(ベクトル)まで取得
-  const values = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  const values = sheet.getRange(2, 1, lastRow - 1, AppConfig.get().CollectSheet.Columns.VECTOR).getValues();
   
   const candidates = [];
 
@@ -2408,7 +2452,7 @@ function performSemanticSearch(queryKeyword, startDate, endDate, topN = 20) {
     
     // 日付フィルタ
     if (date >= startDate && date <= endDate) {
-      const vectorStr = row[6]; // G列
+      const vectorStr = row[AppConfig.get().CollectSheet.Columns.VECTOR - 1];
       const vector = parseVector(vectorStr);
       
       if (vector) {
@@ -2431,4 +2475,134 @@ function performSemanticSearch(queryKeyword, startDate, endDate, topN = 20) {
 
   // 4. 上位N件を返す
   return candidates.slice(0, topN);
+}
+
+/* =============================================================================
+ * SECTION 8: DEVELOPER TOOLS (Maintenance & Tests)
+ * 【役割】開発者やシステム管理者が、ロジックの検証や疎通確認を行うためのツール群。
+ * 通常の運用（トリガー実行）では使用されず、手動で実行して健全性を診断する。
+ * =============================================================================
+ */
+
+/**
+ * runAllTests
+ * 全てのロジックテストを一括実行します。
+ */
+function runAllTests() {
+  Logger.log("--- [YATA] ロジックテスト開始 ---");
+  try {
+    _test_AppConfig();
+    _test_parseVector();
+    _test_isTextMatchQuery();
+    _test_computeHeuristicScore();
+    _test_normalizeUrl();
+    
+    Logger.log("✅ 全てのロジックテストに合格しました。");
+  } catch (e) {
+    Logger.log("❌ テスト失敗: " + e.message);
+    throw e;
+  }
+}
+
+/**
+ * _test_AppConfig: AppConfigが正しく構造化されているか確認
+ */
+function _test_AppConfig() {
+  const config = AppConfig.get();
+  if (!config.System || !config.System.Limits.BATCH_SIZE || !config.UI.Colors.PRIMARY) {
+    throw new Error("AppConfigの構造が不正、または必須項目が不足しています。");
+  }
+  Logger.log("test_AppConfig: OK");
+}
+
+/**
+ * _test_parseVector: ベクトル文字列のパース確認
+ */
+function _test_parseVector() {
+  const input = "0.123,0.456,-0.789";
+  const result = parseVector(input);
+  if (!result || result.length !== 3 || result[0] !== 0.123 || result[2] !== -0.789) {
+    throw new Error("parseVectorの出力が期待値と異なります。");
+  }
+  Logger.log("test_parseVector: OK");
+}
+
+/**
+ * _test_isTextMatchQuery: キーワード検索ロジックの検証
+ */
+function _test_isTextMatchQuery() {
+  const text = "Google Apps ScriptはクラウドベースのJavaScriptプラットフォームです。";
+  
+  // AND検索
+  if (!isTextMatchQuery(text, "Google Script")) throw new Error("isTextMatchQuery: AND検索に失敗しました。");
+  // OR検索
+  if (!isTextMatchQuery(text, "Python OR Script")) throw new Error("isTextMatchQuery: OR検索に失敗しました。");
+  // NOT検索
+  if (isTextMatchQuery(text, "Google -Script")) throw new Error("isTextMatchQuery: NOT検索に失敗しました。");
+  // 複雑な組み合わせ
+  if (!isTextMatchQuery(text, "(Google OR Python) Script -Ruby")) throw new Error("isTextMatchQuery: 複雑な検索に失敗しました。");
+  
+  Logger.log("test_isTextMatchQuery: OK");
+}
+
+/**
+ * _test_computeHeuristicScore: スコアリングロジックの検証
+ */
+function _test_computeHeuristicScore() {
+  const dummyArticle = {
+    date: new Date(),
+    url: "https://example.com/test",
+    abstractText: "これはテスト記事です。内容が十分にある場合のスコア計算を確認します。"
+  };
+  const dummyMap = new Map();
+  dummyMap.set(dummyArticle.url, ["テスト", "確認"]);
+  
+  const score = computeHeuristicScore(dummyArticle, dummyMap);
+  if (typeof score !== 'number' || score < 0 || score > 100) {
+    throw new Error("computeHeuristicScoreのスコアが範囲外です: " + score);
+  }
+  Logger.log("test_computeHeuristicScore: OK (Score: " + score + ")");
+}
+
+/**
+ * _test_normalizeUrl: URL正規化の検証
+ */
+function _test_normalizeUrl() {
+  const url1 = "https://example.com/path?utm_source=test";
+  const url2 = "http://www.example.com/path/";
+  
+  if (normalizeUrl(url1) !== "//example.com/path") throw new Error("normalizeUrl: パラメータの除去に失敗しました。");
+  if (normalizeUrl(url2) !== "//example.com/path") throw new Error("normalizeUrl: プロトコル/www/末尾スラッシュの正規化に失敗しました。");
+  
+  Logger.log("test_normalizeUrl: OK");
+}
+
+/**
+ * sendTestEmail
+ * MAIL_TO に設定されたアドレスにテストメールを送信し、疎通を確認します。
+ */
+function sendTestEmail() {
+  const mailTo = AppConfig.get().Digest.mailTo;
+  if (!mailTo) {
+    Logger.log("⚠️ MAIL_TO が設定されていないため、テストメールを送信できません。");
+    return;
+  }
+  
+  const subject = "【YATA】システム疎通確認メール";
+  const body = [
+    "YATAからのテストメールです。",
+    "このメールが届いている場合、MailApp（GmailAPI）の送信権限と設定は正常です。",
+    "",
+    "--- 送信時設定 ---",
+    "送信先: " + mailTo,
+    "実行時刻: " + new Date().toLocaleString()
+  ].join("\n");
+  
+  try {
+    MailApp.sendEmail(mailTo, subject, body);
+    Logger.log("✅ テストメールを送信しました: " + mailTo);
+    Logger.log("受信ボックスを確認してください。");
+  } catch (e) {
+    Logger.log("❌ メール送信失敗: " + e.toString());
+  }
 }
