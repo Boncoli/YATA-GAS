@@ -1727,8 +1727,10 @@ function collectRssFeeds() {
           continue; 
         }
         
-        const cleanDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
-
+        // ★修正: HTMLタグ除去後に、改行コード(\r, \n)をすべて半角スペースに置換する
+        const rawDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
+        const cleanDescription = rawDescription.replace(/[\r\n]+/g, " ");
+        
         const rowData = [
           new Date(),      // A列
           cleanTitle,      // B列
