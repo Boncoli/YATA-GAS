@@ -1177,22 +1177,55 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
 
 /**
  * 【共通エンジン】トレンドレポートHTML生成 (セマンティック検索対応・完全版)
+ * 改修点: 文字化け対策(Entity化) / 横幅拡大 / トピックごとのカード化対応
  */
 function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, options = {}) {
-  // 検索対象の記事がない場合は早期リターン（ただしセマンティック検索ではallArticlesを使わず直接シートを見に行くため、nullチェックは本来不要だが念のため残す）
+  // 検索対象の記事がない場合は早期リターン
   if (!allArticles) return null;
   
   let hasContent = false;
   let finalHtmlBody = ""; 
 
+  // --- スタイル定義 (フル幅・カード型) ---
+  const S = {
+    // 全体背景（グレー）
+    WRAPPER: 'background-color: #f0f2f5; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;',
+    
+    // メインコンテナ（幅を1200pxまで拡大）
+    CONTAINER: 'width: 100%; max-width: 1200px; margin: 0 auto;',
+    
+    // ヘッダーカード
+    HEADER_CARD: 'background-color: #3498db; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1);',
+    HEADER_TITLE: 'margin: 0; color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: 0.05em;',
+    HEADER_SUB: 'margin: 5px 0 0 0; color: #eaf2f8; font-size: 13px;',
+    
+    // キーワードセクション（背景透明・枠なし。内部のカードで構成する）
+    KEYWORD_SECTION: 'margin-bottom: 40px;',
+    
+    // キーワード見出し（青い帯）: アイコンは文字化け防止のためHTML参照文字を使用
+    KEYWORD_HEAD: 'background-color: #3498db; color: #fff; padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: bold; font-size: 18px; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);',
+    
+    // コンテンツエリア（カード化は markdownToHtml 側で制御するため、ここは透明なラッパー）
+    KEYWORD_CONTENT: 'padding: 0;',
+
+    // フッター
+    FOOTER: 'text-align: center; padding: 20px; font-size: 12px; color: #606770;'
+  };
+
   // --- HTMLヘッダー作成 ---
   if (!options.isHtmlOutput) {
-    // メール送信時などのヘッダー
-    finalHtmlBody += `<div style="font-family: sans-serif;">
-      <h3 style="border-bottom:2px solid #3498db; padding-bottom:5px; color:#2c3e50;">🤖 AI Trend Analysis (Semantic)</h3>
-      <p style="color:#666; font-size:12px;">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p><br>`;
+    // 【メール送信時】
+    finalHtmlBody += `
+      <div style="${S.WRAPPER}">
+        <div style="${S.CONTAINER}">
+          
+          <div style="${S.HEADER_CARD}">
+            <h3 style="${S.HEADER_TITLE}">&#129302; AI Trend Analysis</h3>
+            <p style="${S.HEADER_SUB}">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p>
+          </div>
+    `;
   } else {
-    // Web UI用スタイル定義 (CSS完全版)
+    // 【Web UI用】(既存スタイル)
     finalHtmlBody += `
     <style>
       .summary-section { background-color: #fff; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
@@ -1209,69 +1242,69 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
   }
 
   const procStartTime = new Date().getTime();
-  const TIME_LIMIT_MS = 280 * 1000; // 実行時間制限 (約4.5分)
+  const TIME_LIMIT_MS = 280 * 1000; 
 
   // ターゲットキーワードごとにループ処理
   for (const item of targetItems) {
-    // 時間制限チェック
     if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
-      finalHtmlBody += `<p style="color:red; font-weight:bold;">⚠️ 時間制限のため、一部のトピック解析を中断しました。</p>`;
+      finalHtmlBody += `<p style="color:red; font-weight:bold; text-align:center;">⚠️ 時間制限のため、一部のトピック解析を中断しました。</p>`;
       break;
     }
 
     const query = item.query;
     const label = item.label || query;
 
-    // ★★★ セマンティック検索の実行 ★★★
-    // 既存のキーワードマッチ (isTextMatchQuery) ではなく、ベクトル検索 (performSemanticSearch) を使用
-    // ※ performSemanticSearchはシートから直接最新データを読み込むため、引数のallArticlesはここでは使用しません
-    const semanticMatches = performSemanticSearch(query, startDate, endDate, 20); // 上位20件を取得
+    const semanticMatches = performSemanticSearch(query, startDate, endDate, 20); 
     const matched = semanticMatches;
 
-    // ヒットなしの場合はスキップ
     if (matched.length === 0) continue;
 
-    // AIによる分析・要約の実行 (履歴機能付き)
     const result = processKeywordAnalysisWithHistory(query, matched, options);
     
     if (result && result.reportBody) {
       hasContent = true;
       let contentBody = result.reportBody;
       
-      // レポート内のキーワード表記をラベルに置換 (例: "query" -> "label")
       if (query !== label) {
         contentBody = contentBody.split(query).join(label);
       }
 
       // 出力形式に応じたHTML生成
       if (options.isHtmlOutput) {
-        // Web UI向け: コードブロック記法を除去して埋め込み
+        // --- Web UI用 ---
         const cleanHtml = contentBody.replace(/```html/gi, "").replace(/```/g, "");
-        
         finalHtmlBody += `<div style="margin-bottom: 15px; color: #666; font-size: 14px;">
           <div style="font-weight: bold;">🔍 AI検索ヒット: ${matched.length}件 (Concept: ${label})</div>
           <div style="font-size: 12px; margin-top: 4px;">📅 検索期間: ${options.dateRangeStr || fmtDate(startDate) + " 〜 " + fmtDate(endDate)}</div>
         </div>`;
-        
         finalHtmlBody += cleanHtml;
+        
       } else {
-        // メール向け: MarkdownをHTMLに変換
+        // --- メール用 (カードデザイン) ---
+        // MarkdownをHTMLに変換（ここで内部のトピック分割を行う）
         const markdownHtml = markdownToHtml(contentBody);
+        
         finalHtmlBody += `
-          <div style="margin-bottom:30px;">
-            <h4 style="background-color:#f0f8ff; padding:8px; border-left:5px solid #3498db; margin:0;">トピック: ${label} (${matched.length}件)</h4>
-            ${markdownHtml}
-          </div><hr style="border:0; border-top:1px dashed #ccc; margin:20px 0;">`;
+          <div style="${S.KEYWORD_SECTION}">
+            <div style="${S.KEYWORD_HEAD}">&#128204; ${label} <span style="font-weight:normal; font-size:13px; margin-left:8px; opacity:0.9;">(${matched.length} posts)</span></div>
+            <div style="${S.KEYWORD_CONTENT}">
+              ${markdownHtml}
+            </div>
+          </div>`;
       }
     }
   }
 
-  // 結果が1つもない場合
   if (!hasContent) return null;
 
   // フッター追加
   if (!options.isHtmlOutput) {
-    finalHtmlBody += `<p style="font-size:11px; color:#999;">※YATA AI Semantic Search Report</p></div>`;
+    finalHtmlBody += `
+          <div style="${S.FOOTER}">
+            YATA - AI Intelligence Platform<br>
+            <span style="opacity: 0.8;">Auto-Generated by AI Engine</span>
+          </div>
+        </div> </div> `;
   }
 
   return finalHtmlBody;
@@ -1417,32 +1450,69 @@ function computeHeuristicScore(article, articleKeywordMap) {
 }
 
 /**
- * markdownToHtml (改良版: メール向けリッチデザイン)
- * 【責務】Markdown → HTML 変換 (インラインCSS付き)
- * 【改善】メールでの可読性を高めるため、見出しや太字にスタイルを適用
+ * markdownToHtml (改良版: バッジ変換 & カード分割機能付き)
+ * 【責務】Markdown → HTML 変換
+ * 【改善】AIが出力した区切り（**1. トピック**など）を検知し、自動的にdivボックスを分割する
  */
 function markdownToHtml(md) {
   if (!md) return "";
   
+  // スタイル定義
   const S = {
-    H3: 'font-size: 18px; font-weight: bold; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-top: 20px; margin-bottom: 10px;',
-    STRONG: 'font-weight: bold; color: #e74c3c;',
+    // 内部カード（白い箱）
+    CARD: 'background-color: #ffffff; padding: 20px; border-radius: 0 8px 8px 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e1e4e8;',
+    // カード内の見出し
+    H3: 'font-size: 18px; font-weight: bold; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; margin-top: 0; margin-bottom: 15px;',
+    STRONG: 'font-weight: bold; color: #e74c3c;', // 強調色（赤）
     LINK: 'color: #0066cc; text-decoration: none; border-bottom: 1px dotted #0066cc;',
     HR: 'border: 0; border-top: 1px solid #eee; margin: 20px 0;',
-    UL: 'padding-left: 20px; margin: 10px 0;',
-    LI: 'margin-bottom: 5px;'
+    // バッジ
+    BADGE: 'display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px; vertical-align: middle;',
+    B_NEW: 'background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb;',
+    B_UP:  'background-color: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9;',
+    B_WARN:'background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2;',
+    B_KEEP:'background-color: #f5f5f5; color: #616161; border: 1px solid #e0e0e0;'
   };
 
+  // 1. 基本的なHTMLエスケープとMarkdown変換
   let html = md
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`)
+    
+    // バッジ変換
+    .replace(/\[新規\/?注目\]|\[新規\]/g, `<span style="${S.BADGE} ${S.B_NEW}">&#9889; 新規</span>`)
+    .replace(/\[進展\]/g, `<span style="${S.BADGE} ${S.B_UP}">&#128200; 進展</span>`)
+    .replace(/\[懸念\]/g, `<span style="${S.BADGE} ${S.B_WARN}">&#9888; 懸念</span>`)
+    .replace(/\[継続\]/g, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`)
+    
     .replace(/\*\*(.*?)\*\*/g, `<strong style="${S.STRONG}">$1</strong>`)
     .replace(/\*\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" style="${S.LINK}">$1</a>`)
     .replace(/^\s*---\s*$/gm, `<hr style="${S.HR}">`)
     .replace(/^- (.*$)/gim, `&bull; $1`)
     .replace(/\n/g, '<br>\n');
+
+  // 2. ★追加: コンテンツの「カード分割」処理
+  // 最初のカードを開始
+  html = `<div style="${S.CARD}">` + html;
+  
+  // 区切りパターンを検出して、</div><div ...> を挿入する
+  // パターンA: "**1. トピック**" のような番号付きトピック (strongタグ化されている)
+  // パターンB: "**【注目の兆候...】**" のようなセクション区切り
+  
+  // 注意: replaceの文字列内で変数を展開するため、一旦プレースホルダーを使うか、慎重に置換する
+  const splitTag = `</div><div style="${S.CARD}">`;
+  
+  // numbered topics (e.g. 1. Title)
+  html = html.replace(/<strong style="[^"]+">[0-9]+\./g, match => splitTag + match);
+  
+  // specific sections (Early Signals, Next Actions)
+  html = html.replace(/<strong style="[^"]+">【注目の兆候/g, match => splitTag + match);
+  html = html.replace(/<strong style="[^"]+">【次のアクション/g, match => splitTag + match);
+  
+  // 最後のカードを閉じる
+  html += `</div>`;
 
   return html;
 }
