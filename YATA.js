@@ -1999,6 +1999,92 @@ function getChildText(element, tagName) {
 }
 
 /**
+ * backfillVectors: ベクトル未付与の記事に対してEmbeddingを一括実行
+ * 【役割】以前取り込んだ記事などで、見出しはあるがベクトル（G列）が空のものに対して、
+ * ベクトルを生成して保存します。
+ */
+function backfillVectors() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const trendDataSheet = ss.getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+  if (!trendDataSheet) {
+    Logger.log("エラー: collectシートが見つかりません。");
+    return;
+  }
+  const lastRow = trendDataSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const startTime = new Date().getTime();
+  const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
+  const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
+
+  const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
+  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
+  const values = dataRange.getValues();
+  
+  let processedCount = 0;
+  let minModifiedIndex = -1;
+  let maxModifiedIndex = -1;
+
+  for (let i = 0; i < values.length; i++) {
+    // タイムアウトチェック
+    if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
+      Logger.log(`時間制限のため中断します。処理件数: ${processedCount}`);
+      break;
+    }
+
+    const row = values[i];
+    const headline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1]; // E列
+    const currentVector = row[VECTOR_COL_INDEX]; // G列
+
+    // 見出しがあり、かつベクトルが空の場合に処理
+    if (headline && String(headline).trim() !== "" && (!currentVector || String(currentVector).trim() === "")) {
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // B列 (タイトル)
+      
+      try {
+        const textToEmbed = `Title: ${title}\nSummary: ${headline}`;
+        const vector = LlmService.generateVector(textToEmbed);
+        
+        if (vector) {
+          while (values[i].length <= VECTOR_COL_INDEX) {
+            values[i].push("");
+          }
+          values[i][VECTOR_COL_INDEX] = vector.join(',');
+          processedCount++;
+          
+          if (minModifiedIndex === -1 || i < minModifiedIndex) minModifiedIndex = i;
+          if (i > maxModifiedIndex) maxModifiedIndex = i;
+        }
+      } catch (e) {
+        Logger.log(`ベクトル生成エラー (Row: ${i + 2}): ${e.toString()}`);
+      }
+      
+      Utilities.sleep(500); // 連続呼び出し緩和
+    }
+  }
+
+  // シートへの書き戻し
+  if (processedCount > 0 && minModifiedIndex !== -1) {
+    const startRow = minModifiedIndex + 2;
+    const numRows = maxModifiedIndex - minModifiedIndex + 1;
+    const modifiedData = values.slice(minModifiedIndex, maxModifiedIndex + 1);
+    
+    // 列数正規化
+    const maxColsInSlice = modifiedData.reduce((max, row) => Math.max(max, row.length), 0);
+    const normalizedData = modifiedData.map(row => {
+      while (row.length < maxColsInSlice) row.push("");
+      return row;
+    });
+
+    const outputRange = trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice);
+    outputRange.setValues(normalizedData);
+    
+    Logger.log(`バックフィル完了: ${processedCount} 件のベクトルを付与しました。`);
+  } else {
+    Logger.log("バックフィルが必要な記事（見出しあり・ベクトルなし）は見つかりませんでした。");
+  }
+}
+
+/**
  * sanitizeXml
  * 【責務】XMLパースエラーの原因となるHTMLタグや特殊文字を除去する。
  */
