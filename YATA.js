@@ -213,13 +213,13 @@ function runTrendAnalysis(targetKeyword, options = {}) {
  * @param {Object} clientOptions - クライアントから渡された日付等のオプション
  * @returns {string} 分析結果のHTML文字列
  */
+/** executeWeeklyDigest: ウェブUI呼び出し - 指定キーワードのダイジェスト生成 */
 function executeWeeklyDigest(keyword, clientOptions = {}) {
   try {
     const trimmedKeyword = String(keyword || "").trim();
     Logger.log(`Web UIから入力されたキーワード: "${trimmedKeyword}"`);
-    if (clientOptions.startDate) Logger.log(`期間指定: ${clientOptions.startDate} 〜 ${clientOptions.endDate}`);
 
-    // runTrendAnalysis に委譲 (Web用設定: 30日間, HTML返却, Web用プロンプト)
+    // runTrendAnalysis に委譲
     return runTrendAnalysis(trimmedKeyword, {
       days: 30,
       startDate: clientOptions.startDate,
@@ -227,6 +227,10 @@ function executeWeeklyDigest(keyword, clientOptions = {}) {
       returnHtml: true,
       isHtmlOutput: true, 
       enableHistory: false, // Web検索では履歴を使わない
+      
+      // ★追加: クライアントからの指定があればそれを使う
+      useSemantic: clientOptions.useSemantic, 
+      
       promptKeys: {
         system: "WEB_ANALYSIS_SYSTEM", 
         user: "WEB_ANALYSIS_USER"
@@ -250,6 +254,16 @@ function executeWeeklyDigest(keyword, clientOptions = {}) {
  * sendPersonalizedReport
  * 【責務】Usersシートを読み込み、ユーザーごとの購読条件に合わせてAIレポートを生成・送信する。
  */
+/**
+ * sendPersonalizedReport (セマンティック検索設定対応版)
+ * UsersシートのE列(5列目)を見て、AI意味検索を使うかどうかをユーザーごとに切り替える
+ */
+/**
+ * sendPersonalizedReport (日刊/週刊 自動切り替え版)
+ * Usersシートの設定に基づき、対象期間(daysWindow)を動的に変更してレポートを送信する。
+ * - 配信曜日が空欄(毎日)の場合: daysWindow = 2 (昨日〜今日)
+ * - 配信曜日が指定されている場合: daysWindow = 7 (過去1週間)
+ */
 function sendPersonalizedReport() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet();
   const usersSheet = sheet.getSheetByName(AppConfig.get().SheetNames.USERS);
@@ -265,7 +279,7 @@ function sendPersonalizedReport() {
   const lastRowKw = keywordsSheet.getLastRow();
   const masterData = lastRowKw >= 2 ? keywordsSheet.getRange(2, 1, lastRowKw - 1, 4).getValues() : [];
   
-  // 今日のデフォルト配信対象（マスター）
+  // 今日のデフォルト配信対象（総合版用）
   const todaysMasterItems = masterData.filter(row => {
     const flag = String(row[1]).trim();
     const day  = String(row[2]).trim();
@@ -275,9 +289,9 @@ function sendPersonalizedReport() {
   const todaysQueries = todaysMasterItems.map(item => item.query).filter(String);
   const todaysLabels  = todaysMasterItems.map(item => item.label);
 
-  // 2. ユーザー取得
+  // 2. ユーザー取得 (E列まで)
   const lastRowUsr = usersSheet.getLastRow();
-  const users = lastRowUsr >= 2 ? usersSheet.getRange(2, 1, lastRowUsr - 1, 4).getValues() : [];
+  const users = lastRowUsr >= 2 ? usersSheet.getRange(2, 1, lastRowUsr - 1, 5).getValues() : [];
 
   // 3. ユーザーごとのループ
   users.forEach(user => {
@@ -285,57 +299,71 @@ function sendPersonalizedReport() {
     const email = user[1];
     const userDay = String(user[2]).trim();
     const userKeywordsRaw = String(user[3]).trim();
+    
+    // セマンティック検索フラグ (E列)
+    const semanticFlag = String(user[4] || "").trim().toUpperCase();
+    const useSemanticForUser = (semanticFlag === "TRUE" || semanticFlag === "〇");
 
     if (!email) return;
 
     let targetQueries = [];
-    let displayLabels = []; // queryと対になるラベル
+    let displayLabels = [];
     let isPersonalized = false;
+    
+    // ★追加: 期間設定用の変数 (デフォルトは週刊=7日)
+    let daysWindow = 7;
 
-    // --- 分岐ロジック (日刊/週刊判定) ---
+    // --- 分岐ロジック ---
     if (userDay === "") {
-      // ■ 日刊モード
+      // ■ 日刊モード (毎日配信)
+      // 対象期間: 昨日0:00 〜 今朝 (2日間)
+      daysWindow = 2; 
+      
       if (userKeywordsRaw !== "") {
-        // [カスタム日刊] キーワード指定あり -> 毎日そのキーワードで分析
+        // 個人設定キーワードあり
         targetQueries = userKeywordsRaw.split(',').map(k => k.trim());
-        displayLabels = targetQueries; // カスタムはラベル=クエリ
+        displayLabels = targetQueries;
         isPersonalized = true;
       } else {
-        // [デフォルト日刊] 指定なし -> 今日のマスタースケジュール
+        // キーワードなし → 今日の総合ニュース
         if (todaysQueries.length > 0) {
           targetQueries = todaysQueries;
           displayLabels = todaysLabels;
         } else {
-          return; // 今日は対象なし
+          return; // 配信対象なし
         }
       }
     } else {
-      // ■ 週刊モード
+      // ■ 週刊モード (曜日指定あり)
+      // 対象期間: 過去7日間
+      daysWindow = 7;
+
       if (userDay === currentDayStr) {
         if (userKeywordsRaw !== "") {
           targetQueries = userKeywordsRaw.split(',').map(k => k.trim());
           displayLabels = targetQueries;
           isPersonalized = true;
         } else {
-          // デフォルト週刊（将来拡張用）
-          return; 
+          return; // 週刊でキーワードなしは配信しない仕様
         }
       } else {
-        return; // 曜日違い
+        return; // 指定曜日ではないのでスキップ
       }
     }
 
-    const DAYS_RANGE = 7; 
-    const { start, end } = getDateWindow(DAYS_RANGE);
+    // ★変更: daysWindow を使って期間を計算
+    const { start, end } = getDateWindow(daysWindow);
     const allArticles = getArticlesInDateWindow(start, end);
 
     const targetItems = targetQueries.map((q, i) => ({ query: q, label: displayLabels[i] }));
     
-    // 共通エンジン呼び出し
-    const reportHtml = generateTrendReportHtml(allArticles, targetItems, start, end);
+    // レポート生成
+    const reportHtml = generateTrendReportHtml(allArticles, targetItems, start, end, {
+      useSemantic: useSemanticForUser
+    });
 
     if (!reportHtml) {
-      Logger.log(`[Skip] ${name}様: 分析対象の記事なし`);
+      Logger.log(`[Skip] ${name}様: 分析対象の記事なし (期間: ${daysWindow}日)`);
       return;
     }
 
@@ -343,17 +371,20 @@ function sendPersonalizedReport() {
     const labelSummary = displayLabels.slice(0, 3).join(', ') + (displayLabels.length > 3 ? '...' : '');
     const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'MM/dd');
     let subjectPrefix = isPersonalized ? "【YATA】My AI Report: " : "【YATA】Daily Trend: ";
+    
+    if (useSemanticForUser) subjectPrefix += "[🤖] ";
+
     const subject = `${subjectPrefix}${labelSummary} (${dateStr})`;
     
     try {
-      // [REFACTORED] 共通関数 sendDigestEmail を使用
-      sendDigestEmail(null, reportHtml, null, DAYS_RANGE, {
+      // ★変更: 第4引数に daysWindow を渡す (これでメール件名の「日刊/週間」判定などが正しく機能する)
+      sendDigestEmail(null, reportHtml, null, daysWindow, {
         recipient: email,
         isHtml: true,
         subjectOverride: subject,
         bcc: AppConfig.get().Digest.mailTo
       });
-      Logger.log(`[Sent] ${name}様へAIレポート送信完了`);
+      Logger.log(`[Sent] ${name}様へAIレポート送信完了 (Semantic: ${useSemanticForUser}, Days: ${daysWindow})`);
     } catch (e) {
       _logError("sendPersonalizedReport.forEach", e, `${name}様への送信失敗`);
     }
@@ -366,6 +397,10 @@ function sendPersonalizedReport() {
  * 短い記事：タイトルまたはスプレッドシート数式(=GOOGLETRANSLATE)を使用。
  * 長い記事：LLM(ModelNano)を呼び出して要約を生成。
  * 【実行制限】GASの実行時間オーバーを避けるため、5分のタイムアウト制限を設けている。
+ */
+/** * processSummarization: AI見出し生成（E列）＆ ベクトル生成（G列）
+ * 【改修版】短い記事（isShort）でもベクトルを生成するように修正。
+ * また、変更範囲(min/maxModifiedIndex)の判定を全パターンで有効化。
  */
 function processSummarization() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -383,8 +418,7 @@ function processSummarization() {
   // ベクトル保存用の列インデックス (G列 = 6)
   const VECTOR_COL_INDEX = 6; 
 
-  // データ範囲を取得（列数が足りない場合も想定して最大列まで取得）
-  // 読み込み時にG列が含まれるように、getLastColumn() と VECTOR_COL_INDEX + 1 の大きい方をとる
+  // データ範囲を取得
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
   const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
   const values = dataRange.getValues();
@@ -392,19 +426,28 @@ function processSummarization() {
   const articlesToSummarize = [];
   const summaryColIndex = AppConfig.get().CollectSheet.Columns.SUMMARY - 1; // E列 (4)
 
-  // 1. 要約が必要な記事を特定
+  let apiCallCount = 0;
+  let vectorCount = 0;
+  
+  // ★変更: ループの前に移動（短い記事の更新も追跡するため）
+  let minModifiedIndex = -1;
+  let maxModifiedIndex = -1;
+
+  // 1. 要約が必要な記事を特定 & 短い記事は即時処理
   values.forEach((row, index) => {
     const currentHeadline = row[summaryColIndex];
-    
-    // 見出しが空、あるいは未設定の場合
+    const currentVector = row[VECTOR_COL_INDEX]; // 既存ベクトル確認
+
+    // 「見出しが空」または「ベクトルが空（バックフィル的措置）」の場合に処理対象とする
+    // ※今回は主に新規記事の見出し生成フローに合わせる
     if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // B列
-      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1]; // D列
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; 
+      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1]; 
       
       const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
       
       if (isShort) {
-        // 短い記事は翻訳やタイトル転記で済ませる（ベクトル化はスキップまたは後で実施も可だが、ここでは要約フローに合わせる）
+        // --- 短い記事の処理 ---
         let newHeadline;
         const sheetRowNumber = index + 2;
         if (title && String(title).trim() !== "") {
@@ -415,17 +458,35 @@ function processSummarization() {
           newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
         }
         values[index][summaryColIndex] = newHeadline;
+
+        // ★追加: 短い記事でもベクトルを生成する
+        try {
+          const textToEmbed = `Title: ${title}\nSummary: ${newHeadline}`;
+          const vector = LlmService.generateVector(textToEmbed);
+          if (vector) {
+            // 列拡張
+            while (values[index].length <= VECTOR_COL_INDEX) {
+              values[index].push("");
+            }
+            values[index][VECTOR_COL_INDEX] = vector.join(',');
+            vectorCount++;
+          }
+        } catch (e) {
+          Logger.log(`ベクトル生成エラー(Short) (Row: ${sheetRowNumber}): ${e.toString()}`);
+        }
+
+        // 更新範囲を記録
+        if (minModifiedIndex === -1 || index < minModifiedIndex) minModifiedIndex = index;
+        if (index > maxModifiedIndex) maxModifiedIndex = index;
+
       } else {
-        // AI要約対象としてリストに追加
+        // --- 長い記事はAI要約リストへ ---
         articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
       }
     }
   });
 
-  let apiCallCount = 0;
-  let vectorCount = 0;
-
-  // 2. AI要約 & ベクトル生成の実行
+  // 2. 長い記事のAI要約 & ベクトル生成の実行
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
     
@@ -458,31 +519,32 @@ function processSummarization() {
         Logger.log(`見出し生成システムエラー (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
       }
 
-      // 要約が生成できた場合、シートを更新し、さらにベクトルを生成する
       if (newHeadline && String(newHeadline).trim() !== "" && !String(newHeadline).includes("API Error")) {
-        // 要約を配列にセット
         values[article.originalRowIndex][summaryColIndex] = newHeadline;
 
-        // ★★★ 追加機能: ベクトル生成プロセス ★★★
+        // ベクトル生成
         try {
           const textToEmbed = `Title: ${article.title}\nSummary: ${newHeadline}`;
-          
-          // LlmServiceに追加した generateVector を呼び出す
           const vector = LlmService.generateVector(textToEmbed);
           
           if (vector) {
-            // 行データ配列が短い場合は拡張する
             while (values[article.originalRowIndex].length <= VECTOR_COL_INDEX) {
               values[article.originalRowIndex].push("");
             }
-            // ベクトルをカンマ区切り文字列として保存
             values[article.originalRowIndex][VECTOR_COL_INDEX] = vector.join(',');
             vectorCount++;
           }
         } catch (e) {
           Logger.log(`ベクトル生成エラー (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
         }
-        // ★★★★★★★★★★★★★★★★★★★★★★★★★
+
+        // 更新範囲を記録
+        if (minModifiedIndex === -1 || article.originalRowIndex < minModifiedIndex) {
+          minModifiedIndex = article.originalRowIndex;
+        }
+        if (article.originalRowIndex > maxModifiedIndex) {
+          maxModifiedIndex = article.originalRowIndex;
+        }
 
       } else {
         Logger.log(`スキップしました (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
@@ -492,14 +554,28 @@ function processSummarization() {
     }
   }
 
-  // 3. シートへの一括書き込み
-  if (lastRow > 1) {
-    // データ範囲を拡張した可能性があるため、書き込み範囲を再定義
-    const outputRange = trendDataSheet.getRange(2, 1, lastRow - 1, values[0].length);
-    outputRange.setValues(values);
-    Logger.log(`処理完了: 要約生成 ${apiCallCount} 件 / ベクトル生成 ${vectorCount} 件。シートを更新しました。`);
+  // 3. シートへの部分書き込み (最適化済み)
+  if (minModifiedIndex !== -1 && maxModifiedIndex !== -1) {
+    const startRow = minModifiedIndex + 2; 
+    const numRows = maxModifiedIndex - minModifiedIndex + 1;
+    
+    const modifiedData = values.slice(minModifiedIndex, maxModifiedIndex + 1);
+
+    // 列数正規化
+    const maxColsInSlice = modifiedData.reduce((max, row) => Math.max(max, row.length), 0);
+    const normalizedData = modifiedData.map(row => {
+      while (row.length < maxColsInSlice) {
+        row.push("");
+      }
+      return row;
+    });
+
+    const outputRange = trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice);
+    outputRange.setValues(normalizedData);
+    
+    Logger.log(`処理完了: 要約生成(API) ${apiCallCount} 件 / ベクトル生成 ${vectorCount} 件。シートの一部(Row ${startRow}〜${startRow + numRows - 1})を更新しました。`);
   } else {
-    Logger.log("見出し生成が必要な記事は見つかりませんでした。");
+    Logger.log("更新対象の記事はありませんでした。");
   }
 }
 
@@ -1176,75 +1252,49 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
 }
 
 /**
- * 【共通エンジン】トレンドレポートHTML生成 (セマンティック検索対応・完全版)
- * 改修点: 文字化け対策(Entity化) / 横幅拡大 / トピックごとのカード化対応
+ * 【共通エンジン】トレンドレポートHTML生成 (ハイブリッド検索対応版)
+ * フラグ(options.useSemantic)に応じて、ベクトル検索とキーワード検索を切り替える
  */
 function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, options = {}) {
-  // 検索対象の記事がない場合は早期リターン
-  if (!allArticles) return null;
+  // 記事データがない場合（キーワード検索モードでは必須）
+  if (!allArticles && !options.useSemantic) return null;
   
   let hasContent = false;
   let finalHtmlBody = ""; 
 
   // --- スタイル定義 (フル幅・カード型) ---
   const S = {
-    // 全体背景（グレー）
     WRAPPER: 'background-color: #f0f2f5; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;',
-    
-    // メインコンテナ（幅を1200pxまで拡大）
     CONTAINER: 'width: 100%; max-width: 1200px; margin: 0 auto;',
-    
-    // ヘッダーカード
     HEADER_CARD: 'background-color: #3498db; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1);',
     HEADER_TITLE: 'margin: 0; color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: 0.05em;',
     HEADER_SUB: 'margin: 5px 0 0 0; color: #eaf2f8; font-size: 13px;',
-    
-    // キーワードセクション（背景透明・枠なし。内部のカードで構成する）
     KEYWORD_SECTION: 'margin-bottom: 40px;',
-    
-    // キーワード見出し（青い帯）: アイコンは文字化け防止のためHTML参照文字を使用
     KEYWORD_HEAD: 'background-color: #3498db; color: #fff; padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: bold; font-size: 18px; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.1);',
-    
-    // コンテンツエリア（カード化は markdownToHtml 側で制御するため、ここは透明なラッパー）
     KEYWORD_CONTENT: 'padding: 0;',
-
-    // フッター
     FOOTER: 'text-align: center; padding: 20px; font-size: 12px; color: #606770;'
   };
 
-  // --- HTMLヘッダー作成 ---
+  // ヘッダー生成（メール/Web分岐）
   if (!options.isHtmlOutput) {
-    // 【メール送信時】
     finalHtmlBody += `
       <div style="${S.WRAPPER}">
         <div style="${S.CONTAINER}">
-          
           <div style="${S.HEADER_CARD}">
             <h3 style="${S.HEADER_TITLE}">&#129302; AI Trend Analysis</h3>
             <p style="${S.HEADER_SUB}">集計期間: ${fmtDate(startDate)} 〜 ${fmtDate(endDate)}</p>
-          </div>
-    `;
+          </div>`;
   } else {
-    // 【Web UI用】(既存スタイル)
-    finalHtmlBody += `
-    <style>
-      .summary-section { background-color: #fff; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-      .summary-title { margin-top: 0; color: #34495e; font-size: 18px; font-weight: bold; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; margin-bottom: 15px; }
-      .section-header { border-left: 5px solid #3498db; border-bottom: none; padding-left: 10px; padding-bottom: 0; color: #2c3e50; margin-top: 30px; margin-bottom: 15px; font-size: 20px; }
-      .tech-card { margin-bottom: 20px; border: none; padding: 20px; border-radius: 8px; background-color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 5px solid #3498db; }
-      .tech-title { margin: 0 0 15px 0; color: #2c3e50; font-size: 17px; font-weight: bold; line-height: 1.4; }
-      .tech-meta { font-size: 15px; line-height: 1.7; color: #555; }
-      .tech-link { margin-top: 15px; text-align: right; }
-      .tech-link a { display: inline-block; padding: 8px 16px; background-color: #eaf2f8; color: #3498db; text-decoration: none; border-radius: 20px; font-size: 13px; font-weight: bold; }
-      .tech-link a:hover { background-color: #d4e6f1; }
-    </style>
-    `;
+    // Web用スタイル (CSS)
+    finalHtmlBody += `<style>.summary-section{background-color:#fff;padding:20px;border-radius:8px;margin-bottom:25px;box-shadow:0 2px 5px rgba(0,0,0,0.05)}.summary-title{margin-top:0;color:#34495e;font-size:18px;font-weight:bold;border-bottom:2px solid #ecf0f1;padding-bottom:10px;margin-bottom:15px}.section-header{border-left:5px solid #3498db;border-bottom:none;padding-left:10px;padding-bottom:0;color:#2c3e50;margin-top:30px;margin-bottom:15px;font-size:20px}.tech-card{margin-bottom:20px;border:none;padding:20px;border-radius:8px;background-color:#fff;box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid #3498db}.tech-title{margin:0 0 15px 0;color:#2c3e50;font-size:17px;font-weight:bold;line-height:1.4}.tech-meta{font-size:15px;line-height:1.7;color:#555}.tech-link{margin-top:15px;text-align:right}.tech-link a{display:inline-block;padding:8px 16px;background-color:#eaf2f8;color:#3498db;text-decoration:none;border-radius:20px;font-size:13px;font-weight:bold}.tech-link a:hover{background-color:#d4e6f1}</style>`;
   }
 
   const procStartTime = new Date().getTime();
   const TIME_LIMIT_MS = 280 * 1000; 
 
-  // ターゲットキーワードごとにループ処理
+  // ★デフォルト設定: useSemanticが指定されていない場合は false (キーワード一致) とする
+  const useSemantic = (options.useSemantic === true);
+
   for (const item of targetItems) {
     if (new Date().getTime() - procStartTime > TIME_LIMIT_MS) {
       finalHtmlBody += `<p style="color:red; font-weight:bold; text-align:center;">⚠️ 時間制限のため、一部のトピック解析を中断しました。</p>`;
@@ -1253,9 +1303,22 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
 
     const query = item.query;
     const label = item.label || query;
+    let matched = [];
 
-    const semanticMatches = performSemanticSearch(query, startDate, endDate, 20); 
-    const matched = semanticMatches;
+    // ▼▼▼ 検索方式の分岐 ▼▼▼
+    if (useSemantic) {
+      // A. セマンティック検索 (ベクトル)
+      // ※ performSemanticSearch は内部でシートからデータを取るので allArticles は使わない
+      matched = performSemanticSearch(query, startDate, endDate, 20); 
+    } else {
+      // B. 従来型キーワード検索 (AND/OR/NOT対応)
+      // 引数で渡された allArticles からフィルタリング
+      matched = allArticles.filter(art => {
+        const content = (art.title + " " + art.headline + " " + art.abstractText);
+        return isTextMatchQuery(content, query);
+      });
+    }
+    // ▲▲▲ 分岐ここまで ▲▲▲
 
     if (matched.length === 0) continue;
 
@@ -1264,26 +1327,21 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
     if (result && result.reportBody) {
       hasContent = true;
       let contentBody = result.reportBody;
-      
-      if (query !== label) {
-        contentBody = contentBody.split(query).join(label);
-      }
+      if (query !== label) contentBody = contentBody.split(query).join(label);
 
-      // 出力形式に応じたHTML生成
       if (options.isHtmlOutput) {
-        // --- Web UI用 ---
+        // Web用
         const cleanHtml = contentBody.replace(/```html/gi, "").replace(/```/g, "");
+        const searchTypeLabel = useSemantic ? "🤖 AI意味検索" : "🔍 キーワード検索";
+        
         finalHtmlBody += `<div style="margin-bottom: 15px; color: #666; font-size: 14px;">
-          <div style="font-weight: bold;">🔍 AI検索ヒット: ${matched.length}件 (Concept: ${label})</div>
+          <div style="font-weight: bold;">${searchTypeLabel}ヒット: ${matched.length}件 (Concept: ${label})</div>
           <div style="font-size: 12px; margin-top: 4px;">📅 検索期間: ${options.dateRangeStr || fmtDate(startDate) + " 〜 " + fmtDate(endDate)}</div>
         </div>`;
         finalHtmlBody += cleanHtml;
-        
       } else {
-        // --- メール用 (カードデザイン) ---
-        // MarkdownをHTMLに変換（ここで内部のトピック分割を行う）
+        // メール用 (カードデザイン)
         const markdownHtml = markdownToHtml(contentBody);
-        
         finalHtmlBody += `
           <div style="${S.KEYWORD_SECTION}">
             <div style="${S.KEYWORD_HEAD}">&#128204; ${label} <span style="font-weight:normal; font-size:13px; margin-left:8px; opacity:0.9;">(${matched.length} posts)</span></div>
@@ -1297,14 +1355,13 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
 
   if (!hasContent) return null;
 
-  // フッター追加
   if (!options.isHtmlOutput) {
     finalHtmlBody += `
           <div style="${S.FOOTER}">
             YATA - AI Intelligence Platform<br>
             <span style="opacity: 0.8;">Auto-Generated by AI Engine</span>
           </div>
-        </div> </div> `;
+        </div></div>`;
   }
 
   return finalHtmlBody;

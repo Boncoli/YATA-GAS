@@ -3,8 +3,7 @@
 <head>
   <base target="_top">
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- スマホ対応に必須 -->
-  <title>YATA - AI Intelligence Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>YATA - AI Intelligence Platform</title>
   <style>
     body { 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
@@ -170,8 +169,19 @@
   </div>
 
   <div style="margin-bottom: 20px;">
-    <a href="#" onclick="toggleOptions(); return false;" style="color: #3498db; text-decoration: none; font-size: 14px;">▼ 詳細設定（期間を指定）</a>
+    <a href="#" onclick="toggleOptions(); return false;" style="color: #3498db; text-decoration: none; font-size: 14px;">▼ 詳細設定（期間・検索モード）</a>
     <div id="optionsArea" style="display: none; margin-top: 10px; padding: 15px; background: #fff; border: 1px solid #eee; border-radius: 6px;">
+      
+      <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px dashed #eee;">
+        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+          <input type="checkbox" id="useSemantic" checked style="width: auto; margin: 0 10px 0 0;">
+          <span style="font-weight: bold; color: #2c3e50;">🤖 AI意味検索（セマンティック検索）を有効にする</span>
+        </label>
+        <p style="font-size: 11px; color: #666; margin: 5px 0 0 25px; line-height: 1.5;">
+          <span style="color:#3498db; font-weight:bold;">ON:</span> 文脈が近い記事を探します（表記ゆれに強く、関連トピックを発見しやすい）。<br>
+          <span style="color:#e67e22; font-weight:bold;">OFF:</span> キーワードが文字通り含まれる記事だけを探します（AND/OR/除外検索で厳密に絞り込めます）。
+        </p>
+      </div>
       <label style="font-size: 13px;">検索期間:</label>
       <div style="display: flex; gap: 10px; align-items: center;">
         <input type="date" id="startDate" style="width: 140px; padding: 8px; margin: 0; border: 1px solid #ccc; border-radius: 4px;">
@@ -197,6 +207,8 @@
       const keyword = document.getElementById('keyword').value;
       const startDate = document.getElementById('startDate').value;
       const endDate = document.getElementById('endDate').value;
+      // ★追加: チェックボックスの状態を取得
+      const useSemantic = document.getElementById('useSemantic').checked;
       
       const output = document.getElementById('output');
       const runButton = document.getElementById('runButton'); 
@@ -216,6 +228,9 @@
       const options = {};
       if (startDate) options.startDate = startDate;
       if (endDate) options.endDate = endDate;
+      
+      // ★追加: サーバーに送るオプションに設定
+      options.useSemantic = useSemantic;
 
       // サーバー側の searchAndAnalyzeKeyword を呼び出す
       google.script.run
