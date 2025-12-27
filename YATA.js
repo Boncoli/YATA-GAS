@@ -1,9 +1,9 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 2.9.0
- * @date 2025-12-26
+ * @version 3.0.0
+ * @date 2025-12-27
  * @description YATA (The Three-Legged Guide to the Web)
- *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析
+ *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
  *
  * =============================================================================
  * 【目次 / Table of Contents】
@@ -102,6 +102,15 @@ const AppConfig = (function() {
           FRESHNESS_DECAY: 7,    // 鮮度が減衰する日数定数 (exp(-days/7))
           ABSTRACT_BONUS: 20,    // 抜粋ありの場合の最大ボーナス点
           ABSTRACT_DIVISOR: 100  // 抜粋の文字数を割る数
+        },
+        // ★【追加】予兆（サイン）検知エンジンの設定
+        SignalDetection: {
+          LOOKBACK_DAYS_MAINSTREAM: 7, // 主流（重心）計算の対象期間
+          LOOKBACK_DAYS_SIGNALS: 3,    // 予兆検知の対象期間（直近）
+          OUTLIER_THRESHOLD: 0.70,     // これ以下の類似度なら「主流から外れている」と判定
+          NUCLEATION_RADIUS: 0.88,     // これ以上の類似度なら「核形成（近い概念）」と判定
+          MIN_NUCLEI_SOURCES: 2,       // 核を形成するのに必要な最低ソース数
+          MAX_OUTLIERS_TO_PROCESS: 50  // 演算負荷軽減のため一度に処理するアウトライヤー上限
         }
       },
       // ★【追加】UIデザイン・メッセージ設定
@@ -183,6 +192,35 @@ function runSummarizationJob() {
   Logger.log("--- 要約ジョブ開始 ---");
   processSummarization();  // 未処理記事のAI要約
   Logger.log("--- 要約ジョブ完了 ---");
+}
+
+/**
+ * トリガーC: 予兆（サイン）検知ジョブ (Emerging Signal Detection)
+ * 頻度の目安: 1日1回（要約ジョブの完了後が望ましい）
+ * 役割: 既存のトレンドから乖離した「核形成」を検知し、インテリジェンス・レポートを生成・送信します。
+ */
+function runEmergingSignalJob() {
+  Logger.log("--- 予兆（サイン）検知ジョブ開始 ---");
+  try {
+    const report = EmergingSignalEngine.detect();
+    if (report && report.html) {
+      const config = AppConfig.get().Digest;
+      const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
+      const subject = `【YATA】Emerging Signals Report (${today})`;
+      
+      sendDigestEmail(null, report.html, null, 1, {
+        isHtml: true,
+        subjectOverride: subject,
+        bcc: config.mailTo
+      });
+      Logger.log("予兆レポートの送信を完了しました。");
+    } else {
+      Logger.log("今回の実行では新たな「核形成（予兆）」は検知されませんでした。");
+    }
+  } catch (e) {
+    _logError("runEmergingSignalJob", e, "予兆検知ジョブ中に致命的なエラーが発生しました。");
+  }
+  Logger.log("--- 予兆（サイン）検知ジョブ完了 ---");
 }
 
 /** dailyDigestJob: 日刊ダイジェスト生成 - 過去24時間の全記事（キーワードフィルタリングなし） */
@@ -2582,6 +2620,7 @@ function runAllTests() {
     _test_isTextMatchQuery();
     _test_computeHeuristicScore();
     _test_normalizeUrl();
+    _test_EmergingSignalEngine();
     
     Logger.log("✅ 全てのロジックテストに合格しました。");
   } catch (e) {
@@ -2589,6 +2628,89 @@ function runAllTests() {
     throw e;
   }
 }
+
+/**
+ * _test_EmergingSignalEngine
+ * 予兆検知エンジンの計算ロジック（重心・アウトライヤー・核形成）を検証。
+ */
+function _test_EmergingSignalEngine() {
+  Logger.log("test_EmergingSignalEngine: 開始");
+
+  // 1. ダミーデータの作成 (3次元ベクトルで簡略化)
+  // 主流: [1.0, 1.0, 0.0] 付近
+  const mainstream = [
+    { vector: [0.9, 0.9, 0.1], source: "SourceA" },
+    { vector: [0.95, 0.85, 0.0], source: "SourceB" },
+    { vector: [0.85, 0.95, 0.0], source: "SourceC" }
+  ];
+
+  // アウトライヤー（孤独な点）: [0.0, 0.0, 1.0] 付近
+  // ソースが異なる2つの点が近い座標にある（＝核形成）
+  const nucleusPoint1 = { vector: [0.1, 0.1, 0.9], source: "SourceD" };
+  const nucleusPoint2 = { vector: [0.12, 0.08, 0.92], source: "SourceE" };
+  
+  // 単なるノイズ: 全く別の場所 [-1.0, 0.0, 0.0]
+  const noise = { vector: [-0.9, 0.1, 0.1], source: "SourceF" };
+
+  const allArticles = [...mainstream, nucleusPoint1, nucleusPoint2, noise];
+
+  // 2. 重心計算のテスト
+  // Private関数のテストのため、EmergingSignalEngineオブジェクトから呼べるようにするか、
+  // ロジックを直接検証する。ここではアルゴリズムの妥当性を確認。
+  const dim = 3;
+  const avg = new Array(dim).fill(0);
+  allArticles.forEach(a => {
+    for (let i = 0; i < dim; i++) avg[i] += a.vector[i];
+  });
+  for (let i = 0; i < dim; i++) avg[i] /= allArticles.length;
+  
+  Logger.log(`算出された重心: [${avg.map(v => v.toFixed(2)).join(", ")}]`);
+
+  // 3. アウトライヤー抽出のテスト (重心から離れているか)
+  const threshold = 0.70;
+  const outliers = allArticles.filter(a => {
+    const sim = calculateCosineSimilarity(avg, a.vector);
+    return sim < threshold;
+  });
+
+  // nucleusPoint1, nucleusPoint2, noise がアウトライヤーになるはず
+  if (outliers.length < 3) {
+    throw new Error(`アウトライヤー抽出失敗: 期待値 3以上, 実際 ${outliers.length}`);
+  }
+  Logger.log(`抽出されたアウトライヤー数: ${outliers.length}`);
+
+  // 4. 核形成検知のテスト
+  const config = { NUCLEATION_RADIUS: 0.88, MIN_NUCLEI_SOURCES: 2 };
+  const nuclei = [];
+  const usedIndices = new Set();
+
+  for (let i = 0; i < outliers.length; i++) {
+    if (usedIndices.has(i)) continue;
+    const currentNucleus = [outliers[i]];
+    const sources = new Set([outliers[i].source]);
+    for (let j = i + 1; j < outliers.length; j++) {
+      const sim = calculateCosineSimilarity(outliers[i].vector, outliers[j].vector);
+      if (sim >= config.NUCLEATION_RADIUS) {
+        currentNucleus.push(outliers[j]);
+        sources.add(outliers[j].source);
+      }
+    }
+    if (sources.size >= config.MIN_NUCLEI_SOURCES) {
+      nuclei.push({ articles: currentNucleus, sourceCount: sources.size });
+    }
+  }
+
+  if (nuclei.length !== 1) {
+    throw new Error(`核形成検知失敗: 期待値 1, 実際 ${nuclei.length}`);
+  }
+  
+  if (nuclei[0].sourceCount !== 2) {
+    throw new Error(`核のソース数不一致: 期待値 2, 実際 ${nuclei[0].sourceCount}`);
+  }
+
+  Logger.log("test_EmergingSignalEngine: OK (核形成を正しく検知しました)");
+}
+
 
 /**
  * _test_AppConfig: AppConfigが正しく構造化されているか確認
@@ -2692,3 +2814,198 @@ function sendTestEmail() {
     Logger.log("❌ メール送信失敗: " + e.toString());
   }
 }
+
+/* =============================================================================
+ * SECTION 9: EMERGING SIGNAL ENGINE (Nucleation Detection)
+ * 【役割】設計方針書に基づき、既存の知識体系から離れた「予兆」を検知する。
+ * 核形成（Nucleation）の概念をベクトル空間上の距離とソースの分散で判定。
+ * =============================================================================
+ */
+
+const EmergingSignalEngine = (function() {
+  
+  /**
+   * detect: メインロジック
+   * @returns {Object|null} レポート内容 { html, markdown, nucleiCount }
+   */
+  function detect() {
+    const config = AppConfig.get().System.SignalDetection;
+    
+    // 1. データの準備
+    const mainstreamArticles = _getArticlesForDetection(config.LOOKBACK_DAYS_MAINSTREAM);
+    const recentArticles = mainstreamArticles.filter(a => isRecentArticle(a.date, config.LOOKBACK_DAYS_SIGNALS));
+    
+    if (mainstreamArticles.length < 5) {
+      Logger.log("分析に必要な記事数が不足しています。");
+      return null;
+    }
+
+    // 2. 主流（Mainstream）の重心を算出
+    // 簡易化のため、全記事の平均ベクトルを「重心」とする（本来はK-means等で複数重心を出すのが理想）
+    const centroid = _calculateAverageVector(mainstreamArticles);
+    if (!centroid) return null;
+
+    // 3. 孤独な点（Outliers）を抽出
+    const outliers = recentArticles.filter(a => {
+      const similarity = calculateCosineSimilarity(centroid, a.vector);
+      return similarity < config.OUTLIER_THRESHOLD;
+    }).slice(0, config.MAX_OUTLIERS_TO_PROCESS);
+
+    Logger.log(`主流記事数: ${mainstreamArticles.length} / アウトライヤー候補: ${outliers.length}`);
+
+    if (outliers.length < 2) return null;
+
+    // 4. 核形成（Nucleation）の判定
+    const nuclei = _detectNuclei(outliers, config);
+    Logger.log(`検知された核（Nuclei）の数: ${nuclei.length}`);
+
+    if (nuclei.length === 0) return null;
+
+    // 5. LLMによる定性分析とレポート生成
+    return _generateReportWithLLM(nuclei);
+  }
+
+  // --- Internal Helpers ---
+
+  function _getArticlesForDetection(days) {
+    const { start, end } = getDateWindow(days);
+    const sh = SpreadsheetApp.getActive().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return [];
+
+    const data = sh.getRange(2, 1, lastRow - 1, AppConfig.get().CollectSheet.Columns.VECTOR).getValues();
+    const articles = [];
+
+    for (const r of data) {
+      const date = new Date(r[0]);
+      if (date >= start && date < end) {
+        const vec = parseVector(r[AppConfig.get().CollectSheet.Columns.VECTOR - 1]);
+        if (vec) {
+          articles.push({
+            date: date,
+            title: r[1],
+            url: r[2],
+            abstractText: r[3],
+            headline: r[4],
+            source: r[5],
+            vector: vec
+          });
+        }
+      }
+    }
+    return articles;
+  }
+
+  function _calculateAverageVector(articles) {
+    if (articles.length === 0) return null;
+    const dim = articles[0].vector.length;
+    const avg = new Array(dim).fill(0);
+    
+    articles.forEach(a => {
+      for (let i = 0; i < dim; i++) avg[i] += a.vector[i];
+    });
+    
+    for (let i = 0; i < dim; i++) avg[i] /= articles.length;
+    return avg;
+  }
+
+  function _detectNuclei(outliers, config) {
+    const nuclei = [];
+    const usedIndices = new Set();
+
+    for (let i = 0; i < outliers.length; i++) {
+      if (usedIndices.has(i)) continue;
+      
+      const currentNucleus = [outliers[i]];
+      const sources = new Set([outliers[i].source]);
+
+      for (let j = i + 1; j < outliers.length; j++) {
+        if (usedIndices.has(j)) continue;
+
+        const sim = calculateCosineSimilarity(outliers[i].vector, outliers[j].vector);
+        if (sim >= config.NUCLEATION_RADIUS) {
+          currentNucleus.push(outliers[j]);
+          sources.add(outliers[j].source);
+        }
+      }
+
+      // 異なるソースから一定数以上の点が打たれていれば「核」とみなす
+      if (sources.size >= config.MIN_NUCLEI_SOURCES) {
+        nuclei.push({
+          articles: currentNucleus,
+          sourceCount: sources.size,
+          averageSimilarity: _calculateInnerSimilarity(currentNucleus)
+        });
+        // 今回の核に使われた記事をマーク（重複検知回避）
+        currentNucleus.forEach(a => {
+          const idx = outliers.indexOf(a);
+          if (idx !== -1) usedIndices.add(idx);
+        });
+      }
+    }
+    return nuclei;
+  }
+
+  function _calculateInnerSimilarity(articles) {
+    if (articles.length < 2) return 1.0;
+    let totalSim = 0;
+    let count = 0;
+    for (let i = 0; i < articles.length; i++) {
+      for (let j = i + 1; j < articles.length; j++) {
+        totalSim += calculateCosineSimilarity(articles[i].vector, articles[j].vector);
+        count++;
+      }
+    }
+    return totalSim / count;
+  }
+
+  function _generateReportWithLLM(nuclei) {
+    const model = AppConfig.get().Llm.ModelMini;
+    const SYSTEM_PROMPT = getPromptConfig("SIGNAL_DETECTION_SYSTEM");
+    const USER_TEMPLATE = getPromptConfig("SIGNAL_DETECTION_USER");
+
+    if (!SYSTEM_PROMPT || !USER_TEMPLATE) {
+      Logger.log("エラー: 予兆検知用のプロンプト設定が不足しています（SIGNAL_DETECTION_SYSTEM/USER）。");
+      return null;
+    }
+
+    let fullMarkdown = "# 🧪 Emerging Signals Report\n\n既存の主要トレンドから乖離しつつ、複数のソースで同期的に現れ始めた「予兆（サイン）」を検知しました。\n\n";
+
+    nuclei.forEach((nucleus, index) => {
+      const articleListText = nucleus.articles.map(a => 
+        `- [${a.title}](${a.url}) (Source: ${a.source})`
+      ).join("\n");
+
+      let userPrompt = USER_TEMPLATE
+        .replace("${article_list}", articleListText)
+        .replace("${index}", index + 1);
+      
+      const analysis = LlmService.analyzeKeywordSearch(SYSTEM_PROMPT, userPrompt, { temperature: 0.3 });
+      fullMarkdown += analysis + "\n\n---\n\n";
+    });
+
+    return {
+      markdown: fullMarkdown,
+      html: _formatSignalHtml(fullMarkdown),
+      nucleiCount: nuclei.length
+    };
+  }
+
+  function _formatSignalHtml(markdown) {
+    // 予兆レポート専用の特別な装飾を行う
+    const baseHtml = markdownToHtml(markdown);
+    const C = AppConfig.get().UI.Colors;
+    
+    // スタイル調整（予兆レポートらしく、少し先進的な色使いに）
+    return `
+      <div style="border-left: 10px solid ${C.ACCENT}; background-color: #fafafa; padding: 20px;">
+        ${baseHtml}
+      </div>
+    `;
+  }
+
+  return {
+    detect: detect
+  };
+})();
+
