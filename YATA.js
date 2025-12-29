@@ -211,7 +211,8 @@ function runEmergingSignalJob() {
       sendDigestEmail(null, report.html, null, 1, {
         isHtml: true,
         subjectOverride: subject,
-        bcc: config.mailTo
+        recipient: config.mailTo,
+        // bcc: config.mailTo
       });
       Logger.log("予兆レポートの送信を完了しました。");
     } else {
@@ -539,7 +540,7 @@ function sendPersonalizedReport() {
     const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'MM/dd');
     let subjectPrefix = isPersonalized ? "【YATA】My AI Report: " : "【YATA】Daily Trend: ";
     
-    if (useSemanticForUser) subjectPrefix += "[🤖] ";
+    if (useSemanticForUser) subjectPrefix += "[Semantic] ";
 
     const subject = `${subjectPrefix}${labelSummary} (${dateStr})`;
     
