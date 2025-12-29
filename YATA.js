@@ -1,7 +1,7 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 3.0.0
- * @date 2025-12-27
+ * @version 3.1.0
+ * @date 2025-12-29
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
  *
@@ -456,6 +456,12 @@ function sendPersonalizedReport() {
   const todaysQueries = todaysMasterItems.map(item => item.query).filter(String);
   const todaysLabels  = todaysMasterItems.map(item => item.label);
 
+  // ★【変更点1】ここで一括取得を実行（最大8日分あれば日刊・週刊ともにカバー可能）
+  Logger.log("ユーザーレポート生成: 記事データのバッチ取得を開始...");
+  const MAX_LOOKBACK_DAYS = 8; 
+  const allRecentArticles = fetchRecentArticlesBatch(MAX_LOOKBACK_DAYS);
+  Logger.log(`バッチ取得完了: 直近 ${MAX_LOOKBACK_DAYS} 日間の記事数 = ${allRecentArticles.length} 件`);
+
   // 2. ユーザー取得
   const usrCols = AppConfig.get().UsersSheet.Columns;
   const lastRowUsr = usersSheet.getLastRow();
@@ -521,12 +527,17 @@ function sendPersonalizedReport() {
 
     // ★変更: daysWindow を使って期間を計算
     const { start, end } = getDateWindow(daysWindow);
-    const allArticles = getArticlesInDateWindow(start, end);
+    
+    // ★【変更点2】getArticlesInDateWindow の代わりに、メモリ上の配列をフィルタリング
+    // メモリから検索（高速）
+    const targetArticles = allRecentArticles.filter(a => {
+      return a.date >= start && a.date < end;
+    });
 
     const targetItems = targetQueries.map((q, i) => ({ query: q, label: displayLabels[i] }));
     
     // レポート生成
-    const reportHtml = generateTrendReportHtml(allArticles, targetItems, start, end, {
+    const reportHtml = generateTrendReportHtml(targetArticles, targetItems, start, end, {
       useSemantic: useSemanticForUser
     });
 
@@ -1740,12 +1751,13 @@ function _logError(functionName, error, message = "") {
 /** 
  * collectRssFeeds
  * 【責務】RSSフィードを巡回し、新しい記事を抽出して collect シートに追加する。
+ * 【改修】UrlFetchApp.fetchAll を使用した並列取得（チャンク処理）により高速化。
  * 【仕様】
- * 1. RSSリストシートから巡回対象のURLを取得。
- * 2. 各フィードをパースし、過去48時間以内の記事を抽出。
- * 3. URLおよびタイトルによる厳格な重複チェックを実施。
- * 4. 新着記事のみを collect シートの末尾に追記。
- * 5. 相手サーバーへの負荷軽減のため、サイト特性に応じたスマート・ウェイト(Smart Wait)を実施。
+ * 1. RSSリストから巡回対象のURLを取得。
+ * 2. 5〜10件ずつのチャンクに分割し、並列リクエストを送信。
+ * 3. XMLをパースし、過去48時間以内の記事を抽出。
+ * 4. URLおよびタイトルによる厳格な重複チェックを実施。
+ * 5. 新着記事のみを collect シートの末尾に追記。
  */
 function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.RSS_LIST);
@@ -1756,32 +1768,33 @@ function collectRssFeeds() {
     return;
   }
 
+  // RSSリスト取得
   const numRows = rssListSheet.getLastRow() - AppConfig.get().RssListSheet.DataRange.START_ROW + 1;
-  if (numRows < 1) return;
-  
-  const rssData = rssListSheet.getRange(
+  const rssDataRaw = rssListSheet.getRange(
     AppConfig.get().RssListSheet.DataRange.START_ROW, 
     AppConfig.get().RssListSheet.DataRange.START_COL, 
     rssListSheet.getLastRow() - 1, 
     AppConfig.get().RssListSheet.DataRange.NUM_COLS
   ).getValues();
 
+  // ★追加: 取得したリストをシャッフルする（同じドメインへの同時アクセスを分散させる）
+  const rssData = _shuffleArray(rssDataRaw);
+
+  // 既存データの読み込み（重複チェック用）
   const existingUrlSet = new Set();
   const existingTitleSet = new Set();
-  
   const lastRow = collectSheet.getLastRow();
   
   if (lastRow >= 2) { 
     const checkLimit = AppConfig.get().System.Limits.RSS_CHECK_ROWS; 
     const startRow = 2; 
-    const numRows = Math.min(lastRow - 1, checkLimit); 
+    const numRowsToCheck = Math.min(lastRow - 1, checkLimit); 
 
-    const existingData = collectSheet.getRange(startRow, 2, numRows, 2).getValues();
+    const existingData = collectSheet.getRange(startRow, 2, numRowsToCheck, 2).getValues();
     
     existingData.forEach(row => {
       const title = row[0];
       const url = row[1];   
-      
       if (url) {
         existingUrlSet.add(normalizeUrl(url)); 
         existingUrlSet.add(normalizeUrl(url).split('?')[0]); 
@@ -1791,95 +1804,122 @@ function collectRssFeeds() {
         existingTitleSet.add(normTitle);
       }
     });
-    Logger.log(`既存データ読込完了: ${existingData.length}件 (StartRow:${startRow} / 最新記事からチェック)`);
-    if (existingData.length > 0) {
-      Logger.log(`[最新データサンプル] Title: "${existingData[0][0]}"`);
-    }
+    Logger.log(`既存データ読込完了: ${existingData.length}件 (チェック対象)`);
   }
   
   let totalNewCount = 0;
   const DATE_LIMIT_DAYS = AppConfig.get().System.Limits.RSS_DATE_WINDOW_DAYS; 
   const rssCols = AppConfig.get().RssListSheet.Columns;
 
+  // リクエスト情報の構築
+  const requests = [];
+  const requestMeta = []; // インデックス対応用メタデータ
+
+  const fetchOptions = {
+    'muteHttpExceptions': true,
+    'validateHttpsCertificates': false,
+    'headers': {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': 'https://www.google.com/',
+      'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
+  };
+
   for (const row of rssData) {
     const siteName = row[rssCols.NAME - 1];
     const rssUrl = row[rssCols.URL - 1];
-
     if (!rssUrl) continue;
 
-    const items = fetchAndParseRss(rssUrl);
-    if (!items || !Array.isArray(items) || items.length === 0) continue;
-
-    const feedNewItems = [];
-
-    for (const item of items) {
-      try {
-        if (!item.link || !item.title) continue;
-        
-        const normalizedLink = normalizeUrl(item.link);
-        const cleanTitle = stripHtml(item.title).trim();
-        const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
-
-        const isUrlDup = existingUrlSet.has(normalizedLink) || existingUrlSet.has(normalizedLink.split('?')[0]);
-        const isTitleDup = existingTitleSet.has(normTitleToCheck);
-
-        if (isUrlDup || isTitleDup) {
-            continue; 
-        }
-
-        if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) {
-          continue; 
-        }
-        
-        // ★修正: HTMLタグ除去後に、改行コード(\r, \n)をすべて半角スペースに置換する
-        const rawDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
-        const cleanDescription = rawDescription.replace(/[\r\n]+/g, " ");
-        
-        const rowData = [
-          new Date(),      // A列
-          cleanTitle,      // B列
-          item.link,       // C列
-          cleanDescription,// D列
-          "",              // E列
-          siteName         // F列
-        ];
-
-        feedNewItems.push(rowData);
-        
-        existingUrlSet.add(normalizedLink);
-        existingUrlSet.add(normalizedLink.split('?')[0]);
-        existingTitleSet.add(normTitleToCheck);
-
-      } catch (err) {
-        console.error(`アイテム処理エラー: ${siteName} - ${err.message}`);
-      }
-    }
-
-    if (feedNewItems.length > 0) {
-      const startRow = collectSheet.getLastRow() + 1;
-      collectSheet.getRange(startRow, 1, feedNewItems.length, feedNewItems[0].length).setValues(feedNewItems);
-      SpreadsheetApp.flush(); 
-      
-      totalNewCount += feedNewItems.length;
-      Logger.log(`${siteName}: ${feedNewItems.length} 件追加`);
-    }
-
-    let waitTime = 1000;
-
-    if (rssUrl.includes("medrxiv") || rssUrl.includes("biorxiv")) {
-      waitTime = 3000; 
-    } 
-    else if (rssUrl.includes("ncbi") || rssUrl.includes("academic.oup") || rssUrl.includes("nature.com") || rssUrl.includes("cell.com") || rssUrl.includes("science.org")) {
-      waitTime = 1500;
-    } 
-    else if (rssUrl.includes("google") || rssUrl.includes("nvidia") || rssUrl.includes("huggingface")) {
-      waitTime = 100;  
-    }
-
-    Logger.log(`待機: ${waitTime}ms (URL: ${rssUrl})`);
-    Utilities.sleep(waitTime);
-    
+    requests.push({
+      url: rssUrl,
+      ...fetchOptions
+    });
+    requestMeta.push({ siteName, rssUrl });
   }
+
+  // チャンク処理 (並列実行の安全化)
+  const CHUNK_SIZE = 8; // 同時リクエスト数
+  
+  for (let i = 0; i < requests.length; i += CHUNK_SIZE) {
+    const chunkRequests = requests.slice(i, i + CHUNK_SIZE);
+    const chunkMeta = requestMeta.slice(i, i + CHUNK_SIZE);
+    
+    Logger.log(`Processing chunk: ${i + 1} to ${Math.min(i + CHUNK_SIZE, requests.length)} / ${requests.length}`);
+    
+    try {
+      const responses = UrlFetchApp.fetchAll(chunkRequests);
+      
+      const chunkNewItems = [];
+
+      responses.forEach((response, idx) => {
+        const meta = chunkMeta[idx];
+        const responseCode = response.getResponseCode();
+        
+        if (responseCode !== 200) {
+          console.warn(`RSS取得失敗 (${responseCode}): ${meta.siteName} (${meta.rssUrl})`);
+          return;
+        }
+
+        const xml = response.getContentText();
+        const items = parseRssXml(xml, meta.rssUrl); // パース処理
+        
+        if (!items || items.length === 0) return;
+
+        items.forEach(item => {
+          try {
+            if (!item.link || !item.title) return;
+            
+            const normalizedLink = normalizeUrl(item.link);
+            const cleanTitle = stripHtml(item.title).trim();
+            const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
+
+            const isUrlDup = existingUrlSet.has(normalizedLink) || existingUrlSet.has(normalizedLink.split('?')[0]);
+            const isTitleDup = existingTitleSet.has(normTitleToCheck);
+
+            if (isUrlDup || isTitleDup) return;
+            if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) return;
+            
+            const rawDescription = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim();
+            const cleanDescription = rawDescription.replace(/[\r\n]+/g, " ");
+            
+            chunkNewItems.push([
+              new Date(),      // A列
+              cleanTitle,      // B列
+              item.link,       // C列
+              cleanDescription,// D列
+              "",              // E列
+              meta.siteName    // F列
+            ]);
+            
+            existingUrlSet.add(normalizedLink);
+            existingUrlSet.add(normalizedLink.split('?')[0]);
+            existingTitleSet.add(normTitleToCheck);
+
+          } catch (err) {
+            console.error(`アイテム処理エラー: ${meta.siteName} - ${err.message}`);
+          }
+        });
+      });
+
+      // チャンクごとに書き込み
+      if (chunkNewItems.length > 0) {
+        const startRow = collectSheet.getLastRow() + 1;
+        collectSheet.getRange(startRow, 1, chunkNewItems.length, chunkNewItems[0].length).setValues(chunkNewItems);
+        totalNewCount += chunkNewItems.length;
+        SpreadsheetApp.flush(); // 書き込み確定
+      }
+      
+      // チャンク間のウェイト（Bot判定回避のための安全策）
+      if (i + CHUNK_SIZE < requests.length) {
+        Utilities.sleep(1500); 
+      }
+
+    } catch (e) {
+      Logger.log(`Chunk error: ${e.toString()}`);
+    }
+  }
+  
   Logger.log(`合計 ${totalNewCount} 件の新しい記事を追加しました。`);
 }
 
@@ -1918,37 +1958,17 @@ function sortCollectByDateDesc() {
 }
 
 /**
- * fetchAndParseRss
- * 【責務】RSSフィードを取得し、XMLをパースして記事オブジェクトの配列を返す。
+ * parseRssXml
+ * 【責務】RSSのXML文字列をパースして記事オブジェクトの配列を返す。
  * 【対応フォーマット】RSS 2.0, Atom, RSS 1.0 (RDF)
- * @param {string} url - RSSフィードのURL
+ * @param {string} xml - RSSのXML文字列
+ * @param {string} url - エラーログ用のURL
  * @returns {Array} 記事オブジェクトの配列
  */
-function fetchAndParseRss(url) {
+function parseRssXml(xml, url) {
   try {
-    const options = {
-      'muteHttpExceptions': true,
-      'validateHttpsCertificates': false,
-      'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.google.com/',
-        'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      }
-    };
-    
-    const response = UrlFetchApp.fetch(url, options);
-    const responseCode = response.getResponseCode();
-
-    if (responseCode !== 200) {
-      console.warn(`RSS取得失敗 (${responseCode}): ${url}`);
-      return [];
-    }
-
-    let xml = response.getContentText();
-
-    // XMLサニタイズ処理の強化（名前空間の揺らぎを吸収）
-    xml = xml
+    // XMLサニタイズ処理
+    let safeXml = xml
       .replace(/<atom:link/gi, '<link')
       .replace(/<\/atom:link>/gi, '</link>')
       .replace(/<[a-zA-Z0-9]+:/g, '<')
@@ -1956,12 +1976,16 @@ function fetchAndParseRss(url) {
 
     let document;
     try {
-      document = XmlService.parse(xml);
+      document = XmlService.parse(safeXml);
     } catch (e) {
-      console.warn(`標準パース失敗。強力なサニタイズで再試行します: ${url} / Error: ${e.message}`);
-      // 制御文字などを削除して再試行
-      xml = xml.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
-      document = XmlService.parse(xml);
+      // 制御文字削除などで再試行
+      safeXml = safeXml.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
+      try {
+        document = XmlService.parse(safeXml);
+      } catch (e2) {
+        console.warn(`パース失敗: ${url} / Error: ${e2.message}`);
+        return [];
+      }
     }
 
     const root = document.getRootElement();
@@ -2007,7 +2031,7 @@ function fetchAndParseRss(url) {
           title: getChildText(entry, 'title'),
           link: link,
           description: getChildText(entry, 'summary') || getChildText(entry, 'content') || getChildText(entry, 'description'),
-          pubDate: getChildText(entry, 'published') || getChildText(entry, 'updated') || getChildText(entry, 'date'),
+          pubDate: getChildText(item, 'published') || getChildText(entry, 'updated') || getChildText(entry, 'date'),
           source: "Atom/RDF"
         };
       });
@@ -2016,7 +2040,7 @@ function fetchAndParseRss(url) {
     return items;
 
   } catch (e) {
-    console.error(`fetchAndParseRss: エラーが発生しました。URL: ${url} Exception: ${e.toString()}`);
+    console.error(`parseRssXml: エラーが発生しました。URL: ${url} Exception: ${e.toString()}`);
     return [];
   }
 }
@@ -2296,6 +2320,67 @@ function sanitizeHtmlForWeb(html) {
  */
 
 /**
+ * fetchRecentArticlesBatch
+ * 【責務】TrendDataシートから、指定された日数分（maxDays）の記事を一括取得してメモリに展開する。
+ * 日付ソートされている前提で、古い記事は読み込まずメモリを節約する。
+ */
+function fetchRecentArticlesBatch(maxDays) {
+  const sheetName = AppConfig.get().SheetNames.TREND_DATA;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return [];
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  // 1. 日付列（A列）のみを取得して、読み込むべき行数を計算する（軽量アクセス）
+  // A列 = 1列目
+  const dateValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  
+  // 基準日（これより古い記事はいらない）
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - maxDays);
+  // 時間を00:00:00にしてバッファを持たせる
+  cutoffDate.setHours(0, 0, 0, 0);
+
+  let rowsToFetch = 0;
+  
+  // 上から順に日付をチェック（新しい順に並んでいる前提）
+  for (let i = 0; i < dateValues.length; i++) {
+    const rowDate = new Date(dateValues[i][0]);
+    if (rowDate < cutoffDate) {
+      // 基準日より古い記事が現れたら、そこまでとする
+      rowsToFetch = i; 
+      break;
+    }
+    rowsToFetch = i + 1; // 最後まで新しい場合は全件
+  }
+
+  if (rowsToFetch === 0) return [];
+
+  // 2. 必要な行・列だけをデータ本体として一括取得
+  // 取得範囲: A列(1) 〜 G列(Vector: 7) まで
+  const colsToFetch = AppConfig.get().CollectSheet.Columns.VECTOR; 
+  const rawData = sheet.getRange(2, 1, rowsToFetch, colsToFetch).getValues();
+
+  // 3. 使いやすいオブジェクト配列に変換
+  // カラムインデックスの定義
+  const C = AppConfig.get().CollectSheet.Columns;
+  
+  return rawData.map(r => ({
+    date: new Date(r[0]),
+    title: r[C.URL - 2],          // B列
+    url: r[C.URL - 1],            // C列
+    abstractText: r[C.ABSTRACT - 1], // D列
+    headline: r[C.SUMMARY - 1],   // E列
+    source: r[C.SOURCE - 1],      // F列
+    vectorStr: r[C.VECTOR - 1]    // G列
+  })).filter(a => {
+    // 念のため破損データを除外
+    return a.headline && String(a.headline).trim() !== "" && String(a.headline).indexOf("API Error") === -1;
+  });
+}
+
+/**
  * fmtDate
  * 【責務】Date を "yyyy/MM/dd" 形式にフォーマット
  * @param {Date} d - Date オブジェクト
@@ -2475,6 +2560,19 @@ function cleanAndParseJSON(text) {
 }
 
 /**
+ * _shuffleArray
+ * 【責務】配列の要素をランダムにシャッフルする（Fisher-Yatesアルゴリズム）。
+ */
+function _shuffleArray(array) {
+  const out = [...array];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/**
  * debugRssFeed
  * 【責務】RSSフィードの取得状態をログ出力し、診断するためのデバッグツール。
  */
@@ -2561,21 +2659,58 @@ function performSemanticSearch(queryKeyword, startDate, endDate, topN = 20) {
     return [];
   }
 
-  // 2. 期間内の記事とベクトルを取得
+  // 2. 期間内の記事範囲を特定して取得（高速化・省メモリ化）
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
 
-  // A列(日付)〜G列(ベクトル)まで取得
-  const values = sheet.getRange(2, 1, lastRow - 1, AppConfig.get().CollectSheet.Columns.VECTOR).getValues();
+  // 日付列だけを取得して範囲を計算 (A列)
+  const dateValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  
+  let startRowIndex = -1; // 読み込み開始行（0始まりのインデックス）
+  let endRowIndex = -1;   // 読み込み終了行
+
+  // 日付は降順（新しい順）前提
+  // 上から順に走査: endDateより新しい記事はスキップ、startDateより古い記事が出たら終了
+  for (let i = 0; i < dateValues.length; i++) {
+    const rowDate = new Date(dateValues[i][0]);
+    
+    if (rowDate <= endDate) {
+      if (startRowIndex === -1) startRowIndex = i; // 範囲開始
+      
+      if (rowDate < startDate) {
+        // startDateを下回ったらそこまで（ただしこの行は含まない）
+        endRowIndex = i; 
+        break;
+      }
+    }
+  }
+  
+  // 最後までstartDate以上だった場合
+  if (startRowIndex !== -1 && endRowIndex === -1) {
+    endRowIndex = dateValues.length;
+  }
+
+  if (startRowIndex === -1) {
+    Logger.log("指定期間内の記事が見つかりませんでした。");
+    return [];
+  }
+
+  // 必要な行数
+  const numRows = endRowIndex - startRowIndex;
+  if (numRows <= 0) return [];
+
+  // データ本体を取得 (A列〜G列)
+  // シート上の実際の行番号 = startRowIndex + 2
+  const values = sheet.getRange(startRowIndex + 2, 1, numRows, AppConfig.get().CollectSheet.Columns.VECTOR).getValues();
   
   const candidates = [];
 
   for (let i = 0; i < values.length; i++) {
     const row = values[i];
+    // 一応念のため日付チェック（ソートが完全でない場合の保険）
     const date = new Date(row[0]);
     
-    // 日付フィルタ
     if (date >= startDate && date <= endDate) {
       const vectorStr = row[AppConfig.get().CollectSheet.Columns.VECTOR - 1];
       const vector = parseVector(vectorStr);

@@ -61,5 +61,10 @@
     *   `sendPersonalizedReport`: 毎日 朝8時（個別配信）
 
 ---
+**Version 3.1.0 - High-Performance & Scalability Update (2025-12-29)**
+*   **高速化**: RSS収集を「チャンク並列処理（Parallel Fetching）」に刷新。収集速度が劇的に向上し、実行時間が大幅に短縮。
+*   **負荷分散**: 収集ターゲットを自動的にシャッフルすることで、特定ドメインへのアクセス集中を回避（Bot-Friendly Architecture）。
+*   **省メモリ化**: レポート生成およびAI意味検索のデータ読み込みロジックを最適化。データ蓄積に伴う「Exceeded memory limit」エラーを恒久的に解消。
+
 **Version 3.0.0 - Emerging Intelligence Edition**
 *Maintained by BON & AI Assistant*
