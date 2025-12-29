@@ -2031,7 +2031,7 @@ function parseRssXml(xml, url) {
           title: getChildText(entry, 'title'),
           link: link,
           description: getChildText(entry, 'summary') || getChildText(entry, 'content') || getChildText(entry, 'description'),
-          pubDate: getChildText(item, 'published') || getChildText(entry, 'updated') || getChildText(entry, 'date'),
+          pubDate: getChildText(entry, 'published') || getChildText(entry, 'updated') || getChildText(entry, 'date'),
           source: "Atom/RDF"
         };
       });
