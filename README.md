@@ -50,21 +50,14 @@
 
 ---
 
-## ⚙️ 初期セットアップ手順
+## 📜 History / Changelog
 
-1.  **シート作成**: `RSS`, `collect`, `Keywords`, `prompt`, `DigestHistory`, `Users` の各シートを用意。
-2.  **プロンプト注入**: `prompt` シートに `SIGNAL_DETECTION_SYSTEM` などの指示書を記載。
-3.  **トリガー設置**:
-    *   `runCollectionJob`: 1-2時間ごと（収集）
-    *   `runSummarizationJob`: 4時間ごと（要約・ベクトル化）
-    *   `runEmergingSignalJob`: 1日1回（予兆検知：要約ジョブの完了後が最適）
-    *   `sendPersonalizedReport`: 毎日 朝8時（個別配信）
+| Version | Date | Key Updates |
+| :--- | :--- | :--- |
+| **v3.1.0** | 2025-12-29 | **Performance & Scale Update**<br>RSS収集の並列化（チャンク処理）、レポート生成のバッチ高速化、AI意味検索のメモリ最適化、Bot対策（負荷分散）を実装。 |
+| **v3.0.0** | 2025-12-27 | **Emerging Intelligence Edition**<br>「予兆（サイン）検知」エンジン（EmergingSignalEngine）を搭載。主流トレンドからの乖離と核形成を数学的に検知可能に。 |
+| **v2.9.0** | 2025-12-27 | **Refactoring**<br>定数・設定管理の集約化、テストスイートの実装、コードベースの整理。 |
+| **v2.5.0** | 2025-12-25 | **Semantic Search**<br>ベクトル検索（Embedding）による「AI意味検索」機能を実装。キーワードだけでなく文脈での記事抽出に対応。 |
+| **v2.0.0** | 2025-12-23 | **Rebranding to "YATA"**<br>プロジェクト名をYATAに変更。セキュリティ強化、アーキテクチャの刷新、READMEの全面改訂。 |
+| **v1.x** | 2025-11〜 | **Initial Development**<br>RSS収集、OpenAI/Gemini連携、Web UIの実装、自動要約機能の構築。 |
 
----
-**Version 3.1.0 - High-Performance & Scalability Update (2025-12-29)**
-*   **高速化**: RSS収集を「チャンク並列処理（Parallel Fetching）」に刷新。収集速度が劇的に向上し、実行時間が大幅に短縮。
-*   **負荷分散**: 収集ターゲットを自動的にシャッフルすることで、特定ドメインへのアクセス集中を回避（Bot-Friendly Architecture）。
-*   **省メモリ化**: レポート生成およびAI意味検索のデータ読み込みロジックを最適化。データ蓄積に伴う「Exceeded memory limit」エラーを恒久的に解消。
-
-**Version 3.0.0 - Emerging Intelligence Edition**
-*Maintained by BON & AI Assistant*
