@@ -1,7 +1,7 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 3.1.0
- * @date 2025-12-29
+ * @version 3.2.0
+ * @date 2026-01-02
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
  *
@@ -62,6 +62,15 @@ const AppConfig = (function() {
         AzureKey: props.getProperty("OPENAI_API_KEY") || null,
         OpenAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
         GeminiKey: props.getProperty("GEMINI_API_KEY") || null,
+        // ★【追加】LLMパラメータ・翻訳設定
+        Params: {
+          Temperature: { DEFAULT: 0.2, CREATIVE: 0.3 },
+          MaxTokens: 4096
+        },
+        Translation: {
+          Source: "auto",
+          Target: "ja"
+        },
         // ★【追加】Embedding設定
         Embedding: {
           AzureEndpoint: props.getProperty("AZURE_EMBEDDING_ENDPOINT"), // Azure用エンドポイントURL
@@ -91,7 +100,8 @@ const AppConfig = (function() {
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
           BATCH_FETCH_DAYS: 8,               // レポート生成時の一括取得日数
-          LINKS_PER_TREND: 3                 // トレンドレポートに表示するリンク数
+          LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
+          BACKFILL_DELAY: 500                // バックフィル時の待機時間 (ms)
         },
         // ★【追加】標準HTTPヘッダー
         HttpHeaders: {
@@ -125,6 +135,9 @@ const AppConfig = (function() {
       },
       // ★【追加】UIデザイン・メッセージ設定
       UI: {
+        WebDefaults: {
+            SEARCH_DAYS: 30   // Web検索時のデフォルト遡り期間
+        },
         Colors: {
           PRIMARY: "#3498db",   // メインカラー(青)
           SECONDARY: "#2c3e50", // サブカラー(濃紺)
@@ -393,7 +406,7 @@ function executeWeeklyDigest(keyword, clientOptions = {}) {
 
     // runTrendAnalysis に委譲
     return runTrendAnalysis(trimmedKeyword, {
-      days: 30,
+      days: AppConfig.get().UI.WebDefaults.SEARCH_DAYS,
       startDate: clientOptions.startDate,
       endDate: clientOptions.endDate,
       returnHtml: true,
@@ -637,15 +650,32 @@ function processSummarization() {
       
       if (isShort) {
         // --- 短い記事の処理 ---
-        let newHeadline;
-        const sheetRowNumber = index + 2;
-        if (title && String(title).trim() !== "") {
-          newHeadline = isLikelyEnglish(String(title)) ? `=GOOGLETRANSLATE(B${sheetRowNumber},"auto","ja")` : String(title).trim();
-        } else if (abstractText && abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT) {
-          newHeadline = isLikelyEnglish(String(abstractText)) ? `=GOOGLETRANSLATE(D${sheetRowNumber},"auto","ja")` : String(abstractText).trim();
-        } else {
-          newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
+        let newHeadline = "";
+        
+        try {
+          if (title && String(title).trim() !== "") {
+            // LanguageApp.translate で翻訳済みのテキストを取得する (数式は使わない)
+            if (isLikelyEnglish(String(title))) {
+              newHeadline = LanguageApp.translate(String(title), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
+              Utilities.sleep(200); // APIレート制限への配慮
+            } else {
+              newHeadline = String(title).trim();
+            }
+          } else if (abstractText && abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT) {
+            if (isLikelyEnglish(String(abstractText))) {
+              newHeadline = LanguageApp.translate(String(abstractText), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
+              Utilities.sleep(200);
+            } else {
+              newHeadline = String(abstractText).trim();
+            }
+          } else {
+            newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
+          }
+        } catch (e) {
+          Logger.log(`翻訳APIエラー(Row ${index + 2}): ${e.message} - 原文を使用します`);
+          newHeadline = String(title || abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
         }
+
         values[index][summaryColIndex] = newHeadline;
 
         // ★追加: 短い記事でもベクトルを生成する
@@ -1149,7 +1179,12 @@ const LlmService = (function() {
 
   function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
     Logger.log("Azure OpenAIを試行中...");
-    const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? 0.2, max_completion_tokens: 4096 };
+    const params = AppConfig.get().Llm.Params;
+    const payload = { 
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
+      temperature: options.temperature ?? params.Temperature.DEFAULT, 
+      max_completion_tokens: params.MaxTokens 
+    };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     
     const json = _httpFetch(azureUrl, fetchOptions, "Azure OpenAI");
@@ -1161,7 +1196,13 @@ const LlmService = (function() {
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     Logger.log("OpenAI APIを試行中...");
-    const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 4096, temperature: options.temperature ?? undefined };
+    const params = AppConfig.get().Llm.Params;
+    const payload = { 
+      model: openAiModel, 
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
+      max_tokens: params.MaxTokens, 
+      temperature: options.temperature ?? undefined 
+    };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     
     const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
@@ -1214,9 +1255,16 @@ const LlmService = (function() {
 
   function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
     Logger.log("Gemini APIを試行中...");
+    const params = AppConfig.get().Llm.Params;
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-    const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? 0.2, maxOutputTokens: 4096 } };
+    const payload = { 
+      contents: [{ parts: [{ text: PROMPT }] }], 
+      generationConfig: { 
+        temperature: options.temperature ?? params.Temperature.DEFAULT, 
+        maxOutputTokens: params.MaxTokens 
+      } 
+    };
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
     
     const json = _httpFetch(API_ENDPOINT, fetchOptions, "Gemini");
@@ -1578,52 +1626,71 @@ function isTextMatchQuery(text, query) {
   
   const tokens = q.split(/\s+/).filter(t => t.length > 0);
   
+  // Level 1: Expression (Handles OR) - 最も結合度が低い
   function parseExpression(tokens) {
-    let left = parseTerm(tokens);
+    let left = parseAndTerm(tokens);
     
     while (tokens.length > 0) {
-      const op = tokens[0].toUpperCase();
-      if (op === "OR") {
+      if (tokens[0].toUpperCase() === "OR") {
         tokens.shift();
-        const right = parseTerm(tokens);
+        const right = parseAndTerm(tokens);
         left = left || right;
-      } else if (op === "AND") {
-        tokens.shift();
-        const right = parseTerm(tokens);
-        left = left && right;
-      } else if (op === ")") {
-        break;
       } else {
-        const right = parseTerm(tokens); 
-        left = left && right; 
+        break;
       }
     }
     return left;
   }
 
-  function parseTerm(tokens) {
+  // Level 2: Term (Handles AND) - ORより結合度が高い
+  function parseAndTerm(tokens) {
+    let left = parseFactor(tokens);
+    
+    while (tokens.length > 0) {
+      const next = tokens[0].toUpperCase();
+      
+      // OR や 閉じ括弧 が来たら、このAND項の連なりは終了
+      if (next === "OR" || next === ")") {
+        break; 
+      }
+      
+      if (next === "AND") {
+        tokens.shift();
+      }
+      
+      // 明示的なANDがなくても、トークンが続く場合は暗黙のANDとして処理
+      // (例: "A B" -> A AND B)
+      const right = parseFactor(tokens);
+      left = left && right;
+    }
+    return left;
+  }
+
+  // Level 3: Factor (Handles Words, NOT, Parentheses) - 最も結合度が高い
+  function parseFactor(tokens) {
     if (tokens.length === 0) return false;
     
     const token = tokens.shift();
     
     if (token === "(") {
-      const result = parseExpression(tokens);
+      const result = parseExpression(tokens); // 括弧内を再帰的に評価
       if (tokens.length > 0 && tokens[0] === ")") {
         tokens.shift();
       }
       return result;
     } else if (token.toUpperCase() === "NOT" || token.startsWith("-")) {
       let termToCheck;
-      if (token === "-") {
-         termToCheck = parseTerm(tokens);
-      } else if (token.startsWith("-") && token.length > 1) {
+      if (token === "-") { // "- A" (スペースあり)
+         termToCheck = parseFactor(tokens);
+      } else if (token.startsWith("-") && token.length > 1) { // "-A" (スペースなし)
          const word = token.substring(1);
          return !content.includes(word.toLowerCase());
-      } else {
-         termToCheck = parseTerm(tokens);
+      } else { // "NOT A"
+         termToCheck = parseFactor(tokens);
       }
       return !termToCheck;
     } else {
+      // 通常の単語マッチ
       return content.includes(token.toLowerCase());
     }
   }
@@ -1802,8 +1869,8 @@ function collectRssFeeds() {
       const title = row[0];
       const url = row[1];   
       if (url) {
+        // normalizeUrl内で小文字化・クエリ削除・プロトコル正規化が行われるため、これだけで十分
         existingUrlSet.add(normalizeUrl(url)); 
-        existingUrlSet.add(normalizeUrl(url).split('?')[0]); 
       }
       if (title) {
         const normTitle = decodeHtmlEntities(String(title)).trim().toLowerCase();
@@ -1884,7 +1951,8 @@ function collectRssFeeds() {
             const cleanTitle = stripHtml(item.title).trim();
             const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
 
-            const isUrlDup = existingUrlSet.has(normalizedLink) || existingUrlSet.has(normalizedLink.split('?')[0]);
+            // 強化されたnormalizeUrlにより、ここでの split('?')[0] は不要
+            const isUrlDup = existingUrlSet.has(normalizedLink);
             const isTitleDup = existingTitleSet.has(normTitleToCheck);
 
             if (isUrlDup || isTitleDup) return;
@@ -1903,7 +1971,6 @@ function collectRssFeeds() {
             ]);
             
             existingUrlSet.add(normalizedLink);
-            existingUrlSet.add(normalizedLink.split('?')[0]);
             existingTitleSet.add(normTitleToCheck);
 
           } catch (err) {
@@ -2184,7 +2251,7 @@ function backfillVectors() {
         Logger.log(`ベクトル生成エラー (Row: ${i + 2}): ${e.toString()}`);
       }
       
-      Utilities.sleep(500); // 連続呼び出し緩和
+      Utilities.sleep(AppConfig.get().System.Limits.BACKFILL_DELAY); // 連続呼び出し緩和
     }
   }
 
@@ -2489,6 +2556,9 @@ function normalizeUrl(url) {
   
   try { s = decodeURIComponent(s); } catch (e) {}
   
+  // 0. 小文字化 (大文字小文字の揺らぎを吸収)
+  s = s.toLowerCase();
+
   // 1. クエリパラメータとアンカーを削除 (比較用)
   s = s.split('?')[0].split('#')[0];
   
@@ -2938,6 +3008,12 @@ function _test_isTextMatchQuery() {
   // 複雑な組み合わせ
   if (!isTextMatchQuery(text, "(Google OR Python) Script -Ruby")) throw new Error("isTextMatchQuery: 複雑な検索に失敗しました。");
   
+  // ★優先順位の検証 (AND > OR)
+  // "Google OR Python AND Ruby"
+  // 新ロジック: Google OR (Python AND Ruby) -> True OR False -> True
+  // 旧ロジック: (Google OR Python) AND Ruby -> True AND False -> False
+  if (!isTextMatchQuery(text, "Google OR Python AND Ruby")) throw new Error("isTextMatchQuery: 優先順位(OR < AND)の検証に失敗しました。旧ロジックのままの可能性があります。");
+
   Logger.log("test_isTextMatchQuery: OK");
 }
 
@@ -3168,7 +3244,7 @@ const EmergingSignalEngine = (function() {
         .replace("${article_list}", articleListText)
         .replace("${index}", index + 1);
       
-      const analysis = LlmService.analyzeKeywordSearch(SYSTEM_PROMPT, userPrompt, { temperature: 0.3 });
+      const analysis = LlmService.analyzeKeywordSearch(SYSTEM_PROMPT, userPrompt, { temperature: AppConfig.get().Llm.Params.Temperature.CREATIVE });
       fullMarkdown += analysis + "\n\n---\n\n";
     });
 
