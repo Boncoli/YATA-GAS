@@ -1751,13 +1751,12 @@ function _logError(functionName, error, message = "") {
 /** 
  * collectRssFeeds
  * 【責務】RSSフィードを巡回し、新しい記事を抽出して collect シートに追加する。
- * 【改修】UrlFetchApp.fetchAll を使用した並列取得（チャンク処理）により高速化。
+ * 【改修】ドメイン分散型スケジューリングにより、同一ホストへの集中アクセスを回避しつつ並列取得。
  * 【仕様】
  * 1. RSSリストから巡回対象のURLを取得。
- * 2. 5〜10件ずつのチャンクに分割し、並列リクエストを送信。
- * 3. XMLをパースし、過去48時間以内の記事を抽出。
- * 4. URLおよびタイトルによる厳格な重複チェックを実施。
- * 5. 新着記事のみを collect シートの末尾に追記。
+ * 2. URLのドメインごとにグループ化し、ラウンドロビン方式でリクエスト順序を決定。
+ * 3. 12件ずつのチャンクに分割し、並列リクエストを送信。
+ * 4. 新着記事のみを collect シートの末尾に追記。
  */
 function collectRssFeeds() {
   const rssListSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AppConfig.get().SheetNames.RSS_LIST);
@@ -1776,9 +1775,6 @@ function collectRssFeeds() {
     rssListSheet.getLastRow() - 1, 
     AppConfig.get().RssListSheet.DataRange.NUM_COLS
   ).getValues();
-
-  // ★追加: 取得したリストをシャッフルする（同じドメインへの同時アクセスを分散させる）
-  const rssData = _shuffleArray(rssDataRaw);
 
   // 既存データの読み込み（重複チェック用）
   const existingUrlSet = new Set();
@@ -1811,10 +1807,11 @@ function collectRssFeeds() {
   const DATE_LIMIT_DAYS = AppConfig.get().System.Limits.RSS_DATE_WINDOW_DAYS; 
   const rssCols = AppConfig.get().RssListSheet.Columns;
 
-  // リクエスト情報の構築
+  // --- ドメイン分散スケジューリング (Domain-Aware Scheduling) ---
   const requests = [];
-  const requestMeta = []; // インデックス対応用メタデータ
-
+  
+  // 1. まず全リクエストオブジェクトを作成
+  const rawRequests = [];
   const fetchOptions = {
     'muteHttpExceptions': true,
     'validateHttpsCertificates': false,
@@ -1826,26 +1823,34 @@ function collectRssFeeds() {
     }
   };
 
-  for (const row of rssData) {
+  for (const row of rssDataRaw) {
     const siteName = row[rssCols.NAME - 1];
     const rssUrl = row[rssCols.URL - 1];
     if (!rssUrl) continue;
 
-    requests.push({
-      url: rssUrl,
-      ...fetchOptions
+    rawRequests.push({
+      siteName: siteName,
+      rssUrl: rssUrl,
+      domain: _extractDomain(rssUrl),
+      request: { url: rssUrl, ...fetchOptions }
     });
-    requestMeta.push({ siteName, rssUrl });
   }
 
-  // チャンク処理 (並列実行の安全化)
-  const CHUNK_SIZE = 8; // 同時リクエスト数
+  // 2. ドメインごとにグループ化してラウンドロビンで並べ替え
+  // これにより、同じドメインのリクエストが連続しないようにする
+  const scheduledRequests = _scheduleRequestsByDomain(rawRequests);
   
-  for (let i = 0; i < requests.length; i += CHUNK_SIZE) {
-    const chunkRequests = requests.slice(i, i + CHUNK_SIZE);
-    const chunkMeta = requestMeta.slice(i, i + CHUNK_SIZE);
+  // チャンク処理 (並列実行の安全化)
+  // ドメイン分散が効いているため、チャンクサイズを少し上げても安全
+  const CHUNK_SIZE = 12; 
+  
+  for (let i = 0; i < scheduledRequests.length; i += CHUNK_SIZE) {
+    const chunkItems = scheduledRequests.slice(i, i + CHUNK_SIZE);
     
-    Logger.log(`Processing chunk: ${i + 1} to ${Math.min(i + CHUNK_SIZE, requests.length)} / ${requests.length}`);
+    // UrlFetchApp.fetchAll 用の配列を作成
+    const chunkRequests = chunkItems.map(item => item.request);
+    
+    Logger.log(`Processing chunk: ${i + 1} to ${Math.min(i + CHUNK_SIZE, scheduledRequests.length)} / ${scheduledRequests.length}`);
     
     try {
       const responses = UrlFetchApp.fetchAll(chunkRequests);
@@ -1853,7 +1858,7 @@ function collectRssFeeds() {
       const chunkNewItems = [];
 
       responses.forEach((response, idx) => {
-        const meta = chunkMeta[idx];
+        const meta = chunkItems[idx];
         const responseCode = response.getResponseCode();
         
         if (responseCode !== 200) {
@@ -1911,8 +1916,8 @@ function collectRssFeeds() {
       }
       
       // チャンク間のウェイト（Bot判定回避のための安全策）
-      if (i + CHUNK_SIZE < requests.length) {
-        Utilities.sleep(1500); 
+      if (i + CHUNK_SIZE < scheduledRequests.length) {
+        Utilities.sleep(1200); 
       }
 
     } catch (e) {
@@ -1924,7 +1929,60 @@ function collectRssFeeds() {
 }
 
 /**
+ * _extractDomain
+ * URLからドメイン名(ホスト名)を抽出する
+ */
+function _extractDomain(url) {
+  try {
+    // 簡易的な抽出: プロトコル除去して最初のスラッシュまで
+    let domain = url.replace(/^https?:\/\//, '').split('/')[0];
+    return domain.toLowerCase();
+  } catch (e) {
+    return "unknown";
+  }
+}
+
+/**
+ * _scheduleRequestsByDomain
+ * 同じドメインのリクエストが連続しないように並び替える（ラウンドロビン方式）
+ */
+function _scheduleRequestsByDomain(items) {
+  const domainMap = new Map();
+  
+  // 1. ドメインごとにグループ化
+  items.forEach(item => {
+    const d = item.domain;
+    if (!domainMap.has(d)) {
+      domainMap.set(d, []);
+    }
+    domainMap.get(d).push(item);
+  });
+  
+  // 2. ラウンドロビンで取り出す
+  const result = [];
+  const groups = Array.from(domainMap.values());
+  let maxLen = 0;
+  
+  // 最大のグループ長を知る
+  groups.forEach(g => {
+    if (g.length > maxLen) maxLen = g.length;
+  });
+  
+  // 縦にスライスしていくイメージで取得
+  for (let i = 0; i < maxLen; i++) {
+    for (const group of groups) {
+      if (i < group.length) {
+        result.push(group[i]);
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
  * getExistingUrls
+
  * 【責務】collectシートから既存のURLをSet形式で取得する（重複チェックの高速化のため）。
  * @param {Sheet} sheet - collectシート
  * @returns {Set} URLのSet
@@ -2559,18 +2617,7 @@ function cleanAndParseJSON(text) {
   return null; 
 }
 
-/**
- * _shuffleArray
- * 【責務】配列の要素をランダムにシャッフルする（Fisher-Yatesアルゴリズム）。
- */
-function _shuffleArray(array) {
-  const out = [...array];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
+
 
 /**
  * debugRssFeed
