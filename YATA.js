@@ -86,9 +86,19 @@ const AppConfig = (function() {
         Limits: {
           RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
+          RSS_CHUNK_SIZE: 12,                // RSS並列収集のチャンクサイズ
+          RSS_INTER_CHUNK_DELAY: 1200,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
+          BATCH_FETCH_DAYS: 8,               // レポート生成時の一括取得日数
           LINKS_PER_TREND: 3                 // トレンドレポートに表示するリンク数
+        },
+        // ★【追加】標準HTTPヘッダー
+        HttpHeaders: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://www.google.com/',
+          'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         },
         DateWindows: {
           DAILY_REPORT: 2,       // 日刊レポート(sendPersonalizedReport)の対象期間
@@ -456,9 +466,9 @@ function sendPersonalizedReport() {
   const todaysQueries = todaysMasterItems.map(item => item.query).filter(String);
   const todaysLabels  = todaysMasterItems.map(item => item.label);
 
-  // ★【変更点1】ここで一括取得を実行（最大8日分あれば日刊・週刊ともにカバー可能）
+  // ★【変更点1】ここで一括取得を実行（最大日数設定はConfig参照）
   Logger.log("ユーザーレポート生成: 記事データのバッチ取得を開始...");
-  const MAX_LOOKBACK_DAYS = 8; 
+  const MAX_LOOKBACK_DAYS = AppConfig.get().System.Limits.BATCH_FETCH_DAYS; 
   const allRecentArticles = fetchRecentArticlesBatch(MAX_LOOKBACK_DAYS);
   Logger.log(`バッチ取得完了: 直近 ${MAX_LOOKBACK_DAYS} 日間の記事数 = ${allRecentArticles.length} 件`);
 
@@ -1815,12 +1825,7 @@ function collectRssFeeds() {
   const fetchOptions = {
     'muteHttpExceptions': true,
     'validateHttpsCertificates': false,
-    'headers': {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Referer': 'https://www.google.com/',
-      'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-    }
+    'headers': AppConfig.get().System.HttpHeaders
   };
 
   for (const row of rssDataRaw) {
@@ -1842,7 +1847,7 @@ function collectRssFeeds() {
   
   // チャンク処理 (並列実行の安全化)
   // ドメイン分散が効いているため、チャンクサイズを少し上げても安全
-  const CHUNK_SIZE = 12; 
+  const CHUNK_SIZE = AppConfig.get().System.Limits.RSS_CHUNK_SIZE; 
   
   for (let i = 0; i < scheduledRequests.length; i += CHUNK_SIZE) {
     const chunkItems = scheduledRequests.slice(i, i + CHUNK_SIZE);
@@ -1917,7 +1922,7 @@ function collectRssFeeds() {
       
       // チャンク間のウェイト（Bot判定回避のための安全策）
       if (i + CHUNK_SIZE < scheduledRequests.length) {
-        Utilities.sleep(1200); 
+        Utilities.sleep(AppConfig.get().System.Limits.RSS_INTER_CHUNK_DELAY); 
       }
 
     } catch (e) {
