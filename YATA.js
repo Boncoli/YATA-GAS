@@ -1,7 +1,7 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
  * @version 3.3.0
- * @date 2026-01-02
+ * @date 2026-01-05
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
  *
@@ -39,6 +39,7 @@ const AppConfig = (function() {
         USERS: "Users",
         KEYWORDS: "Keywords",
         DIGEST_HISTORY: "DigestHistory",
+        MACRO_TRENDS: "MacroTrends",
       },
       CollectSheet: {
         Columns: { URL: 3, ABSTRACT: 4, SUMMARY: 5, SOURCE: 6, VECTOR: 7 },
@@ -92,6 +93,12 @@ const AppConfig = (function() {
         DataSheetId: props.getProperty("DATA_SHEET_ID") || "ID未設定",
         ConfigSheetId: props.getProperty("CONFIG_SHEET_ID") || "ID未設定",
 
+        Archive: {
+          // ★修正: ここをプロパティから取得するように変更
+          FOLDER_ID: props.getProperty("ARCHIVE_FOLDER_ID"), 
+          JSON_FILENAME_PREFIX: "YATA_Archive_",
+        },
+
         TimeLimit: {
           SUMMARIZATION: 5 * 60 * 1000,      // 要約/ベクトル生成の制限時間 (5分)
           REPORT_GENERATION: 280 * 1000      // レポート生成の制限時間 (GAS制限考慮)
@@ -99,11 +106,11 @@ const AppConfig = (function() {
         Limits: {
           RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
-          RSS_CHUNK_SIZE: 12,                // RSS並列収集のチャンクサイズ
-          RSS_INTER_CHUNK_DELAY: 1200,       // チャンク間の待機時間 (ms)
+          RSS_CHUNK_SIZE: 8,                // RSS並列収集のチャンクサイズ
+          RSS_INTER_CHUNK_DELAY: 2000,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 3,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
-          BATCH_FETCH_DAYS: 8,               // レポート生成時の一括取得日数
+          BATCH_FETCH_DAYS: 14,               // レポート生成時の一括取得日数
           LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
           BACKFILL_DELAY: 500                // バックフィル時の待機時間 (ms)
         },
@@ -129,10 +136,10 @@ const AppConfig = (function() {
         },
         // ★【追加】予兆（サイン）検知エンジンの設定
         SignalDetection: {
-          LOOKBACK_DAYS_MAINSTREAM: 7, // 主流（重心）計算の対象期間
+          LOOKBACK_DAYS_MAINSTREAM: 14, // 主流（重心）計算の対象期間
           LOOKBACK_DAYS_SIGNALS: 3,    // 予兆検知の対象期間（直近）
           OUTLIER_THRESHOLD: 0.70,     // これ以下の類似度なら「主流から外れている」と判定
-          NUCLEATION_RADIUS: 0.88,     // これ以上の類似度なら「核形成（近い概念）」と判定
+          NUCLEATION_RADIUS: 0.85,     // これ以上の類似度なら「核形成（近い概念）」と判定
           MIN_NUCLEI_SOURCES: 2,       // 核を形成するのに必要な最低ソース数
           MAX_OUTLIERS_TO_PROCESS: 50  // 演算負荷軽減のため一度に処理するアウトライヤー上限
         }
@@ -206,8 +213,9 @@ const AppConfig = (function() {
 function runCollectionJob() {
   Logger.log("--- 収集ジョブ開始 ---");
   
-  // ★ここに追加！: 収集のたびに古い重いデータを捨てる
-  maintenancePruneOldVectors(); 
+  // ★変更: 高機能アーカイブ＆削除を実行
+  // 頻繁に実行しても「3ヶ月前」が来るまでは何もせず即終了するので負荷はありません
+  archiveAndPruneOldData();
 
   collectRssFeeds();       
   sortCollectByDateDesc(); 
@@ -3333,41 +3341,140 @@ function maintenanceLightenOldArticles() {
 }
 
 /**
- * 【重要】再発防止用: 1ヶ月以上前のベクトルデータ(G列)のみを削除する
- * これによりファイル容量の肥大化を恒久的に防ぎます。
+ * archiveAndPruneOldData
+ * 【責務】古いデータを「JSON退避」＆「重心記録」してから、collectシートから削除する。
+ * これにより、データ保全と軽量化、長期トレンド追跡をすべて同時に実現する。
  */
-function maintenancePruneOldVectors() {
-  const KEEP_MONTHS = 1; // 直近1ヶ月分だけベクトルを残す（予兆検知にはこれで十分）
+function archiveAndPruneOldData() {
+  const config = AppConfig.get();
+  const RETENTION_MONTHS = config.System.Limits.DATA_RETENTION_MONTHS;
   
-  const sheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
-  const lastRow = sheet.getLastRow();
+  const collectSheet = getSheet(config.SheetNames.TREND_DATA);
+  const macroSheet = getSheet(config.SheetNames.MACRO_TRENDS); // 新設シート
+  
+  if (!collectSheet || !macroSheet) {
+    Logger.log("エラー: シートが見つかりません(collect または MacroTrends)");
+    return;
+  }
+
+  const lastRow = collectSheet.getLastRow();
   if (lastRow < 2) return;
 
+  // 閾値計算 (例: 今日が5月なら、2月以前のデータを対象にする)
   const thresholdDate = new Date();
-  thresholdDate.setMonth(thresholdDate.getMonth() - KEEP_MONTHS);
-  
-  // A列(日付)を取得
-  const dateValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  // G列(ベクトル)の列番号
-  const vectorColIndex = AppConfig.get().CollectSheet.Columns.VECTOR; 
+  thresholdDate.setMonth(thresholdDate.getMonth() - RETENTION_MONTHS);
+  // 月初に設定（アーカイブ単位を「月」にするため）
+  thresholdDate.setDate(1); 
+  thresholdDate.setHours(0,0,0,0);
 
-  let startRow = -1;
+  // 日付列(A)を取得
+  const dateValues = collectSheet.getRange(2, 1, lastRow - 1, 1).getValues();
   
-  // 日付順(降順)前提: 閾値より古い行を探す
+  // 削除対象の範囲を特定（日付降順前提：閾値より「未来」の行数を数える）
+  // つまり、下の方にある「閾値より過去」の行を探す
+  let archiveStartRow = -1;
+  
   for (let i = 0; i < dateValues.length; i++) {
     const rowDate = new Date(dateValues[i][0]);
     if (rowDate < thresholdDate) {
-      startRow = i + 2; 
+      archiveStartRow = i + 2;
       break;
     }
   }
 
-  if (startRow !== -1) {
-    const numRows = lastRow - startRow + 1;
-    // 行は消さずに「G列の中身」だけをクリアする
-    sheet.getRange(startRow, vectorColIndex, numRows, 1).clearContent();
-    Logger.log(`[自動軽量化] ${startRow}行目以降（${numRows}件）のベクトルデータを削除しました。`);
+  // 対象データがない場合は終了
+  if (archiveStartRow === -1) {
+    Logger.log("アーカイブ対象の古いデータはありません。");
+    return;
   }
+
+  const numRows = lastRow - archiveStartRow + 1;
+  Logger.log(`アーカイブ開始: ${numRows} 件の記事を処理します...`);
+
+  // 1. データ取得
+  const range = collectSheet.getRange(archiveStartRow, 1, numRows, collectSheet.getLastColumn());
+  const rawData = range.getValues(); // データ本体
+  
+  // 2. 重心(Centroid)計算 & 代表トピック抽出
+  // ベクトルがある行だけ抽出
+  const vectorColIdx = config.CollectSheet.Columns.VECTOR - 1;
+  const titleColIdx = config.CollectSheet.Columns.URL - 2;
+  
+  const validVectors = [];
+  const titles = [];
+
+  rawData.forEach(row => {
+    const vecStr = row[vectorColIdx];
+    const title = row[titleColIdx];
+    if (vecStr) {
+      const vec = parseVector(vecStr);
+      if (vec) validVectors.push(vec);
+    }
+    if (title) titles.push(title);
+  });
+
+  let centroidVectorStr = "";
+  let topicSummary = "データ不足により解析不能";
+
+  if (validVectors.length > 0) {
+    // 重心計算 (全ベクトルの平均)
+    const dim = validVectors[0].length;
+    const avg = new Array(dim).fill(0);
+    validVectors.forEach(v => {
+      for(let i=0; i<dim; i++) avg[i] += v[i];
+    });
+    for(let i=0; i<dim; i++) avg[i] /= validVectors.length;
+    
+    centroidVectorStr = avg.join(",");
+    
+    // AIによる「その期間のトピック要約」
+    // タイトルをランダムに最大50個選んで要約させる
+    const sampleTitles = titles.sort(() => 0.5 - Math.random()).slice(0, 50).join("\n");
+    const prompt = `以下の記事タイトル群は、ある過去の期間に収集されたニュースです。\nこの期間の「主要なトレンド」を一言（30文字以内）で要約してください。\n\n${sampleTitles}`;
+    
+    // Nanoモデルでサクッと要約
+    const summary = LlmService.summarizeReport(prompt, "過去トレンドの要約"); 
+    if (summary) topicSummary = summary;
+  }
+
+  // 3. Google DriveへJSON保存
+  const archiveLabel = Utilities.formatDate(new Date(rawData[0][0]), Session.getScriptTimeZone(), "yyyy-MM");
+  const fileName = `${config.System.Archive.JSON_FILENAME_PREFIX}${archiveLabel}_${Date.now()}.json`;
+  
+  const jsonContent = JSON.stringify(rawData, null, 2);
+  
+  try {
+    const folderId = config.System.Archive.FOLDER_ID;
+    if (folderId && folderId.length > 10) {
+      const folder = DriveApp.getFolderById(folderId);
+      folder.createFile(fileName, jsonContent, MimeType.PLAIN_TEXT);
+      Logger.log(`[Drive保存] ${fileName} を保存しました。`);
+    } else {
+      Logger.log("警告: フォルダID未設定のため、Drive保存はスキップされました（データは消えます）。");
+    }
+  } catch (e) {
+    Logger.log(`Drive保存エラー: ${e.toString()}`);
+    return; // 保存失敗時は削除しない（安全策）
+  }
+
+  // 4. MacroTrendsシートへ「重心」を記録
+  // フォーマット: [アーカイブ日時, 対象年月, 記事数, トピック要約, 重心ベクトル]
+  try {
+    macroSheet.appendRow([
+      new Date(), 
+      archiveLabel, 
+      numRows, 
+      topicSummary, 
+      centroidVectorStr
+    ]);
+    Logger.log(`[MacroTrends] 重心データを記録しました: ${topicSummary}`);
+  } catch (e) {
+    Logger.log(`MacroTrends記録エラー: ${e.toString()}`);
+  }
+
+  // 5. 元データの削除 (ここまでエラーなく来たら消す)
+  collectSheet.deleteRows(archiveStartRow, numRows);
+  Logger.log(`[削除完了] collectシートから ${numRows} 行を削除しました。`);
 }
 
 /**
