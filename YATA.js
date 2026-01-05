@@ -1,6 +1,6 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 3.3.1
+ * @version 3.3.2
  * @date 2026-01-05
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
@@ -108,9 +108,9 @@ const AppConfig = (function() {
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
           RSS_CHUNK_SIZE: 8,                // RSS並列収集のチャンクサイズ
           RSS_INTER_CHUNK_DELAY: 2000,       // チャンク間の待機時間 (ms)
-          DATA_RETENTION_MONTHS: 3,          // データの保持期間
+          DATA_RETENTION_MONTHS: 2,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
-          BATCH_FETCH_DAYS: 14,               // レポート生成時の一括取得日数
+          BATCH_FETCH_DAYS: 30,               // レポート生成時の一括取得日数
           LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
           BACKFILL_DELAY: 500                // バックフィル時の待機時間 (ms)
         },
@@ -136,7 +136,7 @@ const AppConfig = (function() {
         },
         // ★【追加】予兆（サイン）検知エンジンの設定
         SignalDetection: {
-          LOOKBACK_DAYS_MAINSTREAM: 14, // 主流（重心）計算の対象期間
+          LOOKBACK_DAYS_MAINSTREAM: 30, // 主流（重心）計算の対象期間
           LOOKBACK_DAYS_SIGNALS: 3,    // 予兆検知の対象期間（直近）
           OUTLIER_THRESHOLD: 0.70,     // これ以下の類似度なら「主流から外れている」と判定
           NUCLEATION_RADIUS: 0.85,     // これ以上の類似度なら「核形成（近い概念）」と判定
@@ -216,6 +216,9 @@ function runCollectionJob() {
   // ★変更: 高機能アーカイブ＆削除を実行
   // 頻繁に実行しても「3ヶ月前」が来るまでは何もせず即終了するので負荷はありません
   archiveAndPruneOldData();
+  
+  // ★追加: ベクトル軽量化(30日経過データ)の実行
+  maintenanceLightenOldArticles();
 
   collectRssFeeds();       
   sortCollectByDateDesc(); 
@@ -3404,11 +3407,11 @@ const EmergingSignalEngine = (function() {
 
 /**
  * maintenanceLightenOldArticles
- * 【責務】3ヶ月より古い記事の「ベクトル列(G列)」だけを削除して軽量化する。
+ * 【責務】1ヶ月より古い記事の「ベクトル列(G列)」だけを削除して軽量化する。
  * 記事自体の行は消さないので、キーワード検索にはヒットする。
  */
 function maintenanceLightenOldArticles() {
-  const LIGHTEN_THRESHOLD_MONTHS = 3; // 3ヶ月以上前の記事を軽量化
+  const LIGHTEN_THRESHOLD_MONTHS = 1; // 1ヶ月以上前の記事を軽量化
   
   const sheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
   const lastRow = sheet.getLastRow();
