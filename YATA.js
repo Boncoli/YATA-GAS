@@ -1,6 +1,6 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 3.3.0
+ * @version 3.3.1
  * @date 2026-01-05
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
@@ -1431,24 +1431,25 @@ const LlmService = (function() {
         // PERSONAL優先: OpenAI -> Azure
         if (llmConfig.OpenAiKey) {
           vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
-          if (vector) return vector;
         }
-        if (embConfig.AzureEndpoint && llmConfig.AzureKey) {
+        if (!vector && embConfig.AzureEndpoint && llmConfig.AzureKey) {
           vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
-          if (vector) return vector;
         }
       } else {
         // COMPANY優先 (デフォルト): Azure -> OpenAI
         if (embConfig.AzureEndpoint && llmConfig.AzureKey) {
           vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
-          if (vector) return vector;
         }
-        if (llmConfig.OpenAiKey) {
+        if (!vector && llmConfig.OpenAiKey) {
           vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
-          if (vector) return vector;
         }
       }
       
+      if (vector) {
+        // ★軽量化: 小数点以下6桁に丸める (容量約50%削減)
+        return vector.map(v => parseFloat(v.toFixed(6)));
+      }
+
       Logger.log("エラー: いずれのサービスでもベクトルを生成できませんでした。");
       return null;
     }
@@ -2123,8 +2124,8 @@ function parseRssXml(xml, url) {
     try {
       document = XmlService.parse(safeXml);
     } catch (e) {
-      console.warn(`XMLパース失敗: ${url}`);
-      return [];
+      console.warn(`XMLパース失敗(正規表現へ移行): ${url} - ${e.message}`);
+      return _fallbackParseRssRegex(xml);
     }
 
     const root = document.getRootElement();
@@ -2182,6 +2183,56 @@ function parseRssXml(xml, url) {
     console.error(`parseRssXml Error: ${url} / ${e.toString()}`);
     return [];
   }
+}
+
+/**
+ * _fallbackParseRssRegex
+ * 【責務】XMLパースに失敗した場合の救済措置。正規表現で記事情報を抜く。
+ */
+function _fallbackParseRssRegex(xml) {
+  const items = [];
+  const itemRegex = /<(?:item|entry)[\s\S]*?>(?:[\s\S]*?)<\/(?:item|entry)>/gi;
+  const matches = xml.match(itemRegex);
+  
+  if (!matches) return [];
+
+  matches.forEach(block => {
+    const titleMatch = block.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    let title = titleMatch ? titleMatch[1] : "";
+    title = title.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1").trim();
+
+    let link = "";
+    const linkTagMatch = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
+    if (linkTagMatch) {
+      link = linkTagMatch[1].trim();
+    } else {
+      const linkHrefMatch = block.match(/<link[^>]+href=["']([^"']+)["']/i);
+      if (linkHrefMatch) link = linkHrefMatch[1].trim();
+    }
+
+    let pubDate = "";
+    const dateMatch = block.match(/<(?:pubDate|updated|published|dc:date)[^>]*>([\s\S]*?)<\//i);
+    if (dateMatch) pubDate = dateMatch[1].trim();
+    
+    let description = "";
+    const descMatch = block.match(/<(?:description|content|summary)[^>]*>([\s\S]*?)<\//i);
+    if (descMatch) {
+      description = descMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1").trim();
+    }
+
+    if (title && link) {
+      items.push({
+        title: title,
+        link: link,
+        description: description,
+        pubDate: pubDate,
+        source: "RegexFallback"
+      });
+    }
+  });
+  
+  Logger.log(`[RegexFallback] 正規表現で ${items.length} 件の記事を救出しました。`);
+  return items;
 }
 
 /**
@@ -2905,6 +2956,7 @@ function runAllTests() {
     _test_isTextMatchQuery();
     _test_computeHeuristicScore();
     _test_normalizeUrl();
+    _test_parseRssXml_Fallback(); // ★新規追加
     _test_EmergingSignalEngine();
     
     Logger.log("✅ 全てのロジックテストに合格しました。");
@@ -2912,6 +2964,55 @@ function runAllTests() {
     Logger.log("❌ テスト失敗: " + e.message);
     throw e;
   }
+}
+
+/**
+ * _test_parseRssXml_Fallback
+ * 【責務】意図的に壊れたXMLを入力し、正規表現フォールバックが正しく発動するか検証する。
+ */
+function _test_parseRssXml_Fallback() {
+  Logger.log("test_parseRssXml_Fallback: 開始");
+  
+  // XmlService.parse で必ずエラーになる不正なXML（&のエスケープ漏れ、閉じタグなし等）
+  const brokenXml = `
+    <rss version="2.0">
+      <channel>
+        <title>Broken Feed</title>
+        <item>
+          <title>Test Title & Broken</title>
+          <link>https://example.com/fallback-test</link>
+          <pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>
+          <description>Description with <unclosed tag</description>
+        </item>
+      </channel>
+    </rss>
+  `;
+
+  // テスト実行（第2引数はダミーURL）
+  const items = parseRssXml(brokenXml, "http://test.local/feed");
+  
+  if (!items || items.length !== 1) {
+    throw new Error(`フォールバック失敗: 期待値 1件, 実際 ${items ? items.length : 0}件`);
+  }
+  
+  const item = items[0];
+  
+  // 判定1: 正規表現モードで取れたか
+  if (item.source !== "RegexFallback") {
+    throw new Error(`ソース判定失敗: 期待値 RegexFallback, 実際 ${item.source}`);
+  }
+  
+  // 判定2: タイトルが取れているか（& が含まれていても取れるべき）
+  if (!item.title.includes("Test Title")) {
+    throw new Error(`タイトル抽出失敗: ${item.title}`);
+  }
+  
+  // 判定3: リンクが取れているか
+  if (item.link !== "https://example.com/fallback-test") {
+    throw new Error(`リンク抽出失敗: ${item.link}`);
+  }
+
+  Logger.log("test_parseRssXml_Fallback: OK (壊れたXMLから正規表現で抽出成功)");
 }
 
 /**
