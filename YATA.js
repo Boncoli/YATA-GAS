@@ -2530,6 +2530,7 @@ function getSheet(sheetName) {
     config.SheetNames.USERS,           // Users
     config.SheetNames.PROMPT_CONFIG,   // prompt
     config.SheetNames.KEYWORDS,        // Keywords
+    config.SheetNames.DIGEST_HISTORY,  // DigestHistory (★追加)
     "Memo"                             // Memo
   ];
 
