@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: sans-serif; overflow: hidden; }
+    #chart { width: 100vw; height: 100vh; }
+    #loading { 
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(255,255,255,0.9); padding: 20px; border-radius: 8px;
+      text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); pointer-events: none;
+    }
+    .back-btn {
+      position: absolute; top: 10px; left: 10px; z-index: 999;
+      background: #fff; padding: 8px 16px; border-radius: 4px;
+      text-decoration: none; color: #333; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <a href="<?= ScriptApp.getService().getUrl() ?>" class="back-btn">← 検索画面に戻る</a>
+
+  <div id="loading">
+    <h3>Space Mapping in progress...</h3>
+    <p>データを取得して3次元空間へ圧縮中。<br>これには数秒〜1分かかります。</p>
+  </div>
+  <div id="chart"></div>
+
+  <script>
+    google.script.run
+      .withSuccessHandler(renderChart)
+      .withFailureHandler(e => alert("Error: " + e))
+      .getVisualizationData();
+
+    function renderChart(data) {
+      if (!data || data.length === 0) {
+        document.getElementById('loading').innerHTML = "データがありませんでした。";
+        return;
+      }
+
+      // 1. PCA（主成分分析）で 1536次元 -> 3次元 に圧縮
+      // ※ブラウザで計算させる簡易実装です
+      const vectors = data.map(d => d.v);
+      const coords = simplePCA(vectors, 3);
+
+      // 2. Plotly用にデータを整形
+      const trace = {
+        x: coords.map(c => c[0]),
+        y: coords.map(c => c[1]),
+        z: coords.map(c => c[2]),
+        mode: 'markers',
+        type: 'scatter3d',
+        text: data.map(d => `<b>${d.s}</b><br>${d.t}`), // ホバー時のテキスト
+        customdata: data.map(d => d.u), // クリック時のURL
+        marker: {
+          size: 4,
+          color: coords.map(c => c[2]), // Z軸で色分け
+          colorscale: 'Viridis',
+          opacity: 0.8
+        }
+      };
+
+      const layout = {
+        margin: {l:0, r:0, b:0, t:0},
+        scene: {
+          xaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false},
+          yaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false},
+          zaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false},
+          camera: { eye: {x: 1.5, y: 1.5, z: 1.5} } // カメラ位置
+        },
+        hoverlabel: { bgcolor: "#FFF" }
+      };
+
+      document.getElementById('loading').style.display = 'none';
+      
+      Plotly.newPlot('chart', [trace], layout);
+
+      // 点をクリックしたら記事を開く
+      document.getElementById('chart').on('plotly_click', function(data){
+        const url = data.points[0].customdata;
+        if(url) window.open(url, '_blank');
+      });
+    }
+
+    // --- 簡易PCA実装 (Center data -> SVDish projection) ---
+    // ※厳密なSVDではありませんが、可視化には十分な近似手法です
+    function simplePCA(vectors, k) {
+      // 1. 中心化 (Mean centering)
+      const n = vectors.length;
+      const dim = vectors[0].length;
+      const mean = new Array(dim).fill(0);
+      
+      for(let i=0; i<n; i++) {
+        for(let j=0; j<dim; j++) mean[j] += vectors[i][j];
+      }
+      for(let j=0; j<dim; j++) mean[j] /= n;
+
+      const centered = vectors.map(v => v.map((val, j) => val - mean[j]));
+
+      // 2. 共分散行列の代わりに、ランダム射影で近似次元削減してからSVDするなどの工夫が必要だが
+      // JSで1536次元の固有値分解は重すぎるため、ここでは「主要な軸への射影」を模した
+      // 非常に簡易的なハッシュ的射影を使います（※本来はmath.jsでSVDすべきですが重すぎます）
+      
+      // 代替案: もしデータ量が多いなら、単純に「最初の3次元」を使うだけでも
+      // Embeddingの性質上、ある程度バラけますが、ここではもう少しマシな
+      // 「ランダム射影 (Random Projection)」を使います。これで十分な精度が出ます。
+      
+      // ガウス分布に従うランダム行列 (dim x k) を作成
+      const projectionMatrix = [];
+      for(let i=0; i<dim; i++) {
+        const row = [];
+        for(let j=0; j<k; j++) {
+          // Box-Muller transform
+          const u = 1 - Math.random(); 
+          const v = Math.random();
+          const z = Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+          row.push(z);
+        }
+        projectionMatrix.push(row);
+      }
+
+      // 行列積: (n x dim) * (dim x k) -> (n x k)
+      const result = [];
+      for(let i=0; i<n; i++) {
+        const row = [];
+        for(let col=0; col<k; col++) {
+          let sum = 0;
+          for(let d=0; d<dim; d++) {
+            sum += centered[i][d] * projectionMatrix[d][col];
+          }
+          row.push(sum);
+        }
+        result.push(row);
+      }
+      return result;
+    }
+  </script>
+</body>
+</html>

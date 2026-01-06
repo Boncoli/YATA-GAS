@@ -138,10 +138,10 @@ const AppConfig = (function() {
         SignalDetection: {
           LOOKBACK_DAYS_MAINSTREAM: 30, // 主流（重心）計算の対象期間
           LOOKBACK_DAYS_SIGNALS: 3,    // 予兆検知の対象期間（直近）
-          OUTLIER_THRESHOLD: 0.70,     // これ以下の類似度なら「主流から外れている」と判定
+          OUTLIER_THRESHOLD: 0.65,     // これ以下の類似度なら「主流から外れている」と判定
           NUCLEATION_RADIUS: 0.85,     // これ以上の類似度なら「核形成（近い概念）」と判定
           MIN_NUCLEI_SOURCES: 2,       // 核を形成するのに必要な最低ソース数
-          MAX_OUTLIERS_TO_PROCESS: 50  // 演算負荷軽減のため一度に処理するアウトライヤー上限
+          MAX_OUTLIERS_TO_PROCESS: 100  // 演算負荷軽減のため一度に処理するアウトライヤー上限
         }
       },
       // ★【追加】UIデザイン・メッセージ設定
@@ -267,7 +267,6 @@ function runEmergingSignalJob() {
 }
 
 /** dailyDigestJob: 日刊ダイジェスト生成 - 過去24時間の全記事（キーワードフィルタリングなし） */
-/**
 function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
   
@@ -296,7 +295,6 @@ function dailyDigestJob() {
   
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
-*/
 
 /* =============================================================================
  * SECTION 3: WEB UI (Client Interface)
@@ -3267,15 +3265,23 @@ const EmergingSignalEngine = (function() {
     }
 
     // 2. 主流（Mainstream）の重心を算出
-    // 簡易化のため、全記事の平均ベクトルを「重心」とする（本来はK-means等で複数重心を出すのが理想）
+    // 全記事の平均ベクトルを「重心」とする
     const centroid = _calculateAverageVector(mainstreamArticles);
     if (!centroid) return null;
 
-    // 3. 孤独な点（Outliers）を抽出
-    const outliers = recentArticles.filter(a => {
-      const similarity = calculateCosineSimilarity(centroid, a.vector);
-      return similarity < config.OUTLIER_THRESHOLD;
-    }).slice(0, config.MAX_OUTLIERS_TO_PROCESS);
+    // 3. 孤独な点（Outliers）を抽出 【★改良版: ソートロジック追加】
+    // 重心からの距離が遠い（類似度が低い）順に並べ替え、最も「異質な」上位N件を取得する
+    const outliers = recentArticles
+      .map(a => {
+        // 重心との類似度を計算してオブジェクトに付与
+        const sim = calculateCosineSimilarity(centroid, a.vector);
+        return { ...a, similarityToCentroid: sim };
+      })
+      .filter(a => a.similarityToCentroid < config.OUTLIER_THRESHOLD)
+      // ★重要: 類似度が低い順（昇順）に並び替え
+      .sort((a, b) => a.similarityToCentroid - b.similarityToCentroid) 
+      // 上限件数でカット（これで「最も異質なトップ100」が残る）
+      .slice(0, config.MAX_OUTLIERS_TO_PROCESS);
 
     Logger.log(`主流記事数: ${mainstreamArticles.length} / アウトライヤー候補: ${outliers.length}`);
 
@@ -3348,6 +3354,7 @@ const EmergingSignalEngine = (function() {
       for (let j = i + 1; j < outliers.length; j++) {
         if (usedIndices.has(j)) continue;
 
+        // アウトライヤー同士が近いかどうか判定
         const sim = calculateCosineSimilarity(outliers[i].vector, outliers[j].vector);
         if (sim >= config.NUCLEATION_RADIUS) {
           currentNucleus.push(outliers[j]);
@@ -3406,6 +3413,7 @@ const EmergingSignalEngine = (function() {
         .replace("${article_list}", articleListText)
         .replace("${index}", index + 1);
       
+      // 創造的な分析をさせるため温度を高めに設定
       const analysis = LlmService.analyzeKeywordSearch(SYSTEM_PROMPT, userPrompt, { temperature: AppConfig.get().Llm.Params.Temperature.CREATIVE });
       fullMarkdown += analysis + "\n\n---\n\n";
     });
