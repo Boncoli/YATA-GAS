@@ -108,7 +108,7 @@ const AppConfig = (function() {
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
           RSS_CHUNK_SIZE: 8,                // RSS並列収集のチャンクサイズ
           RSS_INTER_CHUNK_DELAY: 2000,       // チャンク間の待機時間 (ms)
-          DATA_RETENTION_MONTHS: 2,          // データの保持期間
+          DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
           BATCH_FETCH_DAYS: 30,               // レポート生成時の一括取得日数
           LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
@@ -356,16 +356,33 @@ function runTrendAnalysis(targetKeyword, options = {}) {
   const config = AppConfig.get().Digest;
   const returnHtml = options.returnHtml || false;
   
-  // 期間設定: 明示的な日付指定があれば優先、なければ daysWindow、それもなければデフォルト
+  // 期間設定: 片方だけの指定も許容するロジック (Web UIでの入力漏れ対策)
   let start, end;
-  if (options.startDate && options.endDate) {
-    start = new Date(options.startDate);
-    // endDateは「その日の終わり」まで含めるため 23:59:59 に設定
-    end = new Date(options.endDate);
+  
+  if (options.startDate || options.endDate) {
+    const today = new Date();
+    
+    // Endの日付決定 (指定がなければ今日)
+    if (options.endDate) {
+      end = new Date(options.endDate);
+    } else {
+      end = new Date(today);
+    }
+    // Endはその日の終わり(23:59:59)まで含める
     end.setHours(23, 59, 59, 999);
+
+    // Startの日付決定 (指定がなければEndの30日前)
+    if (options.startDate) {
+      start = new Date(options.startDate);
+    } else {
+      start = new Date(end);
+      start.setDate(start.getDate() - 30);
+    }
+    // Startはその日の始まり(00:00:00)から
     start.setHours(0, 0, 0, 0);
+
   } else {
-    // 従来の相対日数指定
+    // 日付指定が全くない場合 (デフォルト挙動: Configの日数に従う)
     const daysWindow = options.days || config.days;
     const window = getDateWindow(daysWindow);
     start = window.start;
@@ -1780,7 +1797,7 @@ function markdownToHtml(md) {
     .replace(/\*\*(.*?)\*\*/g, `<strong style="${S.STRONG}">$1</strong>`)
     .replace(/\*\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" style="${S.LINK}">$1</a>`)
     .replace(/^\s*---\s*$/gm, `<hr style="${S.HR}">`)
-    .replace(/^- (.*$)/gim, `&bull; $1`)
+    .replace(/^\s*- (.*$)/gim, `&bull; $1`)
     .replace(/\n/g, '<br>\n');
 
   // 2. ★追加: コンテンツの「カード分割」処理
@@ -3669,4 +3686,141 @@ function testAllRssFeeds() {
   } else {
     Logger.log("\n🎉 おめでとうございます！全てのRSSフィードが正常です。");
   }
+}
+
+/**
+ * maintenanceRoundExistingVectors
+ * 【責務】スプレッドシートに既に保存されているベクトル（G列）を走査し、
+ * 小数点以下6桁を超えるデータを丸めて、シートの容量を削減します。
+ */
+function maintenanceRoundExistingVectors() {
+  const config = AppConfig.get();
+  const sheet = getSheet(config.SheetNames.TREND_DATA);
+  if (!sheet) {
+    Logger.log("エラー: collectシートが見つかりません。");
+    return;
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const vectorColIndex = config.CollectSheet.Columns.VECTOR; // 通常は7 (G列)
+  const range = sheet.getRange(2, vectorColIndex, lastRow - 1, 1);
+  const values = range.getValues();
+  
+  let updateCount = 0;
+  const newValues = values.map((row, index) => {
+    const originalString = String(row[0] || "").trim();
+    if (!originalString) return [originalString];
+
+    // カンマで分割して数値配列にする
+    const parts = originalString.split(',');
+    let needsUpdate = false;
+
+    const roundedParts = parts.map(p => {
+      const val = parseFloat(p);
+      if (isNaN(val)) return p;
+
+      // 小数点以下の桁数を確認（簡易チェック）
+      if (p.includes('.') && p.split('.')[1].length > 6) {
+        needsUpdate = true;
+        // 小数点6桁に丸める (generateVectorと同じロジック)
+        return parseFloat(val.toFixed(6));
+      }
+      return val;
+    });
+
+    if (needsUpdate) {
+      updateCount++;
+      return [roundedParts.join(',')];
+    }
+    return [originalString];
+  });
+
+  if (updateCount > 0) {
+    range.setValues(newValues);
+    Logger.log(`メンテナンス完了: ${updateCount} 件のベクトルを小数点6桁に丸めました。`);
+  } else {
+    Logger.log("丸め処理が必要なベクトル（7桁以上のもの）はありませんでした。");
+  }
+}
+
+/**
+ * toolExportArchivesToSheet
+ * 【役割】Driveに保存された過去のJSONアーカイブをすべて読み込み、
+ * 「Restored_Archive」という新しいシートにリスト化して復元する。
+ * ★日付フォーマット対応版 (yyyy/MM/dd H:mm:ss)
+ */
+function toolExportArchivesToSheet() {
+  const config = AppConfig.get();
+  const folderId = config.System.Archive.FOLDER_ID; 
+  const targetSheetId = config.System.DataSheetId; 
+
+  if (!folderId) {
+    Logger.log("エラー: アーカイブフォルダIDが設定されていません。");
+    return;
+  }
+  if (!targetSheetId) {
+    Logger.log("エラー: データシートIDが設定されていません。");
+    return;
+  }
+
+  const ss = SpreadsheetApp.openById(targetSheetId);
+  let sheet = ss.getSheetByName("Restored_Archive");
+  
+  if (!sheet) {
+    sheet = ss.insertSheet("Restored_Archive");
+    sheet.appendRow(["Date", "Title", "URL", "Abstract", "Summary", "Source", "Vector"]);
+    sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#ddd");
+  } else {
+    sheet.clear();
+    sheet.appendRow(["Date", "Title", "URL", "Abstract", "Summary", "Source", "Vector"]);
+    sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#ddd");
+  }
+
+  const folder = DriveApp.getFolderById(folderId);
+  const files = folder.getFiles();
+  
+  let totalCount = 0;
+  const timeZone = Session.getScriptTimeZone(); // タイムゾーン取得
+
+  Logger.log("アーカイブの読み込みを開始します...");
+
+  while (files.hasNext()) {
+    const file = files.next();
+    
+    if (file.getMimeType() === MimeType.PLAIN_TEXT && file.getName().startsWith("YATA_Archive_")) {
+      try {
+        const jsonText = file.getBlob().getDataAsString();
+        const data = JSON.parse(jsonText); 
+        
+        if (data && data.length > 0) {
+          // ★ここで日付フォーマット変換を追加
+          const formattedData = data.map(row => {
+            // 1列目(row[0])が日付文字列の場合のみ変換
+            if (row[0]) {
+              const d = new Date(row[0]);
+              // "2026/01/06 2:57:01" の形式に変換
+              row[0] = Utilities.formatDate(d, timeZone, "yyyy/MM/dd H:mm:ss");
+            }
+            return row;
+          });
+
+          const startRow = sheet.getLastRow() + 1;
+          const numRows = formattedData.length;
+          const numCols = formattedData[0].length;
+          
+          sheet.getRange(startRow, 1, numRows, numCols).setValues(formattedData);
+          
+          totalCount += numRows;
+          Logger.log(`[復元] ${file.getName()}: ${numRows} 件を追加しました。`);
+        }
+      } catch (e) {
+        Logger.log(`[エラー] ${file.getName()} の読み込みに失敗: ${e.message}`);
+      }
+    }
+  }
+
+  Logger.log(`完了: 合計 ${totalCount} 件のデータを「Restored_Archive」シートに復元しました。`);
+  Logger.log(`以下のスプレッドシートを確認してください:\n${ss.getUrl()}`);
 }
