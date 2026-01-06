@@ -2297,8 +2297,8 @@ function getChildrenNoNs(element, tagName) {
 
 /**
  * backfillVectors: ベクトル未付与の記事に対してEmbeddingを一括実行
- * 【役割】以前取り込んだ記事などで、見出しはあるがベクトル（G列）が空のものに対して、
- * ベクトルを生成して保存します。
+ * 【修正版】軽量化ポリシーに合わせて「直近1ヶ月以内」の記事のみを対象とする。
+ * これにより、削除された過去のベクトルを無駄に再生成するのを防ぐ。
  */
 function backfillVectors() {
   const trendDataSheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
@@ -2312,6 +2312,12 @@ function backfillVectors() {
   const startTime = new Date().getTime();
   const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
   const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
+
+  // ★追加設定: 何ヶ月前まで遡るか（軽量化期間と合わせる）
+  const TARGET_WINDOW_MONTHS = 1; 
+  const thresholdDate = new Date();
+  thresholdDate.setMonth(thresholdDate.getMonth() - TARGET_WINDOW_MONTHS);
+  thresholdDate.setHours(0, 0, 0, 0);
 
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
   const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
@@ -2329,6 +2335,13 @@ function backfillVectors() {
     }
 
     const row = values[i];
+    const dateVal = new Date(row[0]); // A列: Date
+
+    // ★追加ガード: 記事が古すぎる場合は、ベクトルが無くても無視する
+    if (dateVal < thresholdDate) {
+      continue;
+    }
+
     const headline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1]; // E列
     const currentVector = row[VECTOR_COL_INDEX]; // G列
 
@@ -2354,7 +2367,7 @@ function backfillVectors() {
         Logger.log(`ベクトル生成エラー (Row: ${i + 2}): ${e.toString()}`);
       }
       
-      Utilities.sleep(AppConfig.get().System.Limits.BACKFILL_DELAY); // 連続呼び出し緩和
+      Utilities.sleep(AppConfig.get().System.Limits.BACKFILL_DELAY); 
     }
   }
 
@@ -2374,9 +2387,9 @@ function backfillVectors() {
     const outputRange = trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice);
     outputRange.setValues(normalizedData);
     
-    Logger.log(`バックフィル完了: ${processedCount} 件のベクトルを付与しました。`);
+    Logger.log(`バックフィル完了: 直近${TARGET_WINDOW_MONTHS}ヶ月以内の記事 ${processedCount} 件にベクトルを付与しました。`);
   } else {
-    Logger.log("バックフィルが必要な記事（見出しあり・ベクトルなし）は見つかりませんでした。");
+    Logger.log(`バックフィル対象（直近${TARGET_WINDOW_MONTHS}ヶ月・見出しあり・ベクトルなし）は見つかりませんでした。`);
   }
 }
 
