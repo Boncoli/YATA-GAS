@@ -303,13 +303,53 @@ function dailyDigestJob() {
  */
 
 /**
- * doGet
- * ウェブアプリケーションの起点。Index.htmlを表示する。
+ * doGet: Webアプリケーションのルーティング制御
  */
-function doGet() {
+function doGet(e) {
+  // パラメータ ?p=viz があれば可視化画面を表示
+  if (e.parameter.p === 'viz') {
+    return HtmlService.createTemplateFromFile('Visualize').evaluate()
+      .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+      .setTitle('YATA - 3D Vector Space');
+  }
+
+  // それ以外はいつもの検索画面
   return HtmlService.createTemplateFromFile('Index').evaluate()
     .setSandboxMode(HtmlService.SandboxMode.IFRAME)
     .setTitle('YATA - AI Intelligence Platform');
+}
+
+/**
+ * [Server-side] getVisualizationData
+ * 可視化用に最新記事のベクトルデータを取得して返す
+ * 【修正版】新しい順（上から）取得するように変更
+ */
+function getVisualizationData() {
+  const sheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
+  // const lastRow = sheet.getLastRow(); // これは使いません
+
+  // ★修正: 「一番下」ではなく「2行目（最新）」から500件を取得します
+  const LIMIT = 500; 
+  const startRow = 2; // ヘッダーの次から
+  
+  // データがあるか確認
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  // 実際の行数がLIMITより少ない場合に対応
+  const numRows = Math.min(LIMIT, lastRow - 1);
+
+  const data = sheet.getRange(startRow, 1, numRows, 7).getValues();
+  const vectorColIdx = 6; // G列
+  
+  return data
+    .filter(r => r[vectorColIdx] && r[vectorColIdx].toString().trim() !== "") // ベクトルがあるものだけ
+    .map(r => ({
+      t: r[1], // Title
+      u: r[2], // Url
+      s: r[5], // Source
+      v: r[vectorColIdx].split(',').map(parseFloat) 
+    }));
 }
 
 /* =============================================================================
