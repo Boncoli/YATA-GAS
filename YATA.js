@@ -106,7 +106,7 @@ const AppConfig = (function() {
         Limits: {
           RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
-          RSS_CHUNK_SIZE: 8,                // RSS並列収集のチャンクサイズ
+          RSS_CHUNK_SIZE: 10,                // RSS並列収集のチャンクサイズ
           RSS_INTER_CHUNK_DELAY: 2000,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
@@ -1536,8 +1536,12 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
 
   const tldrSummary = _summarizeReport(reportBody);
 
-  if (options.enableHistory !== false && tldrSummary) {
+  const shouldSave = (options.enableHistory !== false) && (options.saveHistory !== false);
+
+  if (shouldSave && tldrSummary) {
     _writeHistory(keyword, tldrSummary);
+  } else if (!shouldSave && tldrSummary) {
+    Logger.log(`[Test Mode] 履歴の保存をスキップしました (Keyword: ${keyword})`);
   }
 
   return { reportBody, summary: tldrSummary };
@@ -1791,26 +1795,47 @@ function getPromptConfig(key) {
 }
 
 /**
- * markdownToHtml (改良版: バッジ変換 & カード分割機能付き)
+ * markdownToHtml (Final Typography Ver.)
  * 【責務】Markdown → HTML 変換
- * 【改善】AIが出力した区切り（**1. トピック**など）を検知し、自動的にdivボックスを分割する
+ * 【修正】日本語の可読性を高めるため、段落の「字下げ(Indent)」と行間を調整
  */
 function markdownToHtml(md) {
   if (!md) return "";
   
   const C = AppConfig.get().UI.Colors;
 
-  // スタイル定義
+  // デザイン定義
   const S = {
-    // 内部カード（白い箱）
-    CARD: `background-color: ${C.BG_CARD}; padding: 20px; border-radius: 0 8px 8px 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid ${C.BORDER};`,
-    // カード内の見出し
-    H3: `font-size: 18px; font-weight: bold; color: ${C.SECONDARY}; border-bottom: 2px solid ${C.PRIMARY}; padding-bottom: 5px; margin-top: 0; margin-bottom: 15px;`,
-    STRONG: `font-weight: bold; color: ${C.ACCENT};`, // 強調色
-    LINK: `color: ${C.LINK}; text-decoration: none; border-bottom: 1px dotted ${C.LINK};`,
-    HR: `border: 0; border-top: 1px solid #eee; margin: 20px 0;`,
+    WRAPPER: `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; font-size: 14px;`,
+    
+    // サマリー (字下げ追加)
+    SUMMARY_BOX: `background-color: #f0f7ff; border-left: 5px solid ${C.PRIMARY}; padding: 15px; margin-bottom: 25px; border-radius: 4px;`,
+    SUMMARY_TITLE: `font-weight: bold; color: ${C.SECONDARY}; margin: 0 0 10px 0; font-size: 15px; border-bottom: 1px dashed #cce5ff; padding-bottom: 5px; display: block;`,
+    SUMMARY_BODY: `font-size: 14px; line-height: 1.8; text-indent: 1em; display: block;`, // ★字下げ追加
+    
+    // カード
+    CARD: `background-color: #ffffff; padding: 25px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.03);`,
+    
+    // 見出し
+    H3: `font-size: 18px; font-weight: bold; color: ${C.SECONDARY}; margin-top: 0; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid ${C.PRIMARY}; line-height: 1.4;`,
+    
+    // 項目ブロック
+    ITEM_BLOCK: `margin-bottom: 18px;`,
+    ITEM_LABEL: `font-size: 12px; font-weight: bold; color: #555; display: flex; align-items: center; margin-bottom: 4px;`,
+    ITEM_ICON:  `margin-right: 6px; font-size: 14px;`,
+    
+    // ★変更: 項目本文 (字下げ + 行間広め)
+    ITEM_BODY:  `color: #333; line-height: 1.8; text-indent: 1em; display: block;`, 
+
+    // リンク
+    LINK_ROW: `margin-top: 15px; border-top: 1px dashed #eee; padding-top: 8px;`,
+    LINK_LABEL: `font-size: 11px; color: #999; font-weight: bold; display: block; margin-bottom: 5px;`,
+    LINK_ITEM: `margin-bottom: 4px; display: flex; align-items: center;`,
+    LINK_BTN: `display: inline-block; font-size: 10px; color: #fff; background-color: ${C.PRIMARY}; text-decoration: none; padding: 4px 10px; border-radius: 12px; margin-right: 8px; white-space: nowrap;`,
+    LINK_TEXT: `font-size: 12px; color: ${C.LINK}; text-decoration: none; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;`,
+
     // バッジ
-    BADGE: 'display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px; vertical-align: middle;',
+    BADGE: 'display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px; vertical-align: middle; line-height: 1.2;',
     B_NEW: `background-color: ${C.BADGE_NEW_BG}; color: ${C.BADGE_NEW_TXT}; border: 1px solid ${C.BADGE_NEW_BG};`,
     B_UP:  `background-color: ${C.BADGE_UP_BG}; color: ${C.BADGE_UP_TXT}; border: 1px solid ${C.BADGE_UP_BG};`,
     B_WARN:`background-color: ${C.BADGE_WARN_BG}; color: ${C.BADGE_WARN_TXT}; border: 1px solid ${C.BADGE_WARN_BG};`,
@@ -1819,47 +1844,94 @@ function markdownToHtml(md) {
 
   const L = AppConfig.get().Logic;
 
-  // 1. 基本的なHTMLエスケープとMarkdown変換
+  // アイコンマッピング
+  const ICON_MAP = {
+    '詳細分析': '&#129488;', // 🧐
+    '詳細': '&#128221;',     // 📝
+    '先週': '&#9194;',       // ⏮️
+    '今週': '&#9889;',       // ⚡
+    '現状': '&#128202;',     // 📊
+    '影響': '&#127919;',     // 🎯
+    'default': '&#128073;'   // 👉
+  };
+
+  // 1. 基本エスケープ
   let html = md
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`)
-    
-    // バッジ変換
-    .replace(L.TAGS.NEW, `<span style="${S.BADGE} ${S.B_NEW}">&#9889; 新規</span>`)
+    .replace(/>/g, '&gt;');
+
+  // 2. バッジ変換
+  html = html
+    .replace(L.TAGS.NEW, `<span style="${S.BADGE} ${S.B_NEW}">&#10024; 新規</span>`)
     .replace(L.TAGS.UP, `<span style="${S.BADGE} ${S.B_UP}">&#128200; 進展</span>`)
     .replace(L.TAGS.WARN, `<span style="${S.BADGE} ${S.B_WARN}">&#9888; 懸念</span>`)
-    .replace(L.TAGS.KEEP, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`)
-    
-    .replace(/\*\*(.*?)\*\*/g, `<strong style="${S.STRONG}">$1</strong>`)
-    .replace(/\*\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" target="_blank" style="${S.LINK}">$1</a>`)
-    .replace(/^\s*---\s*$/gm, `<hr style="${S.HR}">`)
-    .replace(/^\s*- (.*$)/gim, `&bull; $1`)
-    .replace(/\n/g, '<br>\n');
+    .replace(L.TAGS.KEEP, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`);
 
-  // 2. ★追加: コンテンツの「カード分割」処理
-  // 最初のカードを開始
-  html = `<div style="${S.CARD}">` + html;
-  
-  // 区切りパターンを検出して、</div><div ...> を挿入する
-  // パターンA: "**1. トピック**" のような番号付きトピック (strongタグ化されている)
-  // パターンB: "**【注目の兆候...】**" のようなセクション区切り
-  
-  // 注意: replaceの文字列内で変数を展開するため、一旦プレースホルダーを使うか、慎重に置換する
-  const splitTag = `</div><div style="${S.CARD}">`;
-  
-  // numbered topics (e.g. 1. Title)
-  html = html.replace(/<strong style="[^"]+">[0-9]+\./g, match => splitTag + match);
-  
-  // specific sections (Early Signals, Next Actions)
-  html = html.replace(/<strong style="[^"]+">【注目の兆候/g, match => splitTag + match);
-  html = html.replace(/<strong style="[^"]+">【次のアクション/g, match => splitTag + match);
-  
-  // 最後のカードを閉じる
-  html += `</div>`;
+  // 3. サマリーセクション (字下げ適用)
+  html = html.replace(
+    /(?:^|\n)\s*(?:[\*\*_【\[\s]*)(エグゼクティブ・サマリー|Executive Summary)(?:[\*\*_】\]\s]*)\n([\s\S]*?)(?=\*\*|__|$|###|1\.)/gi, 
+    `<div style="${S.SUMMARY_BOX}"><span style="${S.SUMMARY_TITLE}">&#128221; $1</span><div style="${S.SUMMARY_BODY}">$2</div></div>`
+  );
 
-  return html;
+  // 4. トピックタイトル
+  html = html.replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`);
+  html = html.replace(/\*\*([0-9]+\..*?)\*\*/g, `<h3 style="${S.H3}">$1</h3>`);
+
+  // 5. リスト項目（ラベル＋本文）
+  html = html.replace(/^\s*-\s*(?:\*\*|__)(.*?)(?::|：)?\s*(?:\*\*|__)\s*(?::|：)?\s*(.*)$/gm, (match, key, val) => {
+    let icon = ICON_MAP['default'];
+    for (const k in ICON_MAP) {
+      if (key.includes(k)) {
+        icon = ICON_MAP[k];
+        break;
+      }
+    }
+    return `
+      <div style="${S.ITEM_BLOCK}">
+        <div style="${S.ITEM_LABEL}"><span style="${S.ITEM_ICON}">${icon}</span>${key}</div>
+        <div style="${S.ITEM_BODY}">${val}</div>
+      </div>`;
+  });
+
+  // 6. リンク (デザイン微調整)
+  // リンクエリアの開始
+  html = html.replace(/- \s*(?:\*\*|__)\s*関連URL:?\s*(?:\*\*|__)(.*)/g, `<div style="${S.LINK_ROW}"><span style="${S.LINK_LABEL}">REFERENCE</span>$1`);
+  
+  // 個別リンク
+  html = html.replace(
+    /-\s*\[([^\]]+)\]\(([^)]+)\)/g, 
+    `<div style="${S.LINK_ITEM}"><a href="$2" target="_blank" style="${S.LINK_BTN}">Open &#8599;</a><a href="$2" target="_blank" style="${S.LINK_TEXT}">$1</a></div>`
+  );
+  
+  // リンクエリアを閉じるdivはブラウザが補完してくれることが多いですが、
+  // 構造的に正しい閉じタグを入れるのが難しいため、LINK_ROWはdivで囲わずborder-topのみで表現しています
+
+  // 7. ゴミ掃除
+  html = html.replace(/\*\*/g, ""); 
+  html = html.replace(/__/g, "");
+
+  // 8. カード分割処理
+  const splitToken = "___SPLIT___";
+  html = html.replace(/(<h3)/g, `${splitToken}$1`);
+  
+  const parts = html.split(splitToken);
+  let finalHtml = `<div style="${S.WRAPPER}">`;
+  
+  if (parts[0].trim()) finalHtml += parts[0];
+
+  for (let i = 1; i < parts.length; i++) {
+    finalHtml += `<div style="${S.CARD}">` + parts[i] + `</div>`;
+  }
+  
+  finalHtml += `</div>`;
+  
+  // 改行処理
+  finalHtml = finalHtml.replace(/\n/g, '<br>');
+  finalHtml = finalHtml.replace(/(<\/div>|<\/h3>|<\/span>|<div[^>]*>)\s*<br>/g, "$1");
+  finalHtml = finalHtml.replace(/(<br>){2,}/g, '<br>');
+
+  return finalHtml;
 }
 
 /**
@@ -3884,4 +3956,50 @@ function toolExportArchivesToSheet() {
 
   Logger.log(`完了: 合計 ${totalCount} 件のデータを「Restored_Archive」シートに復元しました。`);
   Logger.log(`以下のスプレッドシートを確認してください:\n${ss.getUrl()}`);
+}
+
+/**
+ * debugPersonalReport
+ * 【開発用】管理者(MAIL_TO)だけに特定のキーワードでレポートをテスト送信するヘルパー関数
+ */
+function debugPersonalReport() {
+  // ▼▼▼ テスト設定 ▼▼▼
+  const TEST_KEYWORD = "がん";  // テストしたいキーワード
+  const LOOKBACK_DAYS = 7; 
+  // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+  const config = AppConfig.get();
+  const adminMail = config.Digest.mailTo;
+  
+  if (!adminMail) {
+    Logger.log("エラー: スクリプトプロパティ MAIL_TO が設定されていません。");
+    return;
+  }
+
+  Logger.log(`=== テスト送信開始 (Save History: OFF) ===`); // ログも変更
+  
+  const { start, end } = getDateWindow(LOOKBACK_DAYS);
+  const allArticles = getArticlesInDateWindow(start, end);
+  
+  const targetItems = [{ query: TEST_KEYWORD, label: TEST_KEYWORD }];
+  
+  // ★ここで saveHistory: false を渡す
+  const html = generateTrendReportHtml(allArticles, targetItems, start, end, {
+    useSemantic: false,
+    enableHistory: true, // 履歴を読む (前回との比較をする)
+    saveHistory: false   // ★重要: 履歴には書き込まない (汚さない)
+  });
+
+  if (!html) {
+    Logger.log(`⚠️ 記事が見つかりませんでした。`);
+    return;
+  }
+
+  sendDigestEmail(null, html, null, 7, {
+    recipient: adminMail,
+    subjectOverride: `【デザイン確認】YATAレポート: ${TEST_KEYWORD}`,
+    isHtml: true
+  });
+
+  Logger.log("✅ 送信完了（DigestHistoryは更新されていません）。");
 }
