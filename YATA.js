@@ -19,6 +19,10 @@
  * =============================================================================
  */
 
+if (typeof SpreadsheetApp === 'undefined' && typeof require !== 'undefined') {
+  require('./gas-bridge.js');
+}
+
 // AppConfig Singleton: Configuration cache and loader
 /**
  * SECTION 1: CONFIGURATION
