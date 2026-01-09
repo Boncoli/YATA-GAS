@@ -4007,3 +4007,12 @@ function debugPersonalReport() {
 
   Logger.log("✅ 送信完了（DigestHistoryは更新されていません）。");
 }
+
+if (typeof global !== 'undefined') {
+  global.AppConfig = AppConfig;
+  global.LlmService = LlmService;
+  global.runCollectionJob = runCollectionJob;
+  global.runSummarizationJob = runSummarizationJob;
+  global.runEmergingSignalJob = runEmergingSignalJob;
+  global.dailyDigestJob = dailyDigestJob;
+}
