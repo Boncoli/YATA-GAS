@@ -1,4 +1,4 @@
-require('./gas-bridge.js');
+require('../lib/gas-bridge.js');
 const Database = require('better-sqlite3');
 const db = new Database(process.env.DB_PATH || 'yata.db');
 
@@ -50,4 +50,5 @@ async function fetchWeather() {
     console.log(`[Success] Weather all-in recorded: ${nowStr}`);
   } catch (e) { console.error("Weather Error:", e); }
 }
-fetchWeather();
+
+module.exports = fetchWeather;

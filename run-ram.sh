@@ -23,9 +23,39 @@ export DB_PATH="$RAM_DB"
 
 cd "$SCRIPT_DIR"
 
-/home/boncoli/.nvm/versions/node/v24.12.0/bin/node "$NODE_SCRIPT" | while read line; do
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
-done
+# スクリプトのパス解決 (ルートになければ tasks/ を探す)
+if [ -f "$NODE_SCRIPT" ]; then
+  SCRIPT_PATH="$NODE_SCRIPT"
+elif [ -f "tasks/$NODE_SCRIPT" ]; then
+  SCRIPT_PATH="tasks/$NODE_SCRIPT"
+else
+  SCRIPT_PATH="$NODE_SCRIPT" # フォールバック
+fi
+
+# ログファイルの決定 (logs/ フォルダ配下にする)
+LOG_FILE=""
+if [[ "$NODE_SCRIPT" == *"do-collect"* ]]; then
+  LOG_FILE="logs/collect.log"
+elif [[ "$NODE_SCRIPT" == *"do-summarize"* ]]; then
+  LOG_FILE="logs/summarize.log"
+elif [[ "$NODE_SCRIPT" == *"yata-task"* ]]; then
+  LOG_FILE="logs/yata.log"
+fi
+
+# 実行コマンド (共通部分)
+CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\""
+
+if [ -n "$LOG_FILE" ]; then
+    # ログファイルあり: 画面出力 + ファイル追記 (tee -a)
+    eval "$CMD" | while read line; do
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
+    done | tee -a "$LOG_FILE"
+else
+    # ログファイルなし: 画面出力のみ
+    eval "$CMD" | while read line; do
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
+    done
+fi
 
 # --- 2.5 重複データの削除 (お掃除機能) ---
 echo "[Wrapper] Cleaning up duplicates..."

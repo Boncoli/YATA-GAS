@@ -17,6 +17,8 @@ fi
 
 # --- ログのローテーション (肥大化防止) ---
 # 最新の2000行だけ残して上書き保存
-tail -n 2000 /home/boncoli/yata-local/collect.log > /home/boncoli/yata-local/collect.log.tmp && mv /home/boncoli/yata-local/collect.log.tmp /home/boncoli/yata-local/collect.log
+tail -n 2000 /home/boncoli/yata-local/logs/collect.log > /home/boncoli/yata-local/logs/collect.log.tmp && mv /home/boncoli/yata-local/logs/collect.log.tmp /home/boncoli/yata-local/logs/collect.log
 
-tail -n 2000 /home/boncoli/yata-local/summarize.log > /home/boncoli/yata-local/summarize.log.tmp && mv /home/boncoli/yata-local/summarize.log.tmp /home/boncoli/yata-local/summarize.log
+tail -n 2000 /home/boncoli/yata-local/logs/summarize.log > /home/boncoli/yata-local/logs/summarize.log.tmp && mv /home/boncoli/yata-local/logs/summarize.log.tmp /home/boncoli/yata-local/logs/summarize.log
+
+tail -n 2000 /home/boncoli/yata-local/logs/yata.log > /home/boncoli/yata-local/logs/yata.log.tmp && mv /home/boncoli/yata-local/logs/yata.log.tmp /home/boncoli/yata-local/logs/yata.log

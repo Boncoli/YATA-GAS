@@ -1,4 +1,4 @@
-require('./gas-bridge.js');
+require('../lib/gas-bridge.js');
 const Database = require('better-sqlite3');
 const db = new Database(process.env.DB_PATH || 'yata.db');
 
@@ -34,4 +34,5 @@ async function fetchRemo() {
     console.log(`[Success] Remo recorded: Living ${living.te?.val}℃, Bedroom ${bedroom.te?.val}℃`);
   } catch (e) { console.error("Remo Error:", e); }
 }
-fetchRemo();
+
+module.exports = fetchRemo;

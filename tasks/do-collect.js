@@ -1,6 +1,6 @@
 // do-collect.js
-require('./gas-bridge.js');
-require('./YATA.js');
+require('../lib/gas-bridge.js');
+require('../lib/YATA.js');
 
 async function run() {
   console.log("=== RSS収集のみ実行します ===");

@@ -1,6 +1,6 @@
 // do-summarize.js
-require('./gas-bridge.js');
-require('./YATA.js');
+require('../lib/gas-bridge.js');
+require('../lib/YATA.js');
 
 async function run() { // async関数で囲む
   console.log("=== AI要約のみ実行します ===");
