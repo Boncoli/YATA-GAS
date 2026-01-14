@@ -110,8 +110,8 @@ const AppConfig = (function() {
         Limits: {
           RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
-          RSS_CHUNK_SIZE: 10,                // RSS並列収集のチャンクサイズ
-          RSS_INTER_CHUNK_DELAY: 2000,       // チャンク間の待機時間 (ms)
+          RSS_CHUNK_SIZE: 7,                // RSS並列収集のチャンクサイズ
+          RSS_INTER_CHUNK_DELAY: 2500,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
           BATCH_FETCH_DAYS: 30,               // レポート生成時の一括取得日数
@@ -1588,7 +1588,7 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
           </div>`;
   } else {
     // Web用スタイル (CSS)
-    finalHtmlBody += `<style>.summary-section{background-color:${C.BG_CARD};padding:20px;border-radius:8px;margin-bottom:25px;box-shadow:0 2px 5px rgba(0,0,0,0.05)}.summary-title{margin-top:0;color:${C.SECONDARY};font-size:18px;font-weight:bold;border-bottom:2px solid ${C.BORDER};padding-bottom:10px;margin-bottom:15px}.section-header{border-left:5px solid ${C.PRIMARY};border-bottom:none;padding-left:10px;padding-bottom:0;color:${C.SECONDARY};margin-top:30px;margin-bottom:15px;font-size:20px}.tech-card{margin-bottom:20px;border:none;padding:20px;border-radius:8px;background-color:${C.BG_CARD};box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid ${C.PRIMARY}}.tech-title{margin:0 0 15px 0;color:${C.SECONDARY};font-size:17px;font-weight:bold;line-height:1.4}.tech-meta{font-size:15px;line-height:1.7;color:${C.TEXT_SUB}}.tech-link{margin-top:15px;text-align:right}.tech-link a{display:inline-block;padding:8px 16px;background-color:${C.BADGE_NEW_BG};color:${C.PRIMARY};text-decoration:none;border-radius:20px;font-size:13px;font-weight:bold}.tech-link a:hover{background-color:${C.BADGE_NEW_BG}}</style>`;
+    finalHtmlBody += `<style>.summary-section{background-color:${C.BG_CARD};padding:20px;border-radius:8px;margin-bottom:25px;box-shadow:0 2px 5px rgba(0,0,0,0.05)}.summary-title{margin-top:0;color:${C.SECONDARY};font-size:18px;font-weight:bold;border-bottom:2px solid ${C.BORDER};padding-bottom:10px;margin-bottom:15px}.section-header{border-left:5px solid ${C.PRIMARY};border-bottom:none;padding-left:10px;padding-bottom:0;color:${C.SECONDARY};margin-top:30px;margin-bottom:15px;font-size:20px}.tech-card{margin-bottom:20px;border:none;padding:20px;border-radius:8px;background-color:${C.BG_CARD};box-shadow:0 2px 8px rgba(0,0,0,0.08);border-left:5px solid ${C.PRIMARY}}.tech-title{margin:0 0 15px 0;color:${C.SECONDARY};font-size:17px;font-weight:bold;line-height:1.4}.tech-meta{font-size:15px;line-height:1.7;color:${C.TEXT_SUB}}.tech-link{margin-top:15px;text-align:left}.tech-link a{display:inline-block;padding:8px 16px;background-color:${C.BADGE_NEW_BG};color:${C.PRIMARY};text-decoration:none;border-radius:20px;font-size:13px;font-weight:bold}.tech-link a:hover{background-color:${C.BADGE_NEW_BG}}</style>`;
   }
 
   const procStartTime = new Date().getTime();
@@ -1633,7 +1633,27 @@ function generateTrendReportHtml(allArticles, targetItems, startDate, endDate, o
 
       if (options.isHtmlOutput) {
         // Web用
-        const cleanHtml = contentBody.replace(/```html/gi, "").replace(/```/g, "");
+        let cleanHtml = contentBody.replace(/```html/gi, "").replace(/```/g, "");
+
+        // ▼▼▼ 追加: リンクを見つけて「AI要約ボタン」を挿入する処理 ▼▼▼
+        cleanHtml = cleanHtml.replace(
+          /<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, 
+          (match, url, text) => {
+             // 一意なIDを生成
+             const uniqueId = "summary-" + Math.random().toString(36).substring(2, 10);
+             const btnStyle = "background-color:#8e44ad; color:#fff; border:none; border-radius:12px; padding:3px 10px; font-size:11px; cursor:pointer; margin-right:8px; vertical-align:middle; font-weight:bold;";
+             
+             // ボタンと要約表示エリアを埋め込む
+              return `
+               <span style="display:inline-block; margin: 4px 0;">
+                 <button onclick="fetchSummary('${url}', '${uniqueId}', this)" style="${btnStyle}">⚡ AI要約</button>
+                 <a href="${url}" target="_blank" style="text-decoration:none; color:#2980b9; font-weight:bold;">${text}</a>
+               </span>
+               <div id="${uniqueId}" style="display:none; margin:10px 0 15px 0; padding:12px; background:#f8f9fa; border-left:4px solid #8e44ad; border-radius:4px; font-size:90%; line-height:1.6; color:#333; text-align: left;"></div>
+             `;
+          }
+        );
+
         const searchTypeLabel = useSemantic ? "🤖 AI意味検索" : "🔍 キーワード検索";
         
         finalHtmlBody += `<div style="margin-bottom: 15px; color: #666; font-size: 14px;">
@@ -1902,10 +1922,28 @@ function markdownToHtml(md) {
   // リンクエリアの開始
   html = html.replace(/- \s*(?:\*\*|__)\s*関連URL:?\s*(?:\*\*|__)(.*)/g, `<div style="${S.LINK_ROW}"><span style="${S.LINK_LABEL}">REFERENCE</span>$1`);
   
-  // 個別リンク
+  // 個別リンク生成ロジックを変更
   html = html.replace(
     /-\s*\[([^\]]+)\]\(([^)]+)\)/g, 
-    `<div style="${S.LINK_ITEM}"><a href="$2" target="_blank" style="${S.LINK_BTN}">Open &#8599;</a><a href="$2" target="_blank" style="${S.LINK_TEXT}">$1</a></div>`
+    (match, title, url) => {
+      // 一意なIDを生成（表示エリア用）
+      const uniqueId = "summary-" + Math.random().toString(36).substring(2, 10);
+      
+      return `
+      <div style="${S.LINK_ITEM}">
+        <a href="${url}" target="_blank" style="${S.LINK_BTN}">Open &#8599;</a>
+        
+        <button onclick="fetchSummary('${url}', '${uniqueId}', this)" 
+                style="${S.LINK_BTN}; background-color: #8e44ad; border:none; cursor:pointer;">
+          ⚡ AI要約
+        </button>
+
+        <a href="${url}" target="_blank" style="${S.LINK_TEXT}">${title}</a>
+      </div>
+      
+      <div id="${uniqueId}" style="display:none; background:#f9f9f9; padding:15px; margin:10px 0; border-radius:6px; border-left:3px solid #8e44ad; font-size:90%;"></div>
+      `;
+    }
   );
   
   // リンクエリアを閉じるdivはブラウザが補完してくれることが多いですが、
@@ -3734,6 +3772,68 @@ function archiveAndPruneOldData() {
   // 5. 元データの削除 (ここまでエラーなく来たら消す)
   collectSheet.deleteRows(archiveStartRow, numRows);
   Logger.log(`[削除完了] collectシートから ${numRows} 行を削除しました。`);
+}
+
+/**
+ * getWebPageSummary (オンデマンドAI要約)
+ * 指定されたURLのWebページを取得し、AIで要約して返します。
+ */
+function getWebPageSummary(url) {
+  try {
+    // 1. Webページの取得
+    // Bot判定を避けるため、収集時と同じヘッダーを使用
+    const options = {
+      'muteHttpExceptions': true,
+      'headers': AppConfig.get().System.HttpHeaders
+    };
+    
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    
+    if (code !== 200) {
+      return `エラー: ページを取得できませんでした (Status: ${code})。サイトがアクセスをブロックしている可能性があります。`;
+    }
+    
+    // 2. テキスト抽出 (簡易スクレイピング)
+    const html = response.getContentText();
+    // bodyタグの中身だけ大まかに取得
+    let bodyText = "";
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) {
+      bodyText = stripHtml(bodyMatch[1]); // 既存のタグ除去関数を利用
+    } else {
+      bodyText = stripHtml(html);
+    }
+    
+    // 文字数が多すぎるとエラーになるので、先頭3万文字程度にカット
+    const truncatedText = bodyText.replace(/\s+/g, " ").trim().substring(0, 30000);
+
+    if (truncatedText.length < 50) {
+      return "エラー: ページから十分なテキストを抽出できませんでした（画像メインやJavaScript専用サイトの可能性があります）。";
+    }
+
+    // 3. LLMで要約・圧縮
+    const systemPrompt = `
+    あなたはプロの編集者です。
+    Web記事の内容を、業界動向を追うビジネスパーソン向けに300文字程度の「解説記事」として要約してください。
+
+    # 指示
+    - 重要なキーワード（企業名、技術名、数値など）は **太字** で強調してください。
+    - 専門用語には簡単な補足をいれてください。
+    - 記事の「新規性」や「メリット」が伝わるように構成してください。
+    - 冒頭に # などの見出し記号はつけないでください。
+    `;
+    
+    // 既存の要約機能（Nanoモデル推奨）を再利用
+    // ※LlmService._callLlmWithFallback はprivateなので、summarizeReport等の公開メソッドを使うか、
+    //  LlmService内に新しいメソッドを追加するのが理想ですが、ここでは既存の summarizeReport を流用します。
+    const summary = LlmService.summarizeReport(systemPrompt, truncatedText);
+    
+    return summary;
+
+  } catch (e) {
+    return `エラーが発生しました: ${e.message}`;
+  }
 }
 
 /**
