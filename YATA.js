@@ -1,7 +1,7 @@
 /**
  * @file YATA.js - AI-Driven News Intelligence Platform
- * @version 3.3.2
- * @date 2026-01-05
+ * @version 3.4
+ * @date 2026-01-16
  * @description YATA (The Three-Legged Guide to the Web)
  *              RSS収集 → AI見出し生成 → パーソナライズド配信・トレンド分析・予兆検知
  *
@@ -92,13 +92,13 @@ const AppConfig = (function() {
         mailSenderName: props.getProperty("MAIL_SENDER_NAME") || "YATA (AI Intelligence Bot)",
         sheetUrl: props.getProperty("DIGEST_SHEET_URL") || "(DIGEST_SHEET_URL 未設定)",
       },
-      // ★【追加】システム全体の設定値
+      // ★システム全体の設定値
       System: {
         DataSheetId: props.getProperty("DATA_SHEET_ID") || "ID未設定",
         ConfigSheetId: props.getProperty("CONFIG_SHEET_ID") || "ID未設定",
 
         Archive: {
-          // ★修正: ここをプロパティから取得するように変更
+          // ここをプロパティから取得するように変更
           FOLDER_ID: props.getProperty("ARCHIVE_FOLDER_ID"), 
           JSON_FILENAME_PREFIX: "YATA_Archive_",
         },
@@ -118,7 +118,7 @@ const AppConfig = (function() {
           LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
           BACKFILL_DELAY: 500                // バックフィル時の待機時間 (ms)
         },
-        // ★【追加】標準HTTPヘッダー
+        // ★標準HTTPヘッダー
         HttpHeaders: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Referer': 'https://www.google.com/',
@@ -138,7 +138,7 @@ const AppConfig = (function() {
           ABSTRACT_BONUS: 20,    // 抜粋ありの場合の最大ボーナス点
           ABSTRACT_DIVISOR: 100  // 抜粋の文字数を割る数
         },
-        // ★【追加】予兆（サイン）検知エンジンの設定
+        // ★予兆（サイン）検知エンジンの設定
         SignalDetection: {
           LOOKBACK_DAYS_MAINSTREAM: 30, // 主流（重心）計算の対象期間
           LOOKBACK_DAYS_SIGNALS: 3,    // 予兆検知の対象期間（直近）
@@ -146,9 +146,13 @@ const AppConfig = (function() {
           NUCLEATION_RADIUS: 0.85,     // これ以上の類似度なら「核形成（近い概念）」と判定
           MIN_NUCLEI_SOURCES: 2,       // 核を形成するのに必要な最低ソース数
           MAX_OUTLIERS_TO_PROCESS: 100  // 演算負荷軽減のため一度に処理するアウトライヤー上限
-        }
+        },
+        Budget: {
+          CURRENT_COST_KEY: "SYSTEM_COST_ACCUMULATOR", // 保存用プロパティキー
+          LAST_RESET_KEY: "SYSTEM_COST_LAST_RESET"     // リセット日管理キー
+        },
       },
-      // ★【追加】UIデザイン・メッセージ設定
+      // ★UIデザイン・メッセージ設定
       UI: {
         WebDefaults: {
             SEARCH_DAYS: 30   // Web検索時のデフォルト遡り期間
@@ -176,7 +180,7 @@ const AppConfig = (function() {
         NO_SUMMARY: "見出しが生成できませんでした。",
         LINK_MORE_MD: "その他の記事一覧は[こちらのスプレッドシート](${url})でご覧いただけます。"
       },
-      // ★【追加】各シートの列定義とロジック定数
+      // ★各シートの列定義とロジック定数
       UsersSheet: {
         Columns: { NAME: 1, EMAIL: 2, DAY: 3, KWS: 4, SEMANTIC: 5 }
       },
@@ -217,11 +221,14 @@ const AppConfig = (function() {
 function runCollectionJob() {
   Logger.log("--- 収集ジョブ開始 ---");
   
-  // ★変更: 高機能アーカイブ＆削除を実行
+  // 高機能アーカイブ＆削除を実行
   // 頻繁に実行しても「3ヶ月前」が来るまでは何もせず即終了するので負荷はありません
   archiveAndPruneOldData();
+
+  // 1か月前のHistoryを削除
+  maintenancePruneDigestHistory();
   
-  // ★追加: ベクトル軽量化(30日経過データ)の実行
+  // ベクトル軽量化(30日経過データ)の実行
   maintenanceLightenOldArticles();
 
   collectRssFeeds();       
@@ -921,6 +928,67 @@ function _generateContextForNextWeek(reportText) {
   return compressedText;
 }
 
+/**
+ * _getRelevantHistory (連想記憶検索)
+ * 【責務】キーワードの一致、または「内容が近い」過去の履歴を探し出す。
+ * 1. まずキーワード完全一致の最新履歴を探す（直近の継続性を優先）。
+ * 2. なければ、現在の記事群から生成したベクトルを使って過去の履歴を意味検索する。
+ * @param {string} keyword - 検索キーワード
+ * @param {string} currentContextText - 今回の記事群のテキスト（ベクトル生成用）
+ */
+function _getRelevantHistory(keyword, currentContextText) {
+  const sheet = getSheet(AppConfig.get().SheetNames.DIGEST_HISTORY);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+
+  // D列(Vector)まで取得
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues(); 
+  
+  // 1. 直近検索 (キーワード完全一致)
+  // 下から上へ検索し、最新のものを探す
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (String(data[i][1]).trim() === keyword) {
+      Logger.log(`履歴発見(Keyword): 「${keyword}」の前回要約を採用。`);
+      return String(data[i][2]);
+    }
+  }
+
+  // 2. 連想検索 (Vector Search)
+  // キーワードで見つからなかった場合、今回扱う内容に近い過去の事例を探す
+  if (!currentContextText) return null;
+
+  Logger.log(`履歴なし(Keyword): 連想記憶検索を開始します...`);
+  const queryVector = LlmService.generateVector(currentContextText);
+  if (!queryVector) return null;
+
+  let bestSim = -1;
+  let bestSummary = null;
+  const SIMILARITY_THRESHOLD = 0.85; // 関連性が高いとみなす閾値
+
+  for (let i = 0; i < data.length; i++) {
+    const vecStr = data[i][3]; // D列: Vector
+    if (!vecStr) continue;
+
+    const histVector = parseVector(vecStr);
+    if (!histVector) continue;
+
+    const sim = calculateCosineSimilarity(queryVector, histVector);
+    
+    // より似ているものがあれば更新
+    if (sim > bestSim) {
+      bestSim = sim;
+      bestSummary = data[i][2]; // C列: Summary
+    }
+  }
+
+  if (bestSim >= SIMILARITY_THRESHOLD) {
+    Logger.log(`履歴発見(Vector): 類似度${bestSim.toFixed(3)}の過去コンテキストを採用しました。`);
+    return bestSummary;
+  }
+
+  Logger.log("履歴なし: 関連する過去コンテキストは見つかりませんでした。");
+  return null;
+}
+
 /** _getLatestHistory: DigestHistoryシートからキーワードの最新要約を取得 */
 function _getLatestHistory(keyword) {
   try {
@@ -950,22 +1018,25 @@ function _getLatestHistory(keyword) {
 }
 
 /**
- * _writeHistory
- * 【責務】DigestHistoryシートに新しい要約を書き込む
- * @param {string} keyword - 保存するキーワード
- * @param {string} summary - 保存する要約テキスト
+ * _writeHistory (連想記憶対応版)
+ * 【責務】DigestHistoryシートに「圧縮コンテキスト」とその「ベクトル」を書き込む
  */
 function _writeHistory(keyword, summary) {
   try {
     const sheet = getSheet(AppConfig.get().SheetNames.DIGEST_HISTORY);
-    if (!sheet) {
-      Logger.log("DigestHistoryシートが見つからないため、履歴を書き込めません。");
-      return;
-    }
-    sheet.appendRow([new Date(), keyword, summary]);
-    Logger.log(`履歴保存: キーワード「${keyword}」の要約をDigestHistoryシートに書き込みました。`);
+    if (!sheet) return;
+
+    // ★追加: コンテキストの意味ベクトルを生成
+    // (要約自体をベクトル化することで、内容での検索を可能にする)
+    const vector = LlmService.generateVector(summary);
+    const vectorStr = vector ? vector.join(',') : "";
+
+    // [日付, キーワード, 要約, ベクトル] の順で保存
+    sheet.appendRow([new Date(), keyword, summary, vectorStr]);
+    
+    Logger.log(`履歴保存(Vector付): キーワード「${keyword}」を記録しました。`);
   } catch (e) {
-    _logError("_writeHistory", e, "ダイジェスト履歴の書き込み中にエラーが発生しました。");
+    _logError("_writeHistory", e, "履歴書き込みエラー");
   }
 }
 
@@ -1239,7 +1310,6 @@ function sendDigestEmail(headerLine, bodyContent, subjectKeywords, daysWindow = 
   Logger.log(`メール送信完了: To:${to} / Subject:${finalSubject}`);
 }
 
-
 /* =============================================================================
  * SECTION 6: AI/LLM SERVICE (LlmService)
  * 【役割】複数のLLM（Azure, OpenAI, Gemini）との通信を抽象化するレイヤー。
@@ -1248,6 +1318,55 @@ function sendDigestEmail(headerLine, bodyContent, subjectKeywords, daysWindow = 
  */
 const LlmService = (function() {
   const llmConfig = AppConfig.get().Llm;
+  
+  // AppConfigにBudget設定がまだ無い場合のエラー回避
+  const budgetConfig = AppConfig.get().System.Budget || {
+    CURRENT_COST_KEY: "SYSTEM_COST_ACCUMULATOR",
+    LAST_RESET_KEY: "SYSTEM_COST_LAST_RESET"
+  };
+
+  // --- Cost Tracking Helper ---
+  
+  /**
+   * _trackCost: 推定コストを加算して記録する（制限はせず記録のみ）
+   * 計算基準: 1 token ≒ 4 chars と仮定し、GPT-4o-mini相当の単価で安全側に計算
+   */
+  function _trackCost(inputStr, outputStr, serviceName) {
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const currentMonth = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM");
+      const lastReset = props.getProperty(budgetConfig.LAST_RESET_KEY);
+      
+      // 1. 月が変わっていたらリセット
+      if (lastReset !== currentMonth) {
+        props.setProperty(budgetConfig.CURRENT_COST_KEY, "0");
+        props.setProperty(budgetConfig.LAST_RESET_KEY, currentMonth);
+        Logger.log(`[CostTracker] 新しい月(${currentMonth})のため、積算コストをリセットしました。`);
+      }
+
+      // 2. コスト計算 (GPT-4o-mini基準: Input $0.15/1M tok, Output $0.60/1M tok)
+      // 文字数ベースでの概算単価
+      const pricePer1kCharInput = 0.0000005; // $0.50 / 1M chars
+      const pricePer1kCharOutput = 0.0000020; // $2.00 / 1M chars
+      
+      const inputLen = inputStr ? String(inputStr).length : 0;
+      const outputLen = outputStr ? String(outputStr).length : 0;
+      
+      const cost = (inputLen * pricePer1kCharInput) + (outputLen * pricePer1kCharOutput);
+      
+      // 3. プロパティに加算保存
+      const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
+      const newTotal = currentTotal + cost;
+      
+      props.setProperty(budgetConfig.CURRENT_COST_KEY, String(newTotal));
+      
+      // ログ出力（デバッグ用）
+      Logger.log(`[API Cost] ${serviceName}: +$${cost.toFixed(6)} (今月合計: $${newTotal.toFixed(4)})`);
+    } catch (e) {
+      // コスト計算のエラーで本処理を止めない
+      Logger.log(`[CostTracker Error] ${e.toString()}`);
+    }
+  }
 
   // --- Private Methods ---
 
@@ -1284,7 +1403,10 @@ const LlmService = (function() {
     
     const json = _httpFetch(azureUrl, fetchOptions, "Azure OpenAI");
     if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
-      return String(json.choices[0].message.content).trim();
+      const content = String(json.choices[0].message.content).trim();
+      // ★コスト計測
+      _trackCost(systemPrompt + userPrompt, content, "Azure");
+      return content;
     }
     return null;
   }
@@ -1303,12 +1425,14 @@ const LlmService = (function() {
     const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
     if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
       const content = String(json.choices[0].message.content).trim();
+      // ★コスト計測
+      _trackCost(systemPrompt + userPrompt, content, "OpenAI");
       return content !== "" ? content : null;
     }
     return null;
   }
   
-  // ★【追加】Azure Embedding API 呼び出し
+  // Azure Embedding API 呼び出し
   function _callAzureEmbedding(text, endpoint, apiKey) {
     if (!endpoint || !apiKey) return null;
     Logger.log("Azure Embedding APIを試行中...");
@@ -1323,12 +1447,14 @@ const LlmService = (function() {
     
     const json = _httpFetch(endpoint, fetchOptions, "Azure Embedding");
     if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
+      // ★コスト計測 (Inputのみ、Outputは0換算)
+      _trackCost(text, "", "Azure Embedding");
       return json.data[0].embedding;
     }
     return null;
   }
 
-  // ★【追加】OpenAI Embedding API 呼び出し
+  // OpenAI Embedding API 呼び出し
   function _callOpenAiEmbedding(text, model, apiKey) {
     if (!apiKey) return null;
     Logger.log("OpenAI Embedding APIを試行中...");
@@ -1343,6 +1469,8 @@ const LlmService = (function() {
     
     const json = _httpFetch("https://api.openai.com/v1/embeddings", fetchOptions, "OpenAI Embedding");
     if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
+      // ★コスト計測 (Inputのみ)
+      _trackCost(text, "", "OpenAI Embedding");
       return json.data[0].embedding;
     }
     return null;
@@ -1368,6 +1496,10 @@ const LlmService = (function() {
       text = json.candidates[0].content.parts[0].text;
     }
     const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : AppConfig.get().Messages.NO_SUMMARY);
+    
+    // ★コスト計測 (Gemini無料枠の場合は0円だが一応記録、有料なら要計算)
+    if (text) _trackCost(PROMPT, text, "Gemini");
+
     Utilities.sleep(llmConfig.DELAY_MS);
     return headline;
   }
@@ -1497,7 +1629,6 @@ const LlmService = (function() {
         const azureUrl = llmConfig.AzureUrlMini;
         return _callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
     },
-    // ★【追加】パブリックメソッド: generateVector
     generateVector: function(text) {
       // 既存の Context 設定 (COMPANY or PERSONAL) に従って優先順位を決定
       const context = llmConfig.Context;
@@ -1524,7 +1655,7 @@ const LlmService = (function() {
       }
       
       if (vector) {
-        // ★軽量化: 小数点以下6桁に丸める (容量約50%削減)
+        // 軽量化: 小数点以下6桁に丸める (容量約50%削減)
         return vector.map(v => parseFloat(v.toFixed(6)));
       }
 
@@ -1541,7 +1672,12 @@ const LlmService = (function() {
 function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
   let previousSummary = null;
   if (options.enableHistory !== false) {
-    previousSummary = _getLatestHistory(keyword);
+    
+    // ★変更: 検索用に「今回の記事タイトル一覧」などをテキスト化して渡す
+    const contextForSearch = articles.map(a => a.title).join(" ");
+    
+    // 新しい連想記憶関数を使用
+    previousSummary = _getRelevantHistory(keyword, contextForSearch);
   }
 
   // 1. レポート本文（人間用）の生成 [Call 1]
@@ -4084,6 +4220,48 @@ function toolExportArchivesToSheet() {
 }
 
 /**
+ * maintenancePruneDigestHistory
+ * 【責務】DigestHistoryシートから、保存期間を過ぎた古い履歴を削除して軽量化する。
+ * デフォルト設定: 60日（約2ヶ月）以上前の履歴は削除。
+ */
+function maintenancePruneDigestHistory() {
+  const RETENTION_DAYS = 60; // 2ヶ月保存（これより古いと、話題が途切れたとみなして忘れる）
+  
+  const sheet = getSheet(AppConfig.get().SheetNames.DIGEST_HISTORY);
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // 削除基準日の計算
+  const thresholdDate = new Date();
+  thresholdDate.setDate(thresholdDate.getDate() - RETENTION_DAYS);
+
+  // A列(Date)を取得
+  const dates = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let deleteCount = 0;
+
+  // 履歴は「古い順（上から）」並んでいる前提でチェック
+  for (let i = 0; i < dates.length; i++) {
+    const rowDate = new Date(dates[i][0]);
+    if (rowDate < thresholdDate) {
+      deleteCount++;
+    } else {
+      // 古くないデータに当たったら、それ以降は全て新しいので終了
+      break; 
+    }
+  }
+
+  if (deleteCount > 0) {
+    // 上からまとめて削除
+    sheet.deleteRows(2, deleteCount);
+    Logger.log(`履歴メンテナンス: ${RETENTION_DAYS}日以上前の古いコンテキスト (${deleteCount}件) を削除しました。`);
+  } else {
+    Logger.log("履歴メンテナンス: 削除対象の古いデータはありませんでした。");
+  }
+}
+
+/**
  * debugPersonalReport
  * 【開発用】管理者(MAIL_TO)だけに特定のキーワードでレポートをテスト送信するヘルパー関数
  */
@@ -4137,3 +4315,67 @@ if (typeof global !== 'undefined') {
   global.runEmergingSignalJob = runEmergingSignalJob;
   global.dailyDigestJob = dailyDigestJob;
 }
+
+/**
+ * toolBackfillHistoryVectors
+ * 【責務】DigestHistoryシートの既存データ（過去の要約）にベクトルを一括付与する。
+ * これを実行すると、過去の履歴も「連想検索」の対象になります。
+ */
+/**
+function toolBackfillHistoryVectors() {
+  const sheet = getSheet(AppConfig.get().SheetNames.DIGEST_HISTORY);
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("履歴データがありません。");
+    return;
+  }
+
+  // A列(Date)〜C列(Summary)を取得
+  // D列(Vector)はこれから書き込むので、範囲外でもOK（なければ拡張される）
+  const range = sheet.getRange(2, 1, lastRow - 1, 4); // D列まで確保
+  const values = range.getValues();
+  
+  let updateCount = 0;
+  
+  // 処理開始
+  Logger.log(`履歴のベクトル生成を開始します (対象: ${values.length}件)...`);
+
+  for (let i = 0; i < values.length; i++) {
+    const summary = String(values[i][2]).trim(); // C列: Summary
+    const currentVector = values[i][3];          // D列: Vector
+    
+    // 要約があり、かつベクトルがまだ無い場合のみ処理
+    if (summary && (!currentVector || String(currentVector) === "")) {
+      try {
+        // ベクトル生成
+        const vector = LlmService.generateVector(summary);
+        
+        if (vector) {
+          values[i][3] = vector.join(','); // D列にセット
+          updateCount++;
+        }
+        
+        // APIレート制限考慮 (1秒待機)
+        Utilities.sleep(1000);
+        
+        if (updateCount % 5 === 0) {
+          Logger.log(`... ${updateCount} 件 処理完了`);
+        }
+
+      } catch (e) {
+        Logger.log(`Error at row ${i + 2}: ${e.message}`);
+      }
+    }
+  }
+
+  if (updateCount > 0) {
+    // まとめて書き込み
+    range.setValues(values);
+    Logger.log(`完了: ${updateCount} 件の過去履歴にベクトルを付与しました。`);
+  } else {
+    Logger.log("全ての履歴に既にベクトルが付与されています。");
+  }
+}
+*/
