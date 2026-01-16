@@ -4,6 +4,7 @@ node_modules/
 # Environment variables and secrets
 .env
 credentials.json
+server-properties.json
 
 # Database
 yata.db
