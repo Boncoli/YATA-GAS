@@ -224,9 +224,9 @@ const LlmService = (function() {
 
   // --- Cost Tracking Helper ---
   
-  /**
-   * _trackCost: 推定コストを加算して記録する（制限はせず記録のみ）
-   * 計算基準: 1 token ≒ 4 chars と仮定し、GPT-4o-mini相当の単価で安全側に計算
+ /**
+   * _trackCost: 推定コストを加算して記録する
+   * 【修正版】サービス種別ごとに単価を切り替えて計算精度を向上
    */
   function _trackCost(inputStr, outputStr, serviceName) {
     try {
@@ -241,29 +241,51 @@ const LlmService = (function() {
         Logger.log(`[CostTracker] 新しい月(${currentMonth})のため、積算コストをリセットしました。`);
       }
 
-      // 2. コスト計算 (GPT-4o-mini基準: Input $0.15/1M tok, Output $0.60/1M tok)
-      // 文字数ベースでの概算単価
-      const pricePer1kCharInput = 0.0000005; // $0.50 / 1M chars
-      const pricePer1kCharOutput = 0.0000020; // $2.00 / 1M chars
+      // 2. コスト単価の定義 (1文字あたりのドル単価 / 1token≒4chars換算)
+      // ※レートは2025年時点のOpenAI/Azureの定価を参考
+      
+      let priceInput = 0;
+      let priceOutput = 0;
+
+      if (String(serviceName).includes("Embedding")) {
+        // ■ Embedding (text-embedding-3-small 相当)
+        // 定価: $0.02 / 1M tokens
+        // 1文字換算: 約 $0.000000005
+        priceInput = 0.000000005; 
+        priceOutput = 0; // 出力課金なし
+      
+      } else if (String(serviceName).includes("Gemini")) {
+        // ■ Gemini (Flash Lite 等)
+        // 無料枠なら0円だが、有料枠だとしても非常に安い
+        // 定価: Input $0.075 / 1M tok (Miniの半額)
+        priceInput = 0.00000002;
+        priceOutput = 0.00000008;
+
+      } else {
+        // ■ 標準 (Main LLM)
+        // 指定レート: Input $0.40 / 1M tok, Output $1.60 / 1M tok
+        // -------------------------------------------------------
+        // Input: $0.40 / 1,000,000 / 2.5文字 = $0.00000016
+        // Output: $1.60 / 1,000,000 / 2.5文字 = $0.00000064
+        priceInput = 0.00000016;
+        priceOutput = 0.00000064;
+      }
       
       const inputLen = inputStr ? String(inputStr).length : 0;
       const outputLen = outputStr ? String(outputStr).length : 0;
       
-      const cost = (inputLen * pricePer1kCharInput) + (outputLen * pricePer1kCharOutput);
+      const cost = (inputLen * priceInput) + (outputLen * priceOutput);
       
-      // ★変更: セッション合計に加算
+      // 3. セッション合計に加算
       _sessionCostTotal += cost;
 
-      // 3. プロパティに加算保存 (月間累計)
+      // 4. プロパティに加算保存 (月間累計)
       const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
       const newTotal = currentTotal + cost;
       
       props.setProperty(budgetConfig.CURRENT_COST_KEY, String(newTotal));
       
-      // ※毎回のログ出力はノイズになるため削除しました
-      
     } catch (e) {
-      // コスト計算のエラーで本処理を止めない
       Logger.log(`[CostTracker Error] ${e.toString()}`);
     }
   }
