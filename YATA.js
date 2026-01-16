@@ -886,23 +886,39 @@ function _logKeywordHitCounts(hitKeywordsWithCount) {
   Logger.log(hitLog.trim());
 }
 
-/** _summarizeReport: 詳細レポートから要点サマリー（tl;dr）を生成 */
-function _summarizeReport(reportText) {
+/** * _generateContextForNextWeek (旧 _summarizeReport)
+ * 【責務】来週のAIのために、今回のレポートから「文脈」と「事実」を損失なく圧縮する。
+ * 人間用の読みやすさは考慮せず、情報の密度を重視する。
+ */
+function _generateContextForNextWeek(reportText) {
   if (!reportText || reportText.trim() === "") return "";
   
-  Logger.log("詳細レポートから要点サマリーの生成を開始します。");
-  const model = AppConfig.get().Llm.ModelNano;
+  Logger.log("来週への引き継ぎ用コンテキスト圧縮を開始します。");
   
-  const SYSTEM_PROMPT = getPromptConfig("DIGEST_SUMMARY_SYSTEM");
+  // ★変更点1: 履歴作成には少し賢いモデル(Mini)を使うことで、文脈の理解度を上げる
+  // (コストを極限まで下げるならNanoのままでも可ですが、記憶維持ならMini推奨)
+  const model = AppConfig.get().Llm.ModelMini; 
+  
+  // ★変更点2: プロンプトキーを専用のものに変更
+  const SYSTEM_PROMPT = getPromptConfig("CONTEXT_COMPRESSION_SYSTEM");
+  
   if (!SYSTEM_PROMPT) {
-      Logger.log("要点サマリーのプロンプト(DIGEST_SUMMARY_SYSTEM)が見つかりません。");
+      Logger.log("コンテキスト圧縮用プロンプト(CONTEXT_COMPRESSION_SYSTEM)が見つかりません。");
       return "";
   }
   
-  const summary = LlmService.summarizeReport(SYSTEM_PROMPT, reportText);
+  // LlmServiceを使って圧縮を実行
+  // (summarizeReportメソッドを流用しますが、中身はコンテキスト圧縮です)
+  // ※LlmService側に直接 model を渡せるよう _callLlmWithFallback を使うか、
+  //   LlmService.analyzeKeywordSearch などを流用して実装します。
+  
+  // 簡易実装として LlmService.analyzeKeywordSearch (Miniモデル使用) を流用する場合:
+  const compressedText = LlmService.analyzeKeywordSearch(SYSTEM_PROMPT, reportText, {
+    temperature: 0.0 // 事実重視なのでランダム性を排除
+  });
 
-  Logger.log(`要点サマリーを生成しました: ${summary}`);
-  return summary;
+  Logger.log(`コンテキスト圧縮完了: ${compressedText.length}文字`);
+  return compressedText;
 }
 
 /** _getLatestHistory: DigestHistoryシートからキーワードの最新要約を取得 */
@@ -1528,6 +1544,7 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
     previousSummary = _getLatestHistory(keyword);
   }
 
+  // 1. レポート本文（人間用）の生成 [Call 1]
   const { reportBody } = generateWeeklyReportWithLLM(
     articles,
     [{ keyword: keyword, count: articles.length }],
@@ -1538,17 +1555,21 @@ function processKeywordAnalysisWithHistory(keyword, articles, options = {}) {
 
   if (!reportBody || reportBody.trim() === "") return null;
 
-  const tldrSummary = _summarizeReport(reportBody);
+  // 2. 来週のAI用「圧縮コンテキスト」の生成 [Call 2]
+  // (旧 _summarizeReport の代わりにこちらを実行して、濃縮された情報を履歴に残す)
+  const nextContext = _generateContextForNextWeek(reportBody);
 
   const shouldSave = (options.enableHistory !== false) && (options.saveHistory !== false);
 
-  if (shouldSave && tldrSummary) {
-    _writeHistory(keyword, tldrSummary);
-  } else if (!shouldSave && tldrSummary) {
+  if (shouldSave && nextContext) {
+    // スプレッドシートには「AI用圧縮コンテキスト」を保存
+    _writeHistory(keyword, nextContext);
+  } else if (!shouldSave && nextContext) {
     Logger.log(`[Test Mode] 履歴の保存をスキップしました (Keyword: ${keyword})`);
   }
 
-  return { reportBody, summary: tldrSummary };
+  // 戻り値の summary も nextContext に統一します
+  return { reportBody, summary: nextContext };
 }
 
 /**
