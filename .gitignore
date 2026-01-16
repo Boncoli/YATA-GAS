@@ -21,3 +21,15 @@ npm-debug.log*
 Thumbs.db
 public/
 local_public/
+
+# --- Python & Dashboard specific ---
+# 実行のたびに作られる画像（履歴に残すと管理が大変）
+*.png
+
+# Pythonのキャッシュ（VSCodeのサイドバーがスッキリします）
+__pycache__/
+*.py[cod]
+
+# フォント（自分で追加したフォントをGitに上げたくない場合）
+# *.ttf
+# *.otf
