@@ -806,6 +806,11 @@ function runCollectionJob() {
 
   collectRssFeeds();       
   sortCollectByDateDesc(); 
+
+  // ★追加: アーカイブ処理などでAIを使った場合に備えてコストを表示
+  // (コスト0円の時はログに出ないので邪魔になりません)
+  LlmService.logSessionTotal();
+  
   Logger.log("--- 収集ジョブ完了 ---");
 }
 
