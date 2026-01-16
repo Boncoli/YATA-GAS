@@ -1,35 +1,42 @@
-# Dependencies
+# --- Node.js ---
 node_modules/
+package-lock.json
 
-# Environment variables and secrets
+# --- Environment variables and secrets (Security) ---
 .env
 credentials.json
 server-properties.json
 
-# Database
+# --- Database (Data is backed up separately) ---
 yata.db
+*.db
 *.db-shm
 *.db-wal
 *.db-journal
 
-# Logs
+# --- Logs ---
 *.log
+logs/
 npm-debug.log*
 
-# OS generated files
+# --- OS & System generated files ---
 .DS_Store
 Thumbs.db
+
+# --- Frontend & Local Testing ---
+# もしこれらの中身をGitに保存したい場合は行の頭に # をつけてください
 public/
 local_public/
 
 # --- Python & Dashboard specific ---
-# 実行のたびに作られる画像（履歴に残すと管理が大変）
+# 自動生成される画像 (履歴管理不要)
 *.png
 
-# Pythonのキャッシュ（VSCodeのサイドバーがスッキリします）
+# Pythonのキャッシュ
 __pycache__/
 *.py[cod]
 
-# フォント（自分で追加したフォントをGitに上げたくない場合）
+# --- Fonts (Optional) ---
+# リポジトリを軽量に保ちたい場合は、以下の # を外してください
 # *.ttf
 # *.otf
