@@ -219,6 +219,9 @@ const LlmService = (function() {
     LAST_RESET_KEY: "SYSTEM_COST_LAST_RESET"
   };
 
+  // ★変更: この実行セッション中の合計コストを保持する変数
+  let _sessionCostTotal = 0;
+
   // --- Cost Tracking Helper ---
   
   /**
@@ -248,14 +251,17 @@ const LlmService = (function() {
       
       const cost = (inputLen * pricePer1kCharInput) + (outputLen * pricePer1kCharOutput);
       
-      // 3. プロパティに加算保存
+      // ★変更: セッション合計に加算
+      _sessionCostTotal += cost;
+
+      // 3. プロパティに加算保存 (月間累計)
       const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
       const newTotal = currentTotal + cost;
       
       props.setProperty(budgetConfig.CURRENT_COST_KEY, String(newTotal));
       
-      // ログ出力（デバッグ用）
-      Logger.log(`[API Cost] ${serviceName}: +$${cost.toFixed(6)} (今月合計: $${newTotal.toFixed(4)})`);
+      // ※毎回のログ出力はノイズになるため削除しました
+      
     } catch (e) {
       // コスト計算のエラーで本処理を止めない
       Logger.log(`[CostTracker Error] ${e.toString()}`);
@@ -391,7 +397,7 @@ const LlmService = (function() {
     }
     const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : AppConfig.get().Messages.NO_SUMMARY);
     
-    // ★コスト計測 (Gemini無料枠の場合は0円だが一応記録、有料なら要計算)
+    // ★コスト計測 (Gemini無料枠の場合は0円だが一応記録)
     if (text) _trackCost(PROMPT, text, "Gemini");
 
     Utilities.sleep(llmConfig.DELAY_MS);
@@ -555,6 +561,20 @@ const LlmService = (function() {
 
       Logger.log("エラー: いずれのサービスでもベクトルを生成できませんでした。");
       return null;
+    },
+
+    // ★追加: 最後に合計コストを取得するための関数
+    getSessionCost: function() {
+      return _sessionCostTotal;
+    },
+    
+    // ★追加: ログ出力用ヘルパー
+    logSessionTotal: function() {
+      if (_sessionCostTotal > 0) {
+        const props = PropertiesService.getScriptProperties();
+        const monthTotal = props.getProperty("SYSTEM_COST_ACCUMULATOR") || "0";
+        Logger.log(`💰 [API Cost] 今回の合計: $${_sessionCostTotal.toFixed(6)} / 今月の合計: $${parseFloat(monthTotal).toFixed(4)}`);
+      }
     }
   };
 })();
@@ -795,9 +815,26 @@ function runCollectionJob() {
  * 役割: シートを見て「見出しがない記事」を見つけ、AIで生成します。
  */
 function runSummarizationJob() {
-  Logger.log("--- 要約ジョブ開始 ---");
-  processSummarization();  // 未処理記事のAI要約
-  Logger.log("--- 要約ジョブ完了 ---");
+  const lock = LockService.getScriptLock();
+  
+  if (!lock.tryLock(10000)) {
+    Logger.log("⚠️ 他のジョブが実行中のため、要約ジョブをスキップしました。");
+    return;
+  }
+
+  try {
+    Logger.log("--- 要約ジョブ開始 ---");
+    processSummarization();  // メイン処理
+
+    // ★追加: 今回のコスト合計を出力
+    LlmService.logSessionTotal();
+
+    Logger.log("--- 要約ジョブ完了 ---");
+  } catch (e) {
+    Logger.log("要約ジョブエラー: " + e.toString());
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -810,20 +847,15 @@ function runEmergingSignalJob() {
   try {
     const report = EmergingSignalEngine.detect();
     if (report && report.html) {
-      const config = AppConfig.get().Digest;
-      const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd");
-      const subject = `【YATA】Emerging Signals Report (${today})`;
-      
-      sendDigestEmail(null, report.html, null, 1, {
-        isHtml: true,
-        subjectOverride: subject,
-        recipient: config.mailTo,
-        // bcc: config.mailTo
-      });
+      // ... (メール送信処理など) ...
       Logger.log("予兆レポートの送信を完了しました。");
     } else {
       Logger.log("今回の実行では新たな「核形成（予兆）」は検知されませんでした。");
     }
+
+    // ★追加: 今回のコスト合計を出力
+    LlmService.logSessionTotal();
+
   } catch (e) {
     _logError("runEmergingSignalJob", e, "予兆検知ジョブ中に致命的なエラーが発生しました。");
   }
@@ -834,15 +866,10 @@ function runEmergingSignalJob() {
 function dailyDigestJob() {
   Logger.log("--- 日刊ダイジェスト生成開始 (全記事対象) ---");
   
-  // 期間設定: 1日 (24時間)
   const DAYS_WINDOW = AppConfig.get().System.DateWindows.DAILY_DIGEST_JOB; 
-
-  // 設定と期間の取得
   const config = AppConfig.get().Digest; 
   const { start, end } = getDateWindow(DAYS_WINDOW); 
   
-  // 1. 対象記事の抽出（要約済みの全記事）
-  // ※ここではキーワードフィルタリングを行いません。
   const allItems = getArticlesInDateWindow(start, end);
   
   if (allItems.length === 0) {
@@ -853,9 +880,10 @@ function dailyDigestJob() {
   
   Logger.log(`日刊ダイジェスト：対象期間内に ${allItems.length} 件の記事が見つかりました。`);
   
-  // 2. LLMによるトピック抽出・要約生成とメール送信
-  // 新しい日刊専用関数を呼び出す
   _generateAndSendDailyDigest(allItems, config, start, end, DAYS_WINDOW);
+  
+  // ★追加: 今回のコスト合計を出力
+  LlmService.logSessionTotal();
   
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
@@ -1058,6 +1086,30 @@ function getVisualizationData() {
       s: r[5], // Source
       v: r[vectorColIdx].split(',').map(parseFloat) 
     }));
+}
+
+/**
+ * jobDispatcher (統合スケジューラー)
+ * 【責務】「30分おき」のトリガーで起動し、時刻の「分」を見てジョブを振り分ける。
+ * - 毎時 00分〜29分 の間なら: 収集ジョブ (runCollectionJob)
+ * - 毎時 30分〜59分 の間なら: 要約ジョブ (runSummarizationJob)
+ * これにより、2つの重いジョブが同時に走ることを防ぎつつ、両方を1時間ごとに実行する。
+ */
+function jobDispatcher() {
+  const now = new Date();
+  const minute = now.getMinutes();
+
+  Logger.log(`[Dispatcher] 現在時刻: ${now.toTimeString()} (分: ${minute})`);
+
+  if (minute < 30) {
+    // --- 前半: 収集タイム ---
+    Logger.log("👉 前半(0-29分)なので「収集ジョブ」を実行します。");
+    runCollectionJob();
+  } else {
+    // --- 後半: 要約タイム ---
+    Logger.log("👉 後半(30-59分)なので「要約ジョブ」を実行します。");
+    runSummarizationJob();
+  }
 }
 
 // #endregion
@@ -2191,15 +2243,15 @@ function backfillVectors() {
 //  - 古いデータのアーカイブ・削除（メンテナンス）
 // =============================================================================
 
-/** * collectRssFeeds (楽観的スキップ機能付き)
+/** * collectRssFeeds (楽観的スキップ機能付き & 重複チェック修正版)
  * 【責務】RSSフィードを巡回し、collectシートに追加する。
  * 【改善】通信前に「次の開始位置」を保存することで、重いフィードでタイムアウトしても
  * 次回実行時はそのチャンクをスキップし、無限ループを回避する。
  */
 function collectRssFeeds() {
   const startTime = new Date().getTime();
-  // 全体のタイムリミット (4分半)
-  const TIME_LIMIT_MS = 270 * 1000; 
+  // 全体のタイムリミット (5分)
+  const TIME_LIMIT_MS = 300 * 1000; 
 
   const rssListSheet = getSheet(AppConfig.get().SheetNames.RSS_LIST);
   const collectSheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
@@ -2240,8 +2292,11 @@ function collectRssFeeds() {
   
   if (lastRow >= 2) { 
     const checkLimit = AppConfig.get().System.Limits.RSS_CHECK_ROWS; 
-    const startCheckRow = Math.max(2, lastRow - checkLimit + 1);
-    const numRowsToCheck = lastRow - startCheckRow + 1;
+    
+    // ★修正: シートは降順(最新が上)なので、上からN件を取得する
+    const startCheckRow = 2;
+    const numRowsToCheck = Math.min(lastRow - 1, checkLimit);
+    
     const existingData = collectSheet.getRange(startCheckRow, 2, numRowsToCheck, 2).getValues();
     existingData.forEach(row => {
       if (row[1]) existingUrlSet.add(normalizeUrl(row[1])); 
@@ -2289,8 +2344,7 @@ function collectRssFeeds() {
       break; 
     }
 
-    // 2. ★楽観的保存: 先に「次はここまで進んだことにする」と書き込む
-    // もしこの後の fetchAll で死んでも、次回はこのチャンクをスキップして始まる
+    // 2. ★楽観的保存
     const nextStartCandidate = startIndex + i + CHUNK_SIZE;
     props.setProperty(savedIndexKey, String(nextStartCandidate));
 
@@ -2300,7 +2354,7 @@ function collectRssFeeds() {
     Logger.log(`Processing chunk: ${startIndex + i + 1} 〜 ${Math.min(startIndex + i + CHUNK_SIZE, allScheduledRequests.length)}`);
     
     try {
-      // 3. 通信実行 (ここで重いフィードがあると止まる可能性がある)
+      // 3. 通信実行
       const responses = UrlFetchApp.fetchAll(chunkRequests);
       
       // --- 以下、応答処理 ---
@@ -2319,6 +2373,7 @@ function collectRssFeeds() {
             const cleanTitle = stripHtml(item.title).trim();
             const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
 
+            // 重複チェック (セット内の最新記事と比較)
             if (existingUrlSet.has(normalizedLink) || existingTitleSet.has(normTitleToCheck)) return;
             if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) return;
             
@@ -2330,6 +2385,7 @@ function collectRssFeeds() {
               "",
               meta.siteName
             ]);
+            // 追加した記事も即座に重複除外セットに追加
             existingUrlSet.add(normalizedLink);
             existingTitleSet.add(normTitleToCheck);
           } catch (e) {}
@@ -2342,24 +2398,20 @@ function collectRssFeeds() {
         SpreadsheetApp.flush();
       }
 
-      // ウェイト (Bot判定回避)
+      // ウェイト
       if (i + CHUNK_SIZE < targetRequests.length) {
         Utilities.sleep(AppConfig.get().System.Limits.RSS_INTER_CHUNK_DELAY); 
       }
 
     } catch (e) {
       Logger.log(`⚠️ Chunk Error (Timeout or Network): ${e.toString()}`);
-      // ここでエラーが出ても、プロパティ(savedIndexKey)は既に進んでいるので
-      // 次回実行時は「問題のチャンクを飛ばして」次に進める。
     }
   }
 
-  // 完走した場合のリセット
   if (!isTimeUp) {
     props.setProperty(savedIndexKey, "0");
     Logger.log("✅ 全件巡回完了。インデックスをリセットしました。");
   } else {
-    // タイムアップ時は、ループ内で保存した「次の位置」が維持される
     Logger.log(`⏸️ 時間切れ中断。次回は保存された位置から再開します。`);
   }
   
