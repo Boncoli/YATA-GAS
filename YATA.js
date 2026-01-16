@@ -262,11 +262,24 @@ const LlmService = (function() {
       const cost = (inputLen * priceInput) + (outputLen * priceOutput);
       
       _sessionCostTotal += cost;
-      const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
-      props.setProperty(budgetConfig.CURRENT_COST_KEY, String(currentTotal + cost));
+      // 即時保存は廃止し、saveSessionCostで一括保存する
       
     } catch (e) {
       Logger.log(`[CostTracker Error] ${e.toString()}`);
+    }
+  }
+
+  /** saveSessionCost: メモリ上に積算したコストをプロパティに一括保存 */
+  function saveSessionCost() {
+    if (_sessionCostTotal <= 0) return;
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
+      props.setProperty(budgetConfig.CURRENT_COST_KEY, String(currentTotal + _sessionCostTotal));
+      // 保存後はリセット（二重計上防止）
+      _sessionCostTotal = 0;
+    } catch (e) {
+      Logger.log(`[CostSave Error] ${e.toString()}`);
     }
   }
 
