@@ -213,185 +213,124 @@ const AppConfig = (function() {
 const LlmService = (function() {
   const llmConfig = AppConfig.get().Llm;
   
-  // AppConfigにBudget設定がまだ無い場合のエラー回避
   const budgetConfig = AppConfig.get().System.Budget || {
     CURRENT_COST_KEY: "SYSTEM_COST_ACCUMULATOR",
     LAST_RESET_KEY: "SYSTEM_COST_LAST_RESET"
   };
 
-  // ★変更: この実行セッション中の合計コストを保持する変数
   let _sessionCostTotal = 0;
+  let _executionStats = {}; // ★追加: 実行回数の内訳集計用
 
-  // --- Cost Tracking Helper ---
+  // --- Helper Methods ---
+
+  /** _recordUsage: ログを出さずに回数だけカウントする */
+  function _recordUsage(label) {
+    if (!_executionStats[label]) _executionStats[label] = 0;
+    _executionStats[label]++;
+  }
   
- /**
-   * _trackCost: 推定コストを加算して記録する
-   * 【修正版】サービス種別ごとに単価を切り替えて計算精度を向上
-   */
   function _trackCost(inputStr, outputStr, serviceName) {
     try {
       const props = PropertiesService.getScriptProperties();
       const currentMonth = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM");
       const lastReset = props.getProperty(budgetConfig.LAST_RESET_KEY);
       
-      // 1. 月が変わっていたらリセット
       if (lastReset !== currentMonth) {
         props.setProperty(budgetConfig.CURRENT_COST_KEY, "0");
         props.setProperty(budgetConfig.LAST_RESET_KEY, currentMonth);
-        Logger.log(`[CostTracker] 新しい月(${currentMonth})のため、積算コストをリセットしました。`);
       }
 
-      // 2. コスト単価の定義 (1文字あたりのドル単価 / 1token≒4chars換算)
-      // ※レートは2025年時点のOpenAI/Azureの定価を参考
-      
+      // 単価設定 (1文字あたりのドル単価 / 1token≒2.5chars)
       let priceInput = 0;
       let priceOutput = 0;
+      const sName = String(serviceName).toLowerCase();
 
-      if (String(serviceName).includes("Embedding")) {
-        // ■ Embedding (text-embedding-3-small 相当)
-        // 定価: $0.02 / 1M tokens
-        // 1文字換算: 約 $0.000000005
-        priceInput = 0.000000005; 
-        priceOutput = 0; // 出力課金なし
-      
-      } else if (String(serviceName).includes("Gemini")) {
-        // ■ Gemini (Flash Lite 等)
-        // 無料枠なら0円だが、有料枠だとしても非常に安い
-        // 定価: Input $0.075 / 1M tok (Miniの半額)
-        priceInput = 0.00000002;
-        priceOutput = 0.00000008;
-
+      if (sName.includes("embedding")) {
+        priceInput = 0.000000008; priceOutput = 0; 
+      } else if (sName.includes("gemini")) {
+        priceInput = 0.00000003; priceOutput = 0.00000012;
+      } else if (sName.includes("nano")) {
+        // Nano (GPT-4o-mini 純正相当)
+        priceInput = 0.00000006; priceOutput = 0.00000024;
       } else {
-        // ■ 標準 (Main LLM)
-        // 指定レート: Input $0.40 / 1M tok, Output $1.60 / 1M tok
-        // -------------------------------------------------------
-        // Input: $0.40 / 1,000,000 / 2.5文字 = $0.00000016
-        // Output: $1.60 / 1,000,000 / 2.5文字 = $0.00000064
-        priceInput = 0.00000016;
-        priceOutput = 0.00000064;
+        // Mini (指定高単価)
+        priceInput = 0.00000016; priceOutput = 0.00000064;
       }
       
       const inputLen = inputStr ? String(inputStr).length : 0;
       const outputLen = outputStr ? String(outputStr).length : 0;
-      
       const cost = (inputLen * priceInput) + (outputLen * priceOutput);
       
-      // 3. セッション合計に加算
       _sessionCostTotal += cost;
-
-      // 4. プロパティに加算保存 (月間累計)
       const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
-      const newTotal = currentTotal + cost;
-      
-      props.setProperty(budgetConfig.CURRENT_COST_KEY, String(newTotal));
+      props.setProperty(budgetConfig.CURRENT_COST_KEY, String(currentTotal + cost));
       
     } catch (e) {
       Logger.log(`[CostTracker Error] ${e.toString()}`);
     }
   }
 
-  // --- Private Methods ---
-
-  /**
-   * _httpFetch
-   * 通信・エラーハンドリング・JSONパースを共通化するヘルパー
-   */
   function _httpFetch(url, options, serviceName) {
     try {
       const res = UrlFetchApp.fetch(url, options);
-      const code = res.getResponseCode();
-      const txt = res.getContentText();
-      
-      if (code !== 200) {
-        _logError(serviceName, new Error(`API Error: ${code} - ${txt}`), `${serviceName} APIエラーが発生しました。`);
-        return null;
-      }
-      return cleanAndParseJSON(txt);
+      if (res.getResponseCode() !== 200) return null;
+      return cleanAndParseJSON(res.getContentText());
     } catch (e) {
-      _logError(serviceName, e, `${serviceName} 通信中に例外が発生しました。`);
+      _logError(serviceName, e, "通信例外");
       return null;
     }
   }
 
-  function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}) {
-    Logger.log("Azure OpenAIを試行中...");
+  // --- LLM Callers (ログ出力なし・カウントのみ) ---
+
+  function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}, modelTag = "default") {
+    _recordUsage(`Azure(${modelTag})`); // ★ログ抑制＆カウント
     const params = AppConfig.get().Llm.Params;
-    const payload = { 
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
-      temperature: options.temperature ?? params.Temperature.DEFAULT, 
-      max_completion_tokens: params.MaxTokens 
-    };
+    const payload = { messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], temperature: options.temperature ?? params.Temperature.DEFAULT, max_completion_tokens: params.MaxTokens };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    
     const json = _httpFetch(azureUrl, fetchOptions, "Azure OpenAI");
-    if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+    if (json && json.choices && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
-      // ★コスト計測
-      _trackCost(systemPrompt + userPrompt, content, "Azure");
+      _trackCost(systemPrompt + userPrompt, content, `Azure:${modelTag}`);
       return content;
     }
     return null;
   }
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
-    Logger.log("OpenAI APIを試行中...");
+    _recordUsage(`OpenAI(${openAiModel})`); // ★ログ抑制＆カウント
     const params = AppConfig.get().Llm.Params;
-    const payload = { 
-      model: openAiModel, 
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
-      max_tokens: params.MaxTokens, 
-      temperature: options.temperature ?? undefined 
-    };
+    const payload = { model: openAiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: params.MaxTokens, temperature: options.temperature ?? undefined };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    
     const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
-    if (json && json.choices && json.choices.length > 0 && json.choices[0].message && json.choices[0].message.content) {
+    if (json && json.choices && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
-      // ★コスト計測
-      _trackCost(systemPrompt + userPrompt, content, "OpenAI");
+      _trackCost(systemPrompt + userPrompt, content, `OpenAI:${openAiModel}`);
       return content !== "" ? content : null;
     }
     return null;
   }
   
-  // Azure Embedding API 呼び出し
   function _callAzureEmbedding(text, endpoint, apiKey) {
     if (!endpoint || !apiKey) return null;
-    Logger.log("Azure Embedding APIを試行中...");
+    _recordUsage("Azure(Embedding)");
     const payload = { input: text };
-    const fetchOptions = {
-      method: "post",
-      contentType: "application/json",
-      headers: { "api-key": apiKey },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-    
+    const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": apiKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     const json = _httpFetch(endpoint, fetchOptions, "Azure Embedding");
-    if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
-      // ★コスト計測 (Inputのみ、Outputは0換算)
+    if (json && json.data && json.data[0].embedding) {
       _trackCost(text, "", "Azure Embedding");
       return json.data[0].embedding;
     }
     return null;
   }
 
-  // OpenAI Embedding API 呼び出し
   function _callOpenAiEmbedding(text, model, apiKey) {
     if (!apiKey) return null;
-    Logger.log("OpenAI Embedding APIを試行中...");
+    _recordUsage("OpenAI(Embedding)");
     const payload = { model: model, input: text };
-    const fetchOptions = {
-      method: "post",
-      contentType: "application/json",
-      headers: { "Authorization": `Bearer ${apiKey}` },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-    
+    const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${apiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     const json = _httpFetch("https://api.openai.com/v1/embeddings", fetchOptions, "OpenAI Embedding");
-    if (json && json.data && json.data.length > 0 && json.data[0].embedding) {
-      // ★コスト計測 (Inputのみ)
+    if (json && json.data && json.data[0].embedding) {
       _trackCost(text, "", "OpenAI Embedding");
       return json.data[0].embedding;
     }
@@ -399,203 +338,108 @@ const LlmService = (function() {
   }
 
   function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
-    Logger.log("Gemini APIを試行中...");
+    _recordUsage("Gemini");
     const params = AppConfig.get().Llm.Params;
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
-    const payload = { 
-      contents: [{ parts: [{ text: PROMPT }] }], 
-      generationConfig: { 
-        temperature: options.temperature ?? params.Temperature.DEFAULT, 
-        maxOutputTokens: params.MaxTokens 
-      } 
-    };
+    const payload = { contents: [{ parts: [{ text: PROMPT }] }], generationConfig: { temperature: options.temperature ?? params.Temperature.DEFAULT, maxOutputTokens: params.MaxTokens } };
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
-    
     const json = _httpFetch(API_ENDPOINT, fetchOptions, "Gemini");
     let text = null;
-    if (json && json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) {
-      text = json.candidates[0].content.parts[0].text;
-    }
-    const headline = text ? String(text).trim() : (json && json.error ? ("API Error: " + json.error.message) : AppConfig.get().Messages.NO_SUMMARY);
-    
-    // ★コスト計測 (Gemini無料枠の場合は0円だが一応記録)
+    if (json && json.candidates && json.candidates[0].content) text = json.candidates[0].content.parts[0].text;
     if (text) _trackCost(PROMPT, text, "Gemini");
-
     Utilities.sleep(llmConfig.DELAY_MS);
-    return headline;
+    return text ? String(text).trim() : AppConfig.get().Messages.NO_SUMMARY;
   }
 
   function _callLlmWithFallback(systemPrompt, userPrompt, openAiModel, azureUrlOverride = null, options = {}) {
-    const llmProps = llmConfig; // AppConfigから取得済みの設定を利用
+    const llmProps = llmConfig; 
     let model = openAiModel;
-    if (openAiModel === "nano" || openAiModel === "mini") {
-      model = openAiModel === "mini" ? llmProps.ModelMini : llmProps.ModelNano;
-    }
-    const azureUrl = azureUrlOverride || (model && model.includes("mini") ? llmProps.AzureUrlMini : llmProps.AzureUrlNano);
+    if (openAiModel === "nano" || openAiModel === "mini") model = openAiModel === "mini" ? llmProps.ModelMini : llmProps.ModelNano;
+    
+    const isMini = (model && model.includes("mini")); 
+    const azureUrl = azureUrlOverride || (isMini ? llmProps.AzureUrlMini : llmProps.AzureUrlNano);
+    const modelTag = (isMini || azureUrlOverride) ? "mini" : "nano"; 
     const context = llmProps.Context;
     let result = null;
 
+    const tryOpenAI = () => llmProps.OpenAiKey ? _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options) : null;
+    const tryAzure = () => (azureUrl && llmProps.AzureKey) ? _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options, modelTag) : null;
+
     if (context === 'PERSONAL') {
-      if (llmProps.OpenAiKey) {
-        result = _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options);
-        if (result !== null) return result;
-        Logger.log("OpenAI API(個人)での呼び出しに失敗しました。Azure OpenAIを試行します。");
-      }
-      if (azureUrl && llmProps.AzureKey) {
-        result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options);
-        if (result !== null) return result;
-        Logger.log("Azure OpenAIでの呼び出しに失敗しました。Gemini APIを試行します。");
-      }
+      result = tryOpenAI();
+      if (!result) result = tryAzure();
     } else {
-      if (azureUrl && llmProps.AzureKey) {
-        result = _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options);
-        if (result !== null) return result;
-        Logger.log("Azure OpenAIでの呼び出しに失敗しました。OpenAI API(個人)を試行します。");
-      }
-      if (llmProps.OpenAiKey) {
-        result = _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options);
-        if (result !== null) return result;
-        Logger.log("OpenAI API(個人)での呼び出しに失敗しました。Gemini APIを試行します。");
-      }
+      result = tryAzure();
+      if (!result) result = tryOpenAI();
     }
 
-    if (llmProps.GeminiKey) {
-      result = _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
-      if (result !== null) return result;
-      Logger.log("Gemini APIでの呼び出しに失敗しました。");
-    }
-    return "いずれのLLMでも見出しを生成できませんでした。";
+    if (!result && llmProps.GeminiKey) result = _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
+    return result || "いずれのLLMでも見出しを生成できませんでした。";
   }
 
   // --- Public Methods ---
   return {
+    // ★追加: 現在のモデル設定を返す
+    getModelInfo: function() {
+      return { context: llmConfig.Context, nano: llmConfig.ModelNano, mini: llmConfig.ModelMini };
+    },
+
     summarize: function(articleText) {
-      const model = llmConfig.ModelNano;
-      const SYSTEM = getPromptConfig("BATCH_SYSTEM");
-      const USER_TEMPLATE = getPromptConfig("BATCH_USER_TEMPLATE");
-      if (!SYSTEM || !USER_TEMPLATE) return "エラー: BATCHプロンプト設定が見つかりません。";
-      const USER = USER_TEMPLATE + ["", "記事: ---", articleText, "---"].join("\n");
-      return _callLlmWithFallback(SYSTEM, USER, model);
+      return _callLlmWithFallback(getPromptConfig("BATCH_SYSTEM"), getPromptConfig("BATCH_USER_TEMPLATE") + ["", "記事: ---", articleText, "---"].join("\n"), "nano");
     },
     generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null, options = {}) {
-      const model = llmConfig.ModelMini;
+      const model = "mini"; 
       const azureWeeklyUrl = llmConfig.AzureUrlMini;
-      
-      let SYSTEM, USER_TEMPLATE;
-
-      if (options.promptKeys && options.promptKeys.system && options.promptKeys.user) {
-        const customSystem = getPromptConfig(options.promptKeys.system);
-        const customUser = getPromptConfig(options.promptKeys.user);
-
-        if (customSystem && customUser) {
-          SYSTEM = customSystem;
-          USER_TEMPLATE = customUser;
-          Logger.log(`カスタムプロンプトセットを使用: ${options.promptKeys.system} / ${options.promptKeys.user}`);
-        } else {
-          Logger.log(`警告: カスタムプロンプト(${options.promptKeys.system} or ${options.promptKeys.user})が見つからないため、デフォルトのトレンド分析プロンプトへフォールバックします。`);
-        }
-      }
-
-      if (!SYSTEM || !USER_TEMPLATE) {
-        SYSTEM = getPromptConfig("TREND_SYSTEM");
-        const fallbackUserKey = previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE";
-        USER_TEMPLATE = getPromptConfig(fallbackUserKey);
-        Logger.log(`デフォルトプロンプトセットを使用: TREND_SYSTEM / ${fallbackUserKey}`);
-      }
-
-      if (!SYSTEM || !USER_TEMPLATE) {
-        return "プロンプト設定エラー: デフォルトのプロンプト(TREND_SYSTEM, TREND_USER_TEMPLATE)さえも見つかりません。";
-      }
-
+      let SYSTEM = options.promptKeys?.system ? getPromptConfig(options.promptKeys.system) : getPromptConfig("TREND_SYSTEM");
+      let USER_TEMPLATE = options.promptKeys?.user ? getPromptConfig(options.promptKeys.user) : getPromptConfig(previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE");
+      if (!SYSTEM || !USER_TEMPLATE) return "プロンプト設定エラー";
       const allTrends = [];
-      
       for (const keyword of hitKeywords) {
         const articles = articlesGroupedByKeyword[keyword];
         if (!articles || articles.length === 0) continue;
-
-        const articleListForLlm = articles.map(a => {
-          const summaryContent = a.headline && a.headline.length > 10 ? a.headline : (a.abstractText || a.title);
-          return `- タイトル: ${a.title}\n  要点: ${summaryContent}\n  URL: ${a.url}`;
-        }).join("\n\n");
-
+        const articleListForLlm = articles.map(a => `- タイトル: ${a.title}\n  要点: ${a.headline||a.abstractText}\n  URL: ${a.url}`).join("\n\n");
         let userPrompt = USER_TEMPLATE;
-        if (previousSummary && userPrompt.includes('{previous_summary}')) {
-          userPrompt = userPrompt.replace('{previous_summary}', previousSummary);
-        }
-
-        if (userPrompt.includes('{article_list}')) {
-          userPrompt = userPrompt.replace('{article_list}', articleListForLlm);
-        } else {
-          userPrompt += '\n' + articleListForLlm;
-        }
-
+        if (previousSummary) userPrompt = userPrompt.replace('{previous_summary}', previousSummary);
+        userPrompt = userPrompt.includes('{article_list}') ? userPrompt.replace('{article_list}', articleListForLlm) : userPrompt + '\n' + articleListForLlm;
         const txt = _callLlmWithFallback(SYSTEM, userPrompt, model, azureWeeklyUrl);
-        if (txt && txt.trim()) {
-          allTrends.push(txt.trim());
-        }
+        if (txt && txt.trim()) allTrends.push(txt.trim());
       }
       return allTrends.join("\n\n---\n\n");
     },
     summarizeReport: function(systemPrompt, reportText) {
-      const model = llmConfig.ModelNano;
-      return _callLlmWithFallback(systemPrompt, reportText, model);
+      return _callLlmWithFallback(systemPrompt, reportText, "nano");
     },
     generateDailyDigest: function(systemPrompt, userPrompt) {
-        const model = llmConfig.ModelMini;
-        const azureDailyUrl = llmConfig.AzureUrlMini;
-        return _callLlmWithFallback(systemPrompt, userPrompt, model, azureDailyUrl);
+        return _callLlmWithFallback(systemPrompt, userPrompt, "mini", llmConfig.AzureUrlMini);
     },
     analyzeKeywordSearch: function(systemPrompt, contextText, options) {
-        const model = llmConfig.ModelMini;
-        const azureUrl = llmConfig.AzureUrlMini;
-        return _callLlmWithFallback(systemPrompt, contextText, model, azureUrl, options);
+        return _callLlmWithFallback(systemPrompt, contextText, "mini", llmConfig.AzureUrlMini, options);
     },
     generateVector: function(text) {
-      // 既存の Context 設定 (COMPANY or PERSONAL) に従って優先順位を決定
       const context = llmConfig.Context;
       const embConfig = llmConfig.Embedding;
-      
       let vector = null;
-
       if (context === 'PERSONAL') {
-        // PERSONAL優先: OpenAI -> Azure
-        if (llmConfig.OpenAiKey) {
-          vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
-        }
-        if (!vector && embConfig.AzureEndpoint && llmConfig.AzureKey) {
-          vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
-        }
+        if (llmConfig.OpenAiKey) vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
+        if (!vector && embConfig.AzureEndpoint && llmConfig.AzureKey) vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
       } else {
-        // COMPANY優先 (デフォルト): Azure -> OpenAI
-        if (embConfig.AzureEndpoint && llmConfig.AzureKey) {
-          vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
-        }
-        if (!vector && llmConfig.OpenAiKey) {
-          vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
-        }
+        if (embConfig.AzureEndpoint && llmConfig.AzureKey) vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
+        if (!vector && llmConfig.OpenAiKey) vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
       }
-      
-      if (vector) {
-        // 軽量化: 小数点以下6桁に丸める (容量約50%削減)
-        return vector.map(v => parseFloat(v.toFixed(6)));
-      }
-
-      Logger.log("エラー: いずれのサービスでもベクトルを生成できませんでした。");
-      return null;
+      return vector ? vector.map(v => parseFloat(v.toFixed(6))) : null;
     },
-
-    // ★追加: 最後に合計コストを取得するための関数
-    getSessionCost: function() {
-      return _sessionCostTotal;
-    },
+    getSessionCost: function() { return _sessionCostTotal; },
     
-    // ★追加: ログ出力用ヘルパー
+    // ★修正: 最後に内訳(Stats)も一緒に表示する
     logSessionTotal: function() {
-      if (_sessionCostTotal > 0) {
+      const statsParts = [];
+      for (const [key, count] of Object.entries(_executionStats)) statsParts.push(`${key}: ${count}回`);
+      const statsStr = statsParts.length > 0 ? `📊 [Usage] ${statsParts.join(", ")}` : "";
+      if (_sessionCostTotal > 0 || statsStr !== "") {
         const props = PropertiesService.getScriptProperties();
         const monthTotal = props.getProperty("SYSTEM_COST_ACCUMULATOR") || "0";
-        Logger.log(`💰 [API Cost] 今回の合計: $${_sessionCostTotal.toFixed(6)} / 今月の合計: $${parseFloat(monthTotal).toFixed(4)}`);
+        Logger.log(`${statsStr}\n💰 [API Cost] 今回の合計: $${_sessionCostTotal.toFixed(6)} / 今月の合計: $${parseFloat(monthTotal).toFixed(4)}`);
       }
     }
   };
@@ -1983,6 +1827,9 @@ function processSummarization() {
 
   // ベクトル保存用の列インデックス (G列 = 6)
   const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
+
+  const modelInfo = LlmService.getModelInfo();
+  Logger.log(`🤖 Model Info: Nano=${modelInfo.nano}, Mini=${modelInfo.mini} (Context: ${modelInfo.context})`);
 
   // データ範囲を取得
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
