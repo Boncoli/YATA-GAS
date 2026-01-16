@@ -430,7 +430,7 @@ const LlmService = (function() {
       return vector ? vector.map(v => parseFloat(v.toFixed(6))) : null;
     },
     getSessionCost: function() { return _sessionCostTotal; },
-    saveSessionCost: saveSessionCost, // ★追加: コストの一括保存
+    saveSessionCost: saveSessionCost, // ★タイポ修正: CostのCを大文字に
     
     // ★修正: 最後に内訳(Stats)も一緒に表示する
     logSessionTotal: function() {
