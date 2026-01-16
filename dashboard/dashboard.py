@@ -36,34 +36,49 @@ TICKERS = [
 
 # --- 天気アイコンマッピング (詳細版) ---
 # 左側がAPIの description (小文字), 右側がアイコンコード
+# --- 天気アイコンマッピング (日本語対応版) ---
+# 左側がAPIの description (小文字/日本語), 右側がアイコンコード
+# --- 天気アイコンマッピング (日本語DB対応・完全版) ---
 WEATHER_ICONS = {
-    # --- 基本 (Main) ---
+    # === 基本 (英語などの保険) ===
     "Sunny": "\uf00d", "Clear": "\uf00d",
     "Cloudy": "\uf013", "Clouds": "\uf013",
     "Rain": "\uf019", "Drizzle": "\uf019",
-    "Snow": "\uf01b",
-    "Thunder": "\uf01e", "Thunderstorm": "\uf01e",
-    "Fog": "\uf014", "Mist": "\uf014", "Haze": "\uf014",
+    "Snow": "\uf01b", "Thunder": "\uf01e",
+    "Thunderstorm": "\uf01e", "Fog": "\uf014",
+    "Mist": "\uf014", "Haze": "\uf014",
 
-    # --- 雨の詳細 (Description) ---
-    "light rain": "\uf01c",            # 🌂 小雨 (傘にパラパラ)
-    "moderate rain": "\uf019",         # ☔ 普通の雨
-    "heavy intensity rain": "\uf018",  # 🌧 強い雨 (風と雨)
-    "very heavy rain": "\uf018",       # 🌧 激しい雨
-    "extreme rain": "\uf01e",          # ⛈ 豪雨 (嵐)
-    "freezing rain": "\uf017",         # 🧊 雨氷 (あられ混じり)
-    "shower rain": "\uf01a",           # 🚿 にわか雨
+    # === 詳細 (日本語DBの実績データに基づく) ===
+    # 晴れ・曇り系
+    "晴天": "\uf00d",         # Clear
+    "快晴": "\uf00d",
+    "薄い雲": "\uf002",       # few clouds (実績あり: 晴れ間)
+    "千切れ雲": "\uf002",     # scattered clouds
+    "雲": "\uf013",           # clouds (実績あり)
+    "雲り": "\uf013",         # broken clouds
+    "曇り": "\uf013",
+    "曇りがち": "\uf013",     # broken clouds (実績あり)
+    "厚い雲": "\uf013",       # overcast clouds (実績あり: どんより)
 
-    # --- 雪の詳細 ---
-    "light snow": "\uf01b",            # ❄ 小雪
-    "heavy snow": "\uf064",            # ☃ 大雪 (雪だるまレベル)
-    "sleet": "\uf0b5",                 # 🌨 みぞれ
+    # 雨系
+    "小雨": "\uf01c",         # light rain (実績あり: 🌂)
+    "適度な雨": "\uf019",     # moderate rain (実績あり: ☔)
+    "雨": "\uf019",
+    "強い雨": "\uf018",       # heavy intensity rain (🌧)
+    "激しい雨": "\uf018",     # very heavy rain
+    "豪雨": "\uf01e",         # extreme rain (⛈)
+    "にわか雨": "\uf01a",     # shower rain (🚿)
+    "弱いにわか雨": "\uf01a", # light intensity shower rain (★新規追加)
+    "霧雨": "\uf019",         # drizzle
 
-    # --- 曇りの詳細 ---
-    "few clouds": "\uf002",            # 🌤 晴れ間あり
-    "scattered clouds": "\uf002",      # 🌤 雲がち
-    "broken clouds": "\uf013",         # ☁ 曇り
-    "overcast clouds": "\uf013",       # ☁ どんより
+    # 雪・その他
+    "小雪": "\uf01b",         # light snow (❄)
+    "雪": "\uf01b",
+    "大雪": "\uf064",         # heavy snow (☃)
+    "みぞれ": "\uf0b5",       # sleet (🌨)
+    "雷雨": "\uf01e",         # thunderstorm (⚡)
+    "霧": "\uf014",           # mist/fog (🌫)
+    "靄": "\uf014",           # haze
 }
 DEFAULT_WEATHER_ICON = "\uf07b" 
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
