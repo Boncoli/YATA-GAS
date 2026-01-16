@@ -1,24 +1,44 @@
 #!/bin/bash
 
-# 1. データベースのバックアップ
-#    もしNASがマウントされていれば実行
-if [ -d "/mnt/nas" ]; then
-    # DBを別名で保存
-    cp /home/boncoli/yata-local/yata.db /mnt/nas/yata_backup.db
-    
-    # 2. スクリプトの差分バックアップ (DBとnode_modulesは除外)
-    #    バックアップ先フォルダを作成
-    mkdir -p /mnt/nas/yata_scripts_backup
-    
-    rsync -a --exclude='*.db' --exclude='node_modules' --exclude='.git' /home/boncoli/yata-local/ /mnt/nas/yata_scripts_backup/
-    
-    echo "$(date) Backup completed." >> /home/boncoli/yata-local/backup.log
+# --- 設定（変数にまとめると管理が楽です） ---
+HOME_DIR="/home/boncoli"
+YATA_DIR="$HOME_DIR/yata-local"
+SD_BACKUP="/mnt/backup"
+NAS_BACKUP="/mnt/nas"
+LOG_FILE="$YATA_DIR/backup.log"
+
+echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
+
+# --- 1. SDカードへのバックアップ (ローカル保存) ---
+# SSDの寿命対策 ＆ ネットワーク不要の確実なバックアップ
+echo "Saving to SD Card..." >> "$LOG_FILE"
+mkdir -p "$SD_BACKUP/yata_db_backup"
+# 日付付きでDBを保存
+cp "$YATA_DIR/yata.db" "$SD_BACKUP/yata_db_backup/yata_$(date +%Y%m%d).db"
+# ホームディレクトリ全体を同期（これが以前3時に設定していた処理）
+rsync -a --delete "$HOME_DIR/" "$SD_BACKUP/home_backup/"
+
+# 30日より古いバックアップを削除（容量パンク防止）
+find "$SD_BACKUP/yata_db_backup/" -name "yata_*.db" -mtime +30 -delete
+
+# --- 2. NASへのバックアップ (外部保存) ---
+if [ -d "$NAS_BACKUP" ]; then
+    echo "Saving to NAS..." >> "$LOG_FILE"
+    cp "$YATA_DIR/yata.db" "$NAS_BACKUP/yata_backup.db"
+    mkdir -p "$NAS_BACKUP/yata_scripts_backup"
+    rsync -a --exclude='*.db' --exclude='node_modules' --exclude='.git' "$YATA_DIR/" "$NAS_BACKUP/yata_scripts_backup/"
+else
+    echo "Warning: NAS not mounted. Skipping NAS backup." >> "$LOG_FILE"
 fi
 
-# --- ログのローテーション (肥大化防止) ---
-# 最新の2000行だけ残して上書き保存
-tail -n 2000 /home/boncoli/yata-local/logs/collect.log > /home/boncoli/yata-local/logs/collect.log.tmp && mv /home/boncoli/yata-local/logs/collect.log.tmp /home/boncoli/yata-local/logs/collect.log
+# --- 3. ログのローテーション (肥大化防止) ---
+echo "Rotating logs..." >> "$LOG_FILE"
+LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log")
 
-tail -n 2000 /home/boncoli/yata-local/logs/summarize.log > /home/boncoli/yata-local/logs/summarize.log.tmp && mv /home/boncoli/yata-local/logs/summarize.log.tmp /home/boncoli/yata-local/logs/summarize.log
+for LOG in "${LOG_LIST[@]}"; do
+    if [ -f "$LOG" ]; then
+        tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    fi
+done
 
-tail -n 2000 /home/boncoli/yata-local/logs/yata.log > /home/boncoli/yata-local/logs/yata.log.tmp && mv /home/boncoli/yata-local/logs/yata.log.tmp /home/boncoli/yata-local/logs/yata.log
+echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
