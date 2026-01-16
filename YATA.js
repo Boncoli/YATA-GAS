@@ -430,6 +430,7 @@ const LlmService = (function() {
       return vector ? vector.map(v => parseFloat(v.toFixed(6))) : null;
     },
     getSessionCost: function() { return _sessionCostTotal; },
+    saveSessionCost: saveSessionCost, // ★追加: コストの一括保存
     
     // ★修正: 最後に内訳(Stats)も一緒に表示する
     logSessionTotal: function() {
@@ -658,26 +659,38 @@ const EmergingSignalEngine = (function() {
  * 役割: RSSを巡回してシートに追記し、並び替えまで行います。AI要約はしません。
  */
 function runCollectionJob() {
-  Logger.log("--- 収集ジョブ開始 ---");
-  
-  // 高機能アーカイブ＆削除を実行
-  // 頻繁に実行しても「3ヶ月前」が来るまでは何もせず即終了するので負荷はありません
-  archiveAndPruneOldData();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    Logger.log("⚠️ 他のジョブが実行中のため、収集ジョブをスキップしました。");
+    return;
+  }
 
-  // 1か月前のHistoryを削除
-  maintenancePruneDigestHistory();
-  
-  // ベクトル軽量化(30日経過データ)の実行
-  maintenanceLightenOldArticles();
+  try {
+    Logger.log("--- 収集ジョブ開始 ---");
+    
+    // 高機能アーカイブ＆削除を実行
+    // 頻繁に実行しても「3ヶ月前」が来るまでは何もせず即終了するので負荷はありません
+    archiveAndPruneOldData();
 
-  collectRssFeeds();       
-  sortCollectByDateDesc(); 
+    // 1か月前のHistoryを削除
+    maintenancePruneDigestHistory();
+    
+    // ベクトル軽量化(30日経過データ)の実行
+    maintenanceLightenOldArticles();
 
-  // ★追加: アーカイブ処理などでAIを使った場合に備えてコストを表示
-  // (コスト0円の時はログに出ないので邪魔になりません)
-  LlmService.logSessionTotal();
-  
-  Logger.log("--- 収集ジョブ完了 ---");
+    collectRssFeeds();       
+    sortCollectByDateDesc(); 
+
+    // ★追加: アーカイブ処理などでAIを使った場合に備えてコストを表示 & 保存
+    LlmService.logSessionTotal();
+    LlmService.saveSessionCost(); // ★一括保存
+    
+    Logger.log("--- 収集ジョブ完了 ---");
+  } catch (e) {
+    Logger.log("収集ジョブエラー: " + e.toString());
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -704,6 +717,7 @@ function runSummarizationJob() {
   } catch (e) {
     Logger.log("要約ジョブエラー: " + e.toString());
   } finally {
+    LlmService.saveSessionCost(); // ★一括保存
     lock.releaseLock();
   }
 }
@@ -726,6 +740,7 @@ function runEmergingSignalJob() {
 
     // ★追加: 今回のコスト合計を出力
     LlmService.logSessionTotal();
+    LlmService.saveSessionCost(); // ★一括保存
 
   } catch (e) {
     _logError("runEmergingSignalJob", e, "予兆検知ジョブ中に致命的なエラーが発生しました。");
@@ -755,6 +770,7 @@ function dailyDigestJob() {
   
   // ★追加: 今回のコスト合計を出力
   LlmService.logSessionTotal();
+  LlmService.saveSessionCost(); // ★一括保存
   
   Logger.log("--- 日刊ダイジェスト生成完了 ---");
 }
@@ -1977,7 +1993,31 @@ function processSummarization() {
         }
 
       } else {
-        Logger.log(`スキップしました (Row: ${article.originalRowIndex + 2}): ${newHeadline}`);
+        // ★修正: エラー種別による分岐処理
+        const errStr = String(newHeadline);
+        // 恒久的なエラーか判定 (ポリシー違反、短すぎる、コンテンツなし等)
+        // ※ API Error という文字列は _callLlmWithFallback が返すわけではなく、ここでの判定用。
+        // 実際のAPI戻り値に含まれるキーワードで判定する。
+        const isPermanentError = 
+             errStr.includes("Safety") 
+          || errStr.includes("Policy") 
+          || errStr.includes("Short") 
+          || errStr.includes("Empty")
+          || errStr.includes("短すぎ")
+          || errStr.includes("見出しを生成できません");
+
+        if (isPermanentError) {
+           // 再処理防止のため、セルに値を埋める
+           values[article.originalRowIndex][summaryColIndex] = `[Error] ${errStr.substring(0, 20)}...`; 
+           
+           if (minModifiedIndex === -1 || article.originalRowIndex < minModifiedIndex) minModifiedIndex = article.originalRowIndex;
+           if (article.originalRowIndex > maxModifiedIndex) maxModifiedIndex = article.originalRowIndex;
+           
+           Logger.log(`🚫 恒久的エラーのためスキップ扱いにしました (Row: ${article.originalRowIndex + 2}): ${errStr}`);
+        } else {
+           // 一時的エラー (Timeout, 503等) -> 何もしない (次回再試行)
+           Logger.log(`🔄 一時的エラーのため再試行対象として残します (Row: ${article.originalRowIndex + 2}): ${errStr}`);
+        }
       }
       
       Utilities.sleep(AppConfig.get().Llm.DELAY_MS);
