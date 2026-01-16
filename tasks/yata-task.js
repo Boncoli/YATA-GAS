@@ -1,7 +1,7 @@
 // yata-task.js
 require('dotenv').config(); // 【追加】冒頭で.envを読み込む
 require('../lib/gas-bridge.js');
-require('../lib/YATA.js');
+require('../lib/yata-loader.js');
 
 // Import external task modules
 const fetchWeather = require('../modules/get-weather.js');
