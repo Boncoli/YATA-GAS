@@ -8,7 +8,11 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import yfinance as yf
 
-# --- 設定 ---
+# ==========================================
+#  YATA DASHBOARD - 天気アイコンこだわり版
+# ==========================================
+
+# --- 基本設定 ---
 WIDTH, HEIGHT = 800, 480
 FONT_DIR = os.path.expanduser("~/yata-local/dashboard")
 if not os.path.exists(FONT_DIR): FONT_DIR = os.path.expanduser("~/yata_fonts")
@@ -17,10 +21,12 @@ DB_PATH_SHM = "/dev/shm/yata.db"
 DB_PATH_DISK = os.path.expanduser("~/yata-local/yata.db")
 DB_PATH = DB_PATH_SHM if os.path.exists(DB_PATH_SHM) else DB_PATH_DISK
 
-FONT_JP_BOLD = os.path.join(FONT_DIR, "NotoSansCJKjp-Bold.otf")
+# --- フォント設定 ---
+FONT_JP_BOLD = os.path.join(FONT_DIR, "IBMPlexSansJP-Bold.ttf")
 FONT_EN_BOLD = os.path.join(FONT_DIR, "RobotoMono-Bold.ttf")
 FONT_WEATHER = os.path.join(FONT_DIR, "WeatherIcons.ttf")
 
+# --- 株価ティッカー設定 ---
 TICKERS = [
     {"symbol": "^N225", "name": "Nikkei 225", "fmt": "{:,.0f}"},
     {"symbol": "^DJI",  "name": "NY Dow",     "fmt": "{:,.0f}"},
@@ -28,13 +34,36 @@ TICKERS = [
     {"symbol": "6869.T", "name": "Sysmex",    "fmt": "{:,.0f}"},
 ]
 
+# --- 天気アイコンマッピング (詳細版) ---
+# 左側がAPIの description (小文字), 右側がアイコンコード
 WEATHER_ICONS = {
+    # --- 基本 (Main) ---
     "Sunny": "\uf00d", "Clear": "\uf00d",
     "Cloudy": "\uf013", "Clouds": "\uf013",
     "Rain": "\uf019", "Drizzle": "\uf019",
     "Snow": "\uf01b",
     "Thunder": "\uf01e", "Thunderstorm": "\uf01e",
     "Fog": "\uf014", "Mist": "\uf014", "Haze": "\uf014",
+
+    # --- 雨の詳細 (Description) ---
+    "light rain": "\uf01c",            # 🌂 小雨 (傘にパラパラ)
+    "moderate rain": "\uf019",         # ☔ 普通の雨
+    "heavy intensity rain": "\uf018",  # 🌧 強い雨 (風と雨)
+    "very heavy rain": "\uf018",       # 🌧 激しい雨
+    "extreme rain": "\uf01e",          # ⛈ 豪雨 (嵐)
+    "freezing rain": "\uf017",         # 🧊 雨氷 (あられ混じり)
+    "shower rain": "\uf01a",           # 🚿 にわか雨
+
+    # --- 雪の詳細 ---
+    "light snow": "\uf01b",            # ❄ 小雪
+    "heavy snow": "\uf064",            # ☃ 大雪 (雪だるまレベル)
+    "sleet": "\uf0b5",                 # 🌨 みぞれ
+
+    # --- 曇りの詳細 ---
+    "few clouds": "\uf002",            # 🌤 晴れ間あり
+    "scattered clouds": "\uf002",      # 🌤 雲がち
+    "broken clouds": "\uf013",         # ☁ 曇り
+    "overcast clouds": "\uf013",       # ☁ どんより
 }
 DEFAULT_WEATHER_ICON = "\uf07b" 
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
@@ -51,8 +80,12 @@ def get_font(font_type, size):
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
 
+def get_weather_icon(main, description):
+    """詳細(description)があれば優先、なければMainを使う"""
+    desc_key = description.lower() if description else ""
+    return WEATHER_ICONS.get(desc_key, WEATHER_ICONS.get(main, WEATHER_ICONS.get(main.capitalize(), DEFAULT_WEATHER_ICON)))
+
 def draw_card(draw, x, y, w, h, title, label_font):
-    """カード枠と見出しを描画"""
     draw.rectangle((x, y, x + w, y + h), outline=0, width=2)
     draw.rectangle((x, y, x + w, y + 26), fill=0)
     draw.text((x + 10, y + 2), title, font=label_font, fill=255)
@@ -63,16 +96,10 @@ def draw_text_wrapped(draw, text, font, x, y, max_w, line_spacing=4, max_lines=N
     lines = []
     current_line = ""
     for char in text:
-        if char == '\n':
-            lines.append(current_line)
-            current_line = ""
-            continue
+        if char == '\n': lines.append(current_line); current_line = ""; continue
         test_line = current_line + char
-        w = draw.textlength(test_line, font=font)
-        if w <= max_w: current_line = test_line
-        else:
-            lines.append(current_line)
-            current_line = char
+        if draw.textlength(test_line, font=font) <= max_w: current_line = test_line
+        else: lines.append(current_line); current_line = char
     if current_line: lines.append(current_line)
     if max_lines and len(lines) > max_lines:
         lines = lines[:max_lines]
@@ -83,30 +110,25 @@ def draw_text_wrapped(draw, text, font, x, y, max_w, line_spacing=4, max_lines=N
     return y
 
 def get_system_stats():
-    stats = {}
+    stats = {'cpu_temp': "--", 'load': "--", 'mem': "--", 'disk': "--"}
     try:
         with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            temp = int(f.read()) / 1000.0
-            stats['cpu_temp'] = f"{temp:.1f}°C"
-    except: stats['cpu_temp'] = "--"
-    try: load = os.getloadavg(); stats['load'] = f"{load[0]:.2f}"
-    except: stats['load'] = "--"
+            stats['cpu_temp'] = f"{int(f.read()) / 1000.0:.1f}°C"
+    except: pass
+    try: stats['load'] = f"{os.getloadavg()[0]:.2f}"
+    except: pass
     try:
         mem_total = 0; mem_avail = 0
         with open('/proc/meminfo', 'r') as f:
             for line in f:
-                parts = line.split()
-                if parts[0] == 'MemTotal:': mem_total = int(parts[1]) // 1024
-                if parts[0] == 'MemAvailable:': mem_avail = int(parts[1]) // 1024
-        if mem_total > 0:
-            used = mem_total - mem_avail
-            stats['mem'] = f"{int((used/mem_total)*100)}% ({used/1024:.1f}G)"
-        else: stats['mem'] = "--"
-    except: stats['mem'] = "--"
+                if 'MemTotal:' in line: mem_total = int(line.split()[1]) // 1024
+                if 'MemAvailable:' in line: mem_avail = int(line.split()[1]) // 1024
+        if mem_total > 0: stats['mem'] = f"{int(((mem_total-mem_avail)/mem_total)*100)}% ({ (mem_total-mem_avail)/1024:.1f}G)"
+    except: pass
     try:
-        total, used, free = shutil.disk_usage("/")
+        total, used, _ = shutil.disk_usage("/")
         stats['disk'] = f"{int((used/total)*100)}% ({used//(2**30)}G)"
-    except: stats['disk'] = "--"
+    except: pass
     return stats
 
 def get_db_stats():
@@ -116,13 +138,8 @@ def get_db_stats():
             stats["size"] = f"{os.path.getsize(DB_PATH) / (1024*1024):.1f} MB"
             conn = get_db_connection(); cur = conn.cursor()
             cur.execute("SELECT count(*) FROM collect"); stats["total"] = f"{cur.fetchone()[0]:,}"
-            cur.execute("SELECT date FROM collect WHERE date IS NOT NULL ORDER BY date DESC LIMIT 1")
-            latest = cur.fetchone()
-            if latest:
-                fmt = "%Y-%m-%d %H:%M:%S" if "-" in latest[0] else "%Y/%m/%d %H:%M:%S"
-                threshold = (datetime.now() - timedelta(hours=24)).strftime(fmt)
-                cur.execute("SELECT count(*) FROM collect WHERE date >= ?", (threshold,))
-                stats["new"] = f"{cur.fetchone()[0]}"
+            threshold = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("SELECT count(*) FROM collect WHERE date >= ?", (threshold,)); stats["new"] = f"{cur.fetchone()[0]}"
             conn.close()
     except: pass
     return stats
@@ -135,12 +152,25 @@ def create_dashboard():
     conn = get_db_connection()
     now = datetime.now()
     
+    # 1. データ取得
     try:
         cur = conn.cursor()
-        cur.execute("SELECT main_weather, temp, pressure, humidity, alert_events FROM weather_log ORDER BY datetime DESC LIMIT 1")
+        cur.execute("SELECT main_weather, description, temp, pressure, humidity, alert_events FROM weather_log ORDER BY datetime DESC LIMIT 1")
         weather_row = cur.fetchone()
-        cur.execute("SELECT date, weather_main FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
-        forecast_rows = cur.fetchall()
+        
+        cur.execute("SELECT temp_max, temp_min FROM weather_forecast WHERE date = ?", (now.strftime("%Y/%m/%d"),))
+        today_forecast = cur.fetchone()
+        
+        # descriptionカラムがあるか確認して分岐
+        try:
+            cur.execute("SELECT date, weather_main, description, temp_max, temp_min FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
+            forecast_rows = cur.fetchall()
+            forecast_has_desc = True
+        except:
+            cur.execute("SELECT date, weather_main, temp_max, temp_min FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
+            forecast_rows = cur.fetchall()
+            forecast_has_desc = False
+        
         cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
         remo_row = cur.fetchone()
         cur.execute("SELECT summary, source FROM (SELECT summary, source, date FROM collect WHERE summary IS NOT NULL ORDER BY date DESC LIMIT 20) ORDER BY RANDOM() LIMIT 3")
@@ -150,26 +180,65 @@ def create_dashboard():
     except Exception as e: print(f"DB Fetch Error: {e}")
     finally: conn.close()
 
-    # --- ヘッダー領域 ---
+    # 2. ヘッダー
     draw.rectangle((0, 0, WIDTH, 100), fill=0)
     draw.rectangle((25, 10, 105, 90), outline=255, width=2)
     draw.text((25 + (10 if now.day >= 10 else 25), 7), str(now.day), font=get_font("en", 50), fill=255)
-    draw.text((55, 57), JP_WEEKDAYS[now.weekday()], font=get_font("jp", 20), fill=255)
+    draw.text((55, 61), JP_WEEKDAYS[now.weekday()], font=get_font("jp", 20), fill=255) 
     draw.text((125, -3), now.strftime("%H:%M"), font=get_font("en", 80), fill=255)
-    
-    weather_base_x = 385
-    if weather_row:
-        icon = WEATHER_ICONS.get(weather_row[0], WEATHER_ICONS.get(weather_row[0].capitalize(), DEFAULT_WEATHER_ICON))
-        draw.text((weather_base_x, 10), icon, font=get_font("weather", 60), fill=255)
-        grid_start_x = weather_base_x + 80
-        for i, row in enumerate(forecast_rows[:4]):
-            x_off, y_off = grid_start_x + (i%2)*47, 15 + (i//2)*38
-            draw.text((x_off, y_off), WEATHER_ICONS.get(row[1], DEFAULT_WEATHER_ICON), font=get_font("weather", 22), fill=255)
-            dt_f = datetime.strptime(row[0], "%Y/%m/%d")
-            draw.text((x_off + 27, y_off + 8), JP_WEEKDAYS[dt_f.weekday()], font=get_font("jp", 12), fill=255)
 
+    # 3. 天気エリア (詳細ロジック対応)
+    # -----------------------------------------------------------------
+    # ▼▼▼ 天気エリアの位置設定 ▼▼▼
+    weather_base_x = 368  # ➡ 全体の左右位置
+
+    if weather_row:
+        icon_shift = 3 # ➡ 今日のアイコンだけ右にズラす量
+        
+        # 今日の天気 (descriptionがあれば詳細アイコン)
+        current_icon = get_weather_icon(weather_row[0], weather_row[1])
+        draw.text((weather_base_x + icon_shift, 2), current_icon, font=get_font("weather", 60), fill=255)
+
+        # 今日の気温
+        if today_forecast:
+            t_max = f"{today_forecast[0]:.0f}" if today_forecast[0] is not None else "-"
+            t_min = f"{today_forecast[1]:.0f}" if today_forecast[1] is not None else "-"
+            draw.text((weather_base_x + 17, 79), f"{t_max}/{t_min}", font=get_font("en", 16), fill=255)
+
+        # 週間予報グリッド
+        grid_start_x = weather_base_x + 80
+        
+        # ▼▼▼ 週間予報の間隔設定 ▼▼▼
+        grid_w = 63       # ➡ 横の間隔 (広げると右へ伸びる)
+        grid_h = 40       # ⬇ 縦の間隔 (広げると下へ伸びる)
+        grid_base_y = 18  # ⬇ 全体の開始高さ (増やすと下がる)
+
+        for i, row in enumerate(forecast_rows[:4]):
+            x_off, y_off = grid_start_x + (i%2)*grid_w, grid_base_y + (i//2)*grid_h
+            
+            # 詳細アイコン対応
+            if forecast_has_desc:
+                f_icon = get_weather_icon(row[1], row[2])
+                max_t = f"{row[3]:.0f}" if row[3] is not None else "-"
+                min_t = f"{row[4]:.0f}" if row[4] is not None else "-"
+            else:
+                f_icon = get_weather_icon(row[1], "")
+                max_t = f"{row[2]:.0f}" if row[2] is not None else "-"
+                min_t = f"{row[3]:.0f}" if row[3] is not None else "-"
+
+            draw.text((x_off, y_off), f_icon, font=get_font("weather", 20), fill=255)
+            
+            # ▼▼▼ 内部パーツの微調整 ▼▼▼
+            wd_x, wd_y = 26, -2     # 曜日の位置 (右へ, 上下へ)
+            temp_x, temp_y = 26, 13 # 気温の位置 (右へ, 上下へ)
+
+            dt_f = datetime.strptime(row[0], "%Y/%m/%d")
+            draw.text((x_off + wd_x, y_off + wd_y), JP_WEEKDAYS[dt_f.weekday()], font=get_font("jp", 11), fill=255)
+            draw.text((x_off + temp_x, y_off + temp_y), f"{max_t}/{min_t}", font=get_font("en", 11), fill=255)
+
+    # 4. 注意報
     warning_x = 570
-    alert_text = weather_row[4] if weather_row and weather_row[4] else ""
+    alert_text = weather_row[5] if weather_row and weather_row[5] else ""
     alerts = [a.strip() for a in alert_text.split(',') if a.strip()] if alert_text else []
     if alerts:
         draw.rectangle((warning_x, 15, warning_x + 100, 85), outline=255, width=2)
@@ -178,31 +247,61 @@ def create_dashboard():
         if len(alerts) > 3:
             draw.text((warning_x + 8, 65), f"..他{len(alerts)-3}", font=get_font("jp", 11), fill=255)
 
-    env_x, env_lbl_font, env_val_font = 685, get_font("jp", 14), get_font("en", 16)
+    # 5. 環境データ (室温・湿度)
+    # -----------------------------------------------------------------
+    # ▼▼▼ 右上の室温エリア設定 ▼▼▼
+    env_x, env_y = 680, 10  # 位置 (X, Y)
+    val_x_offset, val_y_offset = 33, -2 # 数値のズレ (横, 縦)
+    
+    env_lbl_font, env_val_font = get_font("jp", 14), get_font("en", 16)
     c_tmp = f"{remo_row[0]:.1f}" if remo_row else "--"
     c_hum = f"{remo_row[1]:.1f}" if remo_row else "--"
-    o_tmp = f"{weather_row[1]:.1f}" if weather_row and weather_row[1] else "--"
-    pres = f"{weather_row[2]:.0f}" if weather_row and weather_row[2] else "--"
-    draw.text((env_x, 10), "室温", font=env_lbl_font, fill=255)
-    draw.text((env_x+33, 11), f"{c_tmp}°C", font=env_val_font, fill=255)
-    draw.text((env_x, 30), "湿度", font=env_lbl_font, fill=255)
-    draw.text((env_x+33, 31), f"{c_hum}%", font=env_val_font, fill=255)
-    draw.text((env_x, 50), "外気", font=env_lbl_font, fill=255)
-    draw.text((env_x+33, 51), f"{o_tmp}°C", font=env_val_font, fill=255)
-    draw.text((env_x, 70), "気圧", font=env_lbl_font, fill=255)
-    draw.text((env_x+33, 71), f"{pres} hPa", font=env_val_font, fill=255)
+    o_tmp = f"{weather_row[2]:.1f}" if weather_row and weather_row[2] else "--"
+    pres = f"{weather_row[3]:.0f}" if weather_row and weather_row[3] else "--"
 
-    # --- メインコンテンツ領域 ---
-    label_font = get_font("jp", 14)
-    stat_font = get_font("en", 14)
-    jp_font = get_font("jp", 14)
+    draw.text((env_x, env_y),    "室温", font=env_lbl_font, fill=255)
+    draw.text((env_x + val_x_offset, env_y + val_y_offset), f"{c_tmp}°C", font=env_val_font, fill=255)
+    draw.text((env_x, env_y+20), "湿度", font=env_lbl_font, fill=255)
+    draw.text((env_x + val_x_offset, env_y+20 + val_y_offset), f"{c_hum}%", font=env_val_font, fill=255)
+    draw.text((env_x, env_y+40), "外気", font=env_lbl_font, fill=255)
+    draw.text((env_x + val_x_offset, env_y+40 + val_y_offset), f"{o_tmp}°C", font=env_val_font, fill=255)
+    draw.text((env_x, env_y+60), "気圧", font=env_lbl_font, fill=255)
+    draw.text((env_x + val_x_offset, env_y+60 + val_y_offset), f"{pres} hPa", font=env_val_font, fill=255)
 
-    # 分離レイアウト: 隙間 6px を復活
-    card_start_y = 106 
-    v_gap = 5 
+    # 6. カードレイアウト (SYSTEM, MARKET, NEWS, TREND)
+    # -----------------------------------------------------------------
+    label_font = get_font("jp", 16)# ← これは枠の「見出し」のサイズ
+    stat_font = get_font("en", 14)# ← 中身の数値（CPUなど）のサイズ
+    jp_font = get_font("jp", 14)# ← ニュース本文のサイズ
+
+    # ▼▼▼ 全体のレイアウト設定 ▼▼▼
+    card_start_y = 105  # ⬇ カード開始位置 (ヘッダーの下)
+    v_gap = 5           # ↕ 上下の隙間
+
+    # === 左カラム (System & Market) ===
+    card_x = 10         # ➡ 左端の位置
+    card_w = 305        # ⇔ 幅
     
-    # 1. 左側：SYSTEM & DB (底辺470pxに合わせるためのサイズ計算)
-    card_x, card_w, card_h = 15, 290, 140
+    card_h = 140        # Systemカードの高さ
+    
+    # Marketカードの位置計算
+    stock_y = card_start_y + card_h + v_gap
+    stock_h = 219       # Marketカードの高さ
+
+    # === 右カラム (News & Trend) ===
+    news_x = 320        # ➡ 右カラムの開始位置
+    news_w = 470        # ⇔ 幅
+    
+    news_h = 280        # Newsカードの高さ
+    
+    # Trendカードの位置計算
+    trend_y = card_start_y + news_h + v_gap
+    trend_h = 79        # Trendカードの高さ
+
+    # ----------------------------------------
+    # 描画実行
+    
+    # 1. System
     current_y, card_bottom = draw_card(draw, card_x, card_start_y, card_w, card_h, "SYSTEM & DATABASE", label_font)
     sys = get_system_stats()
     draw.text((card_x + 10, current_y), f"CPU: {sys['cpu_temp']}  Load: {sys['load']}", font=stat_font, fill=0)
@@ -213,34 +312,30 @@ def create_dashboard():
     draw.text((card_x + 160, current_y + 55), f"New: +{db['new']}", font=stat_font, fill=0)
     draw.text((card_x + 10, current_y + 75), f"DB Size: {db['size']}", font=stat_font, fill=0)
 
-    # 2. 左側：MARKET WATCH (底辺470px = 106+140+5+219)
-    stock_y, stock_h = card_start_y + card_h + v_gap, 219
+    # 2. Market
+    # stock_h - 30 だったのを、 -35 や -40 に変えると、下に隙間ができます。
     draw_card(draw, card_x, stock_y, card_w, stock_h, "MARKET WATCH", label_font)
-    img.paste(create_stock_grid(card_w - 10, stock_h - 30), (card_x + 5, stock_y + 30))
+    img.paste(create_stock_grid(card_w - 10, stock_h - 34), (card_x + 5, stock_y + 30))
 
-    # 3. 右側：TOP NEWS SUMMARY (底辺470px = 106+280+5+79 から逆算)
-    news_x, news_w, news_h = 320, 465, 280 
+    # 3. News
     current_y, news_limit_y = draw_card(draw, news_x, card_start_y, news_w, news_h, "TOP NEWS SUMMARY", label_font)
     if news_rows:
         for summary, source in news_rows:
             if current_y + 25 > news_limit_y: break 
-            draw.text((news_x + 10, current_y), f"[{source}]", font=get_font("en", 12), fill=0)
+            draw.text((news_x + 10, current_y), f"[{source}]", font=get_font("jp", 12), fill=0)
             current_y += 18
             rem_h = news_limit_y - current_y
             line_lim = max(1, rem_h // (jp_font.size + 4))
             current_y = draw_text_wrapped(draw, summary, jp_font, news_x + 10, current_y, news_w - 20, max_lines=min(4, int(line_lim)))
             current_y += 10
 
-    # 4. 右側：TRENDING NOW
-    trend_y, trend_h = card_start_y + news_h + v_gap, 79
+    # 4. Trend
     current_y, trend_limit_y = draw_card(draw, news_x, trend_y, news_w, trend_h, "TRENDING NOW", label_font)
     if trend_row:
         keywords = [k for k in trend_row if k]
         draw_text_wrapped(draw, "  ".join([f"#{k}" for k in keywords]), jp_font, news_x + 10, current_y, news_w - 20, max_lines=2)
 
-    # --- 外枠 (クッキリ見えるように 2px 内側から描画) ---
     draw.rectangle((0, 0, WIDTH-1, HEIGHT-1), outline=0, width=4)
-    
     return img
 
 def create_stock_grid(w, h):
@@ -266,13 +361,19 @@ def create_stock_grid(w, h):
                 buf = io.BytesIO(); plt.savefig(buf, format='png', transparent=True); plt.close(); buf.seek(0)
                 chart = Image.open(buf).resize((cell_w-10, cell_h-40), Image.Resampling.LANCZOS)
                 grid_img.paste(chart, (x+5, y+35), chart)
-                draw.text((x+5, y+2), item["name"], font=get_font("en", 14), fill=0)
+                
+                # ▼▼▼ ① 銘柄名 (Nikkei 225など) のサイズ ▼▼▼
+                # 今は 14 です。小さくするなら 12 とかに変更
+                draw.text((x+5, y+2), item["name"], font=get_font("en", 12), fill=0)
                 sign = "▲" if change > 0 else "▼" if change < 0 else "-"
-                draw.text((x+5, y+18), f"{sign}{item['fmt'].format(current)}", font=get_font("jp", 14), fill=0)
+
+                # ▼▼▼ ② 株価 (38,000など) のサイズ ▼▼▼
+                # ここも今は 14 です。
+                draw.text((x+5, y+18), f"{sign}{item['fmt'].format(current)}", font=get_font("jp", 12), fill=0)
         except: pass
     return grid_img
 
 if __name__ == "__main__":
     dashboard = create_dashboard()
     dashboard.save("/dev/shm/dashboard.png")
-    print("完了！黄金比・独立カードレイアウト版を復元しました。")
+    print("完了！詳細天気ロジックと、全エリアのレイアウト調整マニュアルを統合しました。")
