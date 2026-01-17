@@ -3,13 +3,15 @@ import io
 import sqlite3
 import pandas as pd
 import shutil
+import sys  # ★追記
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import yfinance as yf
+import holidays  # ★追加：祝日判定用
 
 # ==========================================
-#  YATA DASHBOARD - 天気アイコンこだわり版
+#  YATA DASHBOARD - マニュアル・メモ完全復元版
 # ==========================================
 
 # --- 基本設定 ---
@@ -34,11 +36,18 @@ TICKERS = [
     {"symbol": "6869.T", "name": "Sysmex",    "fmt": "{:,.0f}"},
 ]
 
-# --- 天気アイコンマッピング (詳細版) ---
-# 左側がAPIの description (小文字), 右側がアイコンコード
-# --- 天気アイコンマッピング (日本語対応版) ---
-# 左側がAPIの description (小文字/日本語), 右側がアイコンコード
 # --- 天気アイコンマッピング (日本語DB対応・完全版) ---
+#
+# [運用メモ]
+# OpenWeatherMapの日本語訳(description)には公式リストが存在しません。
+# 定期的に以下のコマンドでDB内の実績を確認し、辞書にない単語(例: "猛烈な雨")があれば
+# この辞書の「詳細」セクションに追加してください。
+#
+# ▼ 未知の天気ワード確認コマンド (ターミナルで実行):
+# sqlite3 ~/yata-local/yata.db "SELECT description, count(*) FROM weather_log GROUP BY description ORDER BY count(*) DESC;"
+# ショートカット「weather-check」
+
+# --- 天気アイコンマッピング (過去データ完全網羅版) ---
 WEATHER_ICONS = {
     # === 基本 (英語などの保険) ===
     "Sunny": "\uf00d", "Clear": "\uf00d",
@@ -47,41 +56,56 @@ WEATHER_ICONS = {
     "Snow": "\uf01b", "Thunder": "\uf01e",
     "Thunderstorm": "\uf01e", "Fog": "\uf014",
     "Mist": "\uf014", "Haze": "\uf014",
+    "Dust": "\uf014", "Sand": "\uf014",
 
     # === 詳細 (日本語DBの実績データに基づく) ===
     # 晴れ・曇り系
-    "晴天": "\uf00d",         # Clear
+    "晴天": "\uf00d",          # Clear
     "快晴": "\uf00d",
-    "薄い雲": "\uf002",       # few clouds (実績あり: 晴れ間)
+    "薄い雲": "\uf002",       # few clouds
     "千切れ雲": "\uf002",     # scattered clouds
-    "雲": "\uf013",           # clouds (実績あり)
-    "雲り": "\uf013",         # broken clouds
+    "雲": "\uf013",           # clouds
+    "雲り": "\uf013",
     "曇り": "\uf013",
-    "曇りがち": "\uf013",     # broken clouds (実績あり)
-    "厚い雲": "\uf013",       # overcast clouds (実績あり: どんより)
+    "曇りがち": "\uf013",     # broken clouds
+    "厚い雲": "\uf013",       # overcast clouds
 
     # 雨系
-    "小雨": "\uf01c",         # light rain (実績あり: 🌂)
-    "適度な雨": "\uf019",     # moderate rain (実績あり: ☔)
+    "小雨": "\uf01c",         # light rain 🌂
+    "適度な雨": "\uf019",     # moderate rain ☔
     "雨": "\uf019",
-    "強い雨": "\uf018",       # heavy intensity rain (🌧)
-    "激しい雨": "\uf018",     # very heavy rain
-    "豪雨": "\uf01e",         # extreme rain (⛈)
-    "にわか雨": "\uf01a",     # shower rain (🚿)
-    "弱いにわか雨": "\uf01a", # light intensity shower rain (★新規追加)
+    "強い雨": "\uf018",       # heavy rain 🌧
+    "激しい雨": "\uf018",
+    "豪雨": "\uf01e",         # extreme rain ⛈
+    "にわか雨": "\uf01a",     # shower rain 🚿
+    "弱いにわか雨": "\uf01a", # light shower rain
+    "強いにわか雨": "\uf01a", # heavy shower rain
     "霧雨": "\uf019",         # drizzle
 
-    # 雪・その他
-    "小雪": "\uf01b",         # light snow (❄)
+    # 雪・みぞれ系
+    "小雪": "\uf01b",         # light snow ❄
     "雪": "\uf01b",
-    "大雪": "\uf064",         # heavy snow (☃)
-    "みぞれ": "\uf0b5",       # sleet (🌨)
-    "雷雨": "\uf01e",         # thunderstorm (⚡)
-    "霧": "\uf014",           # mist/fog (🌫)
+    "大雪": "\uf064",         # heavy snow ☃
+    "みぞれ": "\uf0b5",       # sleet 🌨
+    "雨と雪": "\uf0b5",      # ★ここに追加！ (Rain and snow)
+    "にわかみぞれ": "\uf0b5", # shower sleet (★レア)
+    "弱いにわか雪": "\uf01b", # light shower snow (★レア)
+
+    # 雷系 (激レアシリーズ網羅)
+    "雷雨": "\uf01e",             # thunderstorm ⚡
+    "雷を伴う雨": "\uf01e",       # thunderstorm with rain
+    "雷を伴う強い雨": "\uf01e",   # thunderstorm with heavy rain
+    "雷を伴う弱い雨": "\uf01e",   # thunderstorm with light rain
+
+    # 大気現象 (★激レア)
+    "霧": "\uf014",           # mist/fog 🌫
     "靄": "\uf014",           # haze
+    "ほこり": "\uf014",       # dust (★激レア！視界不良系アイコン)
+    "砂": "\uf014",           # sand/dust whirls
 }
 DEFAULT_WEATHER_ICON = "\uf07b" 
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
+jp_holidays = holidays.Japan(language='jp') # ★祝日データ準備
 
 # --- ヘルパー関数 ---
 
@@ -97,7 +121,7 @@ def get_db_connection():
 
 def get_weather_icon(main, description):
     """詳細(description)があれば優先、なければMainを使う"""
-    desc_key = description.lower() if description else ""
+    desc_key = description if description else ""
     return WEATHER_ICONS.get(desc_key, WEATHER_ICONS.get(main, WEATHER_ICONS.get(main.capitalize(), DEFAULT_WEATHER_ICON)))
 
 def draw_card(draw, x, y, w, h, title, label_font):
@@ -106,7 +130,7 @@ def draw_card(draw, x, y, w, h, title, label_font):
     draw.text((x + 10, y + 2), title, font=label_font, fill=255)
     return y + 32, y + h - 5
 
-def draw_text_wrapped(draw, text, font, x, y, max_w, line_spacing=4, max_lines=None):
+def draw_text_wrapped(draw, text, font, x, y, max_w, line_spacing=6, max_lines=None):
     if not text: return y
     lines = []
     current_line = ""
@@ -170,37 +194,60 @@ def create_dashboard():
     # 1. データ取得
     try:
         cur = conn.cursor()
+        # weather_log は description を参照
         cur.execute("SELECT main_weather, description, temp, pressure, humidity, alert_events FROM weather_log ORDER BY datetime DESC LIMIT 1")
         weather_row = cur.fetchone()
         
         cur.execute("SELECT temp_max, temp_min FROM weather_forecast WHERE date = ?", (now.strftime("%Y/%m/%d"),))
         today_forecast = cur.fetchone()
         
-        # descriptionカラムがあるか確認して分岐
-        try:
-            cur.execute("SELECT date, weather_main, description, temp_max, temp_min FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
-            forecast_rows = cur.fetchall()
-            forecast_has_desc = True
-        except:
-            cur.execute("SELECT date, weather_main, temp_max, temp_min FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
-            forecast_rows = cur.fetchall()
-            forecast_has_desc = False
+        # weather_forecast は weather_desc を参照するように修正済み
+        cur.execute("SELECT date, weather_main, weather_desc, temp_max, temp_min FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 4", (now.strftime("%Y/%m/%d"),))
+        forecast_rows = cur.fetchall()
         
         cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
         remo_row = cur.fetchone()
-        cur.execute("SELECT summary, source FROM (SELECT summary, source, date FROM collect WHERE summary IS NOT NULL ORDER BY date DESC LIMIT 20) ORDER BY RANDOM() LIMIT 3")
+
+        # ニュース：summaryが空ならtitleを表示するように強化
+        cur.execute("SELECT COALESCE(summary, title), source FROM (SELECT summary, title, source, date FROM collect WHERE summary IS NOT NULL OR title IS NOT NULL ORDER BY date DESC LIMIT 20) ORDER BY RANDOM() LIMIT 3")
         news_rows = cur.fetchall()
+
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
         trend_row = cur.fetchone()
     except Exception as e: print(f"DB Fetch Error: {e}")
     finally: conn.close()
 
-    # 2. ヘッダー
+# 2. ヘッダー
     draw.rectangle((0, 0, WIDTH, 100), fill=0)
+
+    # ★祝日の判定
+    # 💡テスト時は下の # を消して強制表示： holiday_name = "天皇誕生日"
+    holiday_name = jp_holidays.get(now.date())
+    # holiday_name = "天皇誕生日"
+
+    # --- 日付ボックス (元のスタイルに復元) ---
     draw.rectangle((25, 10, 105, 90), outline=255, width=2)
+    # 日付 (17)
     draw.text((25 + (10 if now.day >= 10 else 25), 7), str(now.day), font=get_font("en", 50), fill=255)
-    draw.text((55, 61), JP_WEEKDAYS[now.weekday()], font=get_font("jp", 20), fill=255) 
-    draw.text((125, -3), now.strftime("%H:%M"), font=get_font("en", 80), fill=255)
+    # 曜日 (土)
+    draw.text((55, 61), JP_WEEKDAYS[now.weekday()], font=get_font("jp", 20), fill=255)
+
+    # --- 時計と祝日の垂直レイアウト ---
+    # ▼▼▼ 祝日の有無で時計の高さを変える設定 ▼▼▼
+    if holiday_name:
+        clock_y = -15  # 祝日がある時は少し上に (-3 -> -12)
+        
+        h_font = get_font("jp", 16)
+        h_w = draw.textlength(holiday_name, font=h_font)
+        # バッジの描画位置：時計の開始X座標(125)に合わせる
+        # Y座標は時計の下端に重ならない 70px 付近に設定
+        draw.rectangle((115, 75, 115 + h_w + 10, 95), fill=255)
+        draw.text((120, 75), holiday_name, font=h_font, fill=0)
+    else:
+        clock_y = -3   # 通常時の高さ
+
+    # ▼▼▼ 時刻の描画 (左右位置は 125 で固定) ▼▼▼
+    draw.text((115, clock_y), now.strftime("%H:%M"), font=get_font("en", 80), fill=255)
 
     # 3. 天気エリア (詳細ロジック対応)
     # -----------------------------------------------------------------
@@ -209,8 +256,6 @@ def create_dashboard():
 
     if weather_row:
         icon_shift = 3 # ➡ 今日のアイコンだけ右にズラす量
-        
-        # 今日の天気 (descriptionがあれば詳細アイコン)
         current_icon = get_weather_icon(weather_row[0], weather_row[1])
         draw.text((weather_base_x + icon_shift, 2), current_icon, font=get_font("weather", 60), fill=255)
 
@@ -222,7 +267,6 @@ def create_dashboard():
 
         # 週間予報グリッド
         grid_start_x = weather_base_x + 80
-        
         # ▼▼▼ 週間予報の間隔設定 ▼▼▼
         grid_w = 63       # ➡ 横の間隔 (広げると右へ伸びる)
         grid_h = 40       # ⬇ 縦の間隔 (広げると下へ伸びる)
@@ -230,17 +274,7 @@ def create_dashboard():
 
         for i, row in enumerate(forecast_rows[:4]):
             x_off, y_off = grid_start_x + (i%2)*grid_w, grid_base_y + (i//2)*grid_h
-            
-            # 詳細アイコン対応
-            if forecast_has_desc:
-                f_icon = get_weather_icon(row[1], row[2])
-                max_t = f"{row[3]:.0f}" if row[3] is not None else "-"
-                min_t = f"{row[4]:.0f}" if row[4] is not None else "-"
-            else:
-                f_icon = get_weather_icon(row[1], "")
-                max_t = f"{row[2]:.0f}" if row[2] is not None else "-"
-                min_t = f"{row[3]:.0f}" if row[3] is not None else "-"
-
+            f_icon = get_weather_icon(row[1], row[2])
             draw.text((x_off, y_off), f_icon, font=get_font("weather", 20), fill=255)
             
             # ▼▼▼ 内部パーツの微調整 ▼▼▼
@@ -249,7 +283,7 @@ def create_dashboard():
 
             dt_f = datetime.strptime(row[0], "%Y/%m/%d")
             draw.text((x_off + wd_x, y_off + wd_y), JP_WEEKDAYS[dt_f.weekday()], font=get_font("jp", 11), fill=255)
-            draw.text((x_off + temp_x, y_off + temp_y), f"{max_t}/{min_t}", font=get_font("en", 11), fill=255)
+            draw.text((x_off + temp_x, y_off + temp_y), f"{row[3]:.0f}/{row[4]:.0f}", font=get_font("en", 11), fill=255)
 
     # 4. 注意報
     warning_x = 570
@@ -296,7 +330,6 @@ def create_dashboard():
     # === 左カラム (System & Market) ===
     card_x = 10         # ➡ 左端の位置
     card_w = 305        # ⇔ 幅
-    
     card_h = 140        # Systemカードの高さ
     
     # Marketカードの位置計算
@@ -306,7 +339,6 @@ def create_dashboard():
     # === 右カラム (News & Trend) ===
     news_x = 320        # ➡ 右カラムの開始位置
     news_w = 470        # ⇔ 幅
-    
     news_h = 280        # Newsカードの高さ
     
     # Trendカードの位置計算
@@ -328,7 +360,6 @@ def create_dashboard():
     draw.text((card_x + 10, current_y + 75), f"DB Size: {db['size']}", font=stat_font, fill=0)
 
     # 2. Market
-    # stock_h - 30 だったのを、 -35 や -40 に変えると、下に隙間ができます。
     draw_card(draw, card_x, stock_y, card_w, stock_h, "MARKET WATCH", label_font)
     img.paste(create_stock_grid(card_w - 10, stock_h - 34), (card_x + 5, stock_y + 30))
 
@@ -341,7 +372,7 @@ def create_dashboard():
             current_y += 18
             rem_h = news_limit_y - current_y
             line_lim = max(1, rem_h // (jp_font.size + 4))
-            current_y = draw_text_wrapped(draw, summary, jp_font, news_x + 10, current_y, news_w - 20, max_lines=min(4, int(line_lim)))
+            current_y = draw_text_wrapped(draw, summary, jp_font, news_x + 10, current_y, news_w - 20, max_lines=min(3, int(line_lim)))
             current_y += 10
 
     # 4. Trend
@@ -378,17 +409,51 @@ def create_stock_grid(w, h):
                 grid_img.paste(chart, (x+5, y+35), chart)
                 
                 # ▼▼▼ ① 銘柄名 (Nikkei 225など) のサイズ ▼▼▼
-                # 今は 14 です。小さくするなら 12 とかに変更
                 draw.text((x+5, y+2), item["name"], font=get_font("en", 12), fill=0)
                 sign = "▲" if change > 0 else "▼" if change < 0 else "-"
 
                 # ▼▼▼ ② 株価 (38,000など) のサイズ ▼▼▼
-                # ここも今は 14 です。
                 draw.text((x+5, y+18), f"{sign}{item['fmt'].format(current)}", font=get_font("jp", 12), fill=0)
         except: pass
     return grid_img
 
+# --- 実行セクション (時刻付きログ対応版) ---
 if __name__ == "__main__":
-    dashboard = create_dashboard()
-    dashboard.save("/dev/shm/dashboard.png")
-    print("完了！詳細天気ロジックと、全エリアのレイアウト調整マニュアルを統合しました。")
+    # ▼▼▼ スイッチ：実機に描画するかどうか (届くまでは False) ▼▼▼
+    DRAW_TO_EPD = False 
+
+    # ログ用の現在時刻を取得
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. 画像生成（常に実行）
+    try:
+        dashboard_image = create_dashboard()
+        dashboard_image.save("/dev/shm/dashboard.png")
+        # ★ここを変更: 日付付きで出力
+        print(f"{now_str} 画像生成完了: /dev/shm/dashboard.png")
+    except Exception as e:
+        print(f"{now_str} [ERROR] 画像生成失敗: {e}")
+
+    # 2. 電子ペーパー描画（DRAW_TO_EPD が True の時だけ実行）
+    if DRAW_TO_EPD:
+        try:
+            # ドライバのパスを通す
+            sys.path.append(os.path.expanduser("~/e-Paper/RaspberryPi_JetsonNano/python/lib"))
+            from waveshare_epd import epd7in5_V2
+            
+            epd = epd7in5_V2.EPD()
+            print(f"{now_str} EPD初期化...")
+            epd.init()
+            
+            print(f"{now_str} EPD描画中...")
+            epd.display(epd.getbuffer(dashboard_image))
+            
+            print(f"{now_str} EPDスリープ移行...")
+            epd.sleep()
+            print(f"{now_str} 描画完了！")
+            
+        except Exception as e:
+            print(f"{now_str} [ERROR] 電子ペーパー描画エラー: {e}")
+    else:
+        # ★ここも変更
+        print(f"{now_str} 💡 EPD描画はスキップされました（DRAW_TO_EPD = False）")
