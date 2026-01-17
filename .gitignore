@@ -22,6 +22,7 @@ npm-debug.log*
 # --- OS & System generated files ---
 .DS_Store
 Thumbs.db
+*.bak
 
 # --- Frontend & Local Testing ---
 # もしこれらの中身をGitに保存したい場合は行の頭に # をつけてください
