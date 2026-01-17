@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# --- 設定（変数にまとめると管理が楽です） ---
+# --- 設定 ---
 HOME_DIR="/home/boncoli"
 YATA_DIR="$HOME_DIR/yata-local"
 SD_BACKUP="/mnt/backup"
@@ -9,31 +9,39 @@ LOG_FILE="$YATA_DIR/backup.log"
 
 echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
 
-# --- 1. SDカードへのバックアップ (ローカル保存) ---
-# SSDの寿命対策 ＆ ネットワーク不要の確実なバックアップ
-echo "Saving to SD Card..." >> "$LOG_FILE"
-mkdir -p "$SD_BACKUP/yata_db_backup"
-# 日付付きでDBを保存
-cp "$YATA_DIR/yata.db" "$SD_BACKUP/yata_db_backup/yata_$(date +%Y%m%d).db"
-# ホームディレクトリ全体を同期（これが以前3時に設定していた処理）
-rsync -a --delete "$HOME_DIR/" "$SD_BACKUP/home_backup/"
+# --- 1. SDカードへのバックアップ (ホーム全体同期) ---
+# 目的: SDカード内での冗長化（直近の復旧用）
+echo "Syncing to SD Card..." >> "$LOG_FILE"
+rsync -a --delete --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' "$HOME_DIR/" "$SD_BACKUP/home_backup/"
 
-# 30日より古いバックアップを削除（容量パンク防止）
-find "$SD_BACKUP/yata_db_backup/" -name "yata_*.db" -mtime +30 -delete
-
-# --- 2. NASへのバックアップ (外部保存) ---
+# --- 2. NASへのバックアップ (完全クローン ＆ 履歴) ---
 if [ -d "$NAS_BACKUP" ]; then
     echo "Saving to NAS..." >> "$LOG_FILE"
-    cp "$YATA_DIR/yata.db" "$NAS_BACKUP/yata_backup.db"
-    mkdir -p "$NAS_BACKUP/yata_scripts_backup"
-    rsync -a --exclude='*.db' --exclude='node_modules' --exclude='.git' "$YATA_DIR/" "$NAS_BACKUP/yata_scripts_backup/"
+
+    # A. ホームディレクトリ全体の完全同期 (★ここを修正！)
+    mkdir -p "$NAS_BACKUP/home_backup"
+    # --no-links: ショートカットを無視（エラー回避の決定打）
+    # --exclude: エラーの元になるシステムフォルダを全除外
+    rsync -a --delete --no-links \
+      --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' \
+      --exclude='.git' --exclude='*.png' \
+      --exclude='.nvm' --exclude='.npm' \
+      --exclude='.pm2' --exclude='.vscode-server' --exclude='.local' \
+      "$HOME_DIR/" "$NAS_BACKUP/home_backup/"
+
+    # B. DBの履歴保存 (アーカイブ)
+    # ここは変更なし。過去30日分のデータを別で確保します。
+    mkdir -p "$NAS_BACKUP/yata_db_history"
+    cp "$YATA_DIR/yata.db" "$NAS_BACKUP/yata_db_history/yata_$(date +%Y%m%d).db"
+    find "$NAS_BACKUP/yata_db_history/" -name "yata_*.db" -mtime +30 -delete
+
 else
     echo "Warning: NAS not mounted. Skipping NAS backup." >> "$LOG_FILE"
 fi
 
-# --- 3. ログのローテーション (肥大化防止) ---
+# --- 3. ログのローテーション ---
 echo "Rotating logs..." >> "$LOG_FILE"
-LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log")
+LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log" "$YATA_DIR/logs/dashboard.log")
 
 for LOG in "${LOG_LIST[@]}"; do
     if [ -f "$LOG" ]; then
