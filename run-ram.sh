@@ -5,6 +5,7 @@ REAL_DB="/home/boncoli/yata-local/yata.db"
 RAM_DB="/dev/shm/yata.db"
 SCRIPT_DIR="/home/boncoli/yata-local"
 NODE_SCRIPT="$1"
+shift
 
 # --- 1. RAMにDBがなければ、SDからコピーする ---
 if [ ! -f "$RAM_DB" ]; then
@@ -16,6 +17,12 @@ if [ ! -f "$RAM_DB" ]; then
         touch "$RAM_DB"
     fi
 fi
+
+# ★ ここに追加！
+# メモリ上のDBファイルとその関連ファイル（-wal, -shm）の権限を全開放する
+chmod 666 "$RAM_DB" >/dev/null 2>&1
+chmod 666 "$RAM_DB"-wal >/dev/null 2>&1
+chmod 666 "$RAM_DB"-shm >/dev/null 2>&1
 
 # --- 2. DBのパスを環境変数に入れてNodeを実行 (時刻ログ付き) ---
 echo "[Wrapper] Running $NODE_SCRIPT on RAM DB..."
@@ -42,16 +49,22 @@ elif [[ "$NODE_SCRIPT" == *"yata-task"* ]]; then
   LOG_FILE="logs/yata.log"
 fi
 
-# 実行コマンド (共通部分)
-CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\""
+# 実行コマンドの判定
+if [[ "$NODE_SCRIPT" == *.py ]]; then
+    # 末尾に "$@" を追加（クォーテーションで囲むのがコツ）
+    CMD="python3 -u \"$SCRIPT_PATH\" \"\$@\""
+else
+    # 末尾に "$@" を追加
+    CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\" \"\$@\""
+fi
 
 if [ -n "$LOG_FILE" ]; then
-    # ログファイルあり: 画面出力 + ファイル追記 (tee -a)
+    # ログありの処理（さきほどのスニペット通り）
     eval "$CMD" | while read line; do
         echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
     done | tee -a "$LOG_FILE"
 else
-    # ログファイルなし: 画面出力のみ
+    # ログなしの処理（ここも eval "$CMD" を使う）
     eval "$CMD" | while read line; do
         echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
     done

@@ -11,8 +11,8 @@ echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
 
 # --- 1. SDカードへのバックアップ (ホーム全体同期) ---
 # 目的: SDカード内での冗長化（直近の復旧用）
-echo "Syncing to SD Card..." >> "$LOG_FILE"
-rsync -a --delete --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' "$HOME_DIR/" "$SD_BACKUP/home_backup/"
+# echo "Syncing to SD Card..." >> "$LOG_FILE"
+# rsync -a --delete --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' "$HOME_DIR/" "$SD_BACKUP/home_backup/"
 
 # --- 2. NASへのバックアップ (完全クローン ＆ 履歴) ---
 if [ -d "$NAS_BACKUP" ]; then
