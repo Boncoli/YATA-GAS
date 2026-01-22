@@ -93,9 +93,6 @@ async function main() {
   if (errors.length > 0) {
     const errorMsg = errors.map(e => `・${e}`).join("\n");
     sendDiscord(`⚠ [YATA] エラー発生(${timeStr})\n${errorMsg}`);
-  } else if (!isLightMode) {
-    // フルタスク成功時のみ通知（15分おきにスマホが鳴るのを防ぐ）
-    sendDiscord(`✅ [YATA] フルタスク完了(${timeStr})(${duration}s)`);
   }
   
   console.log(`\n--- [${endTime.toLocaleString()}] Finished (${duration}s) ---`);

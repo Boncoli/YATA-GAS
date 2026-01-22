@@ -51,7 +51,8 @@ DB_PATH = DB_PATH_SHM if os.path.exists(DB_PATH_SHM) else DB_PATH_DISK
 # =========================================================
 # ⚙️ 1. フォントサイズ (FS)
 # =========================================================
-FONT_JP = os.path.join(FONT_DIR, "NotoSansJP-Regular.otf")
+# FONT_JP = os.path.join(FONT_DIR, "NotoSansJP-Regular.otf")
+FONT_JP = os.path.join(FONT_DIR, "NotoSansJP-Medium.otf")
 FONT_JP_BOLD = os.path.join(FONT_DIR, "NotoSansJP-Black.otf")
 FONT_WEATHER = os.path.join(FONT_DIR, "WeatherIcons.ttf")
 
@@ -67,23 +68,77 @@ FS = {
 # 📐 2. レイアウト座標 & 余白設定 (LO)
 # =========================================================
 LO = {
-    "header_h": 100, "pad": 10,
-    "date_box": {"x": 10, "y": 5, "w": 80, "h": 90},
-    "clock_x": 105,
-    "panel": {"x": 345, "y": 5, "w": 450, "h": 90},
-    "panel_div1": 225, "panel_div2": 333,
-    "cards_y": 105, "gap": 5,
-    "col1_x": 10, "col1_w": 305, "h_sys": 140, "h_market": 219,
-    "col2_x": 320, "col2_w": 470, "h_news": 280, "h_trend": 79,
-    "sys_layout": {"row1": -2, "row2": 18, "line": 45, "row3": 53, "row4": 73},
-    "hourly_pos": {"time_y": 2, "icon_y": 12, "temp_y": 38},
-    "daily_pos": {"box_y": 54, "box_h": 35, "day_y": 62, "icon_y": 56, "temp_y": 75},
-    "env_pos": {
-        "room_lbl_y": 1, "room_val_y": 1, "humi_lbl_y": 21, "humi_val_y": 21,
-        "mid_line": 45, "out_lbl_y": 45, "out_val_y": 45, "pres_lbl_y": 65, "pres_val_y": 65
+    "header_h": 100,      # ヘッダーエリア(日付・時計・天気)の高さ
+    "pad": 10,           # 全般的な余白
+    "date_box": {"x": 10, "y": 5, "w": 80, "h": 90}, # 左上日付ボックスの配置
+    "clock_x": 105,      # 時計のX座標
+    "panel": {"x": 345, "y": 5, "w": 450, "h": 90},  # 右上天気・環境パネルの配置
+    "panel_div1": 225,   # 天気パネル内: 第1区切り線 (パネル左端からの相対X)
+    "panel_div2": 333,   # 天気パネル内: 第2区切り線 (パネル左端からの相対X)
+    "cards_y": 105,      # 下段カードエリアの開始Y座標
+    "gap": 5,            # カード同士の隙間
+    
+    # --- 左カラム (市場・システム情報) ---
+    "col1_x": 10, "col1_w": 305,        # 左カラムのX座標と幅
+    "h_sys": 140, "h_market": 219,     # システム情報/市場情報のカード高さ
+    
+    # --- 右カラム (ニュース・トレンド) ---
+    "col2_x": 320, "col2_w": 470,       # 右カラムのX座標と幅
+    "h_news": 280, "h_trend": 79,       # ニュース/トレンドのカード高さ
+    
+    # --- Detail Layouts ---
+    # (中略: すでにコメント済み)
+    "header": {
+        "day_y": 60,         # 曜日のY座標 (日付ボックス内)
+        "clock_y": -13,      # 通常時の時計のY座標 (マイナスで上にオフセット)
+        "hol_bg_y1": 75,     # 祝日名背景の開始Y
+        "hol_bg_y2": 95,     # 祝日名背景の終了Y
+        "hol_txt_y": 74,     # 祝日名テキストのY座標
+        "clock_hol_y": -23   # 祝日時の時計のY座標 (祝日名と重ならないよう更に上へ)
+    },
+    "weather": {
+        # メイン天気 (左上)
+        "main_icon": {"x": 2, "y": 2}, 
+        "main_temp": {"x": 55, "y": 65},
+        
+        # 3時間毎予報 (中央〜右)
+        "hourly": {
+            "start_x": 90, "step": 42,           # 開始X位置, 1つごとの横幅
+            "time_x": 5, "icon_x": 8, "temp_x": 18,  # 各要素の内部Xオフセット
+            "time_y": 2, "icon_y": 12, "temp_y": 38  # 各要素の内部Yオフセット
+        },
+        
+        # 週間予報 (下段)
+        "daily":  {
+            "box_x": 90, "box_w": 125, "box_y": 54, "box_h": 35, # 枠線の矩形
+            "start_x": 90, "step": 62,           # 開始X位置, 1つごとの横幅
+            "day_x": 8, "icon_x": 30, "temp_x": 33,  # 各要素の内部Xオフセット
+            "day_y": 62, "icon_y": 56, "temp_y": 75  # 各要素の内部Yオフセット
+        },
+        
+        # 警報・注意報リスト
+        "warn":   {
+            "x_off": 10, "pitch": 17, # 開始Xオフセット, 行送り(高さ)
+            "col_w": 54,              # 2列表示時の列幅
+            "bar_w": 4, "bar_m": 2,   # 警報時の左側の赤帯の太さとマージン
+            "other_x": 52             # 「..他」の表示位置
+        }
+    },
+    "env": {
+        "lbl_x": 4, "val_x": 33,      # ラベル("室温"等)と数値のXオフセット
+        "room_y": 1, "humi_y": 21,    # 室温・湿度のY座標
+        "mid_line": 45,               # 中央の区切り線Y座標
+        "out_y": 45, "pres_y": 65     # 外気・気圧のY座標
+    },
+    "sys": {
+        "pad_x": 10, 
+        "row1": -2, "row2": 18,       # 1行目(CPU), 2行目(Mem) Y座標
+        "line": 45,                   # 区切り線Y座標
+        "row3": 53, "row4": 73        # 3行目(DB Total), 4行目(DB Size) Y座標
     },
     "market_pos": {
-        "txt_x": 5, "name_y": 0, "val_y": 16, "chart_y": 35, "chart_w_adj": -10, "chart_h_adj": -40
+        "txt_x": 5, "name_y": 0, "val_y": 16, # テキストX, 銘柄名Y, 数値Y
+        "chart_y": 35, "chart_w_adj": -10, "chart_h_adj": -40 # チャート開始Y, 幅/高の補正値
     },
 }
 
@@ -152,6 +207,22 @@ def get_weather_icon(main, description, sunrise=None, sunset=None, check_time=No
     if is_night_mode(sunrise, sunset, check_time):
         return NIGHT_ICON_MAP.get(icon, icon)
     return icon
+
+def draw_weather_icon_smart(draw_b, draw_r, xy, icon_char, font, is_highlight=False):
+    x, y = xy
+    if is_highlight:
+        # 1px Outline (8 directions)
+        offsets = [(-1, -1), (0, -1), (1, -1),
+                   (-1,  0),          (1,  0),
+                   (-1,  1), (0,  1), (1,  1)]
+        for dx, dy in offsets:
+            draw_b.text((x + dx, y + dy), icon_char, font=font, fill=1)
+        # Body (Red with white mask)
+        draw_b.text((x, y), icon_char, font=font, fill=1)
+        draw_r.text((x, y), icon_char, font=font, fill=0)
+    else:
+        # Standard (Black/White)
+        draw_b.text((x, y), icon_char, font=font, fill=1)
 
 def draw_smart_text(draw_b, draw_r, xy, text, font, color_type=COLOR_BLACK):
     target = draw_r if color_type == COLOR_RED else draw_b
@@ -265,25 +336,25 @@ def create_dashboard_layers():
         start_x = w_center_x - (total_w / 2)
         
         # 曜日(白)
-        draw_b.text((start_x, dy + 60), wd_str, font=w_font, fill=1)
+        draw_b.text((start_x, dy + LO['header']['day_y']), wd_str, font=w_font, fill=1)
         # 祝(赤)
-        draw_b.text((start_x + wd_w + gap, dy + 60), hol_mark, font=w_font, fill=1) # 白抜き
-        draw_r.text((start_x + wd_w + gap, dy + 60), hol_mark, font=w_font, fill=0) # 赤
+        draw_b.text((start_x + wd_w + gap, dy + LO['header']['day_y']), hol_mark, font=w_font, fill=1) # 白抜き
+        draw_r.text((start_x + wd_w + gap, dy + LO['header']['day_y']), hol_mark, font=w_font, fill=0) # 赤
     else:
         # 通常 (曜日のみ白)
         wd_w = draw_b.textlength(wd_str, font=w_font)
         start_x = w_center_x - (wd_w / 2)
-        draw_b.text((start_x, dy + 60), wd_str, font=w_font, fill=1)
+        draw_b.text((start_x, dy + LO['header']['day_y']), wd_str, font=w_font, fill=1)
 
     clock_x = LO['clock_x']
     if holiday_name:
         h_font = get_font("jp_bold", FS['card_title'])
         h_w = draw_b.textlength(holiday_name, font=h_font)
-        draw_b.rectangle((clock_x, 75, clock_x + h_w + 10, 95), fill=1)
-        draw_smart_text(draw_b, draw_r, (clock_x + 5, 74), holiday_name, h_font, COLOR_RED)
-        draw_b.text((clock_x, -23), now.strftime("%H:%M"), font=get_font("clock", FS['clock']), fill=1)
+        draw_b.rectangle((clock_x, LO['header']['hol_bg_y1'], clock_x + h_w + 10, LO['header']['hol_bg_y2']), fill=1)
+        draw_smart_text(draw_b, draw_r, (clock_x + 5, LO['header']['hol_txt_y']), holiday_name, h_font, COLOR_RED)
+        draw_b.text((clock_x, LO['header']['clock_hol_y']), now.strftime("%H:%M"), font=get_font("clock", FS['clock']), fill=1)
     else:
-        draw_b.text((clock_x, -13), now.strftime("%H:%M"), font=get_font("clock", FS['clock']), fill=1)
+        draw_b.text((clock_x, LO['header']['clock_y']), now.strftime("%H:%M"), font=get_font("clock", FS['clock']), fill=1)
 
     pbox = LO['panel']; px, py = pbox['x'], pbox['y']
     draw_b.rectangle((px, py, px + pbox['w'], py + pbox['h']), outline=1, width=2)
@@ -296,42 +367,78 @@ def create_dashboard_layers():
         cur_icon = get_weather_icon(weather_row[0], weather_row[1], sr_time, ss_time)
         is_rain = "Rain" in str(weather_row) or "Snow" in str(weather_row)
         icon_f = get_font("weather", FS['icon_lg'])
-        if is_rain:
-            # 1pxの白縁取り（8方向）
-            offsets = [(-1, -1), (0, -1), (1, -1),
-                       (-1,  0),          (1,  0),
-                       (-1,  1), (0,  1), (1,  1)]
-            base_x, base_y = weather_base_x + 2, py + 2
-            
-            for dx, dy in offsets:
-                draw_b.text((base_x + dx, base_y + dy), cur_icon, font=icon_f, fill=1)
-            
-            # 本体（赤）
-            draw_b.text((base_x, base_y), cur_icon, font=icon_f, fill=1) # 白抜き
-            draw_r.text((base_x, base_y), cur_icon, font=icon_f, fill=0) # 赤
-        else:
-            draw_b.text((weather_base_x + 2, py + 2), cur_icon, font=icon_f, fill=1)
+        
+        main_pos = (weather_base_x + LO['weather']['main_icon']['x'], py + LO['weather']['main_icon']['y'])
+        draw_weather_icon_smart(draw_b, draw_r, main_pos, cur_icon, icon_f, is_rain)
+
         if today_forecast:
-            draw_b.text((weather_base_x + 55, py + 65), f"{today_forecast[0]:.0f}/{today_forecast[1]:.0f}", font=get_font("jp", 16), fill=1)
+            temp_pos = (weather_base_x + LO['weather']['main_temp']['x'], py + LO['weather']['main_temp']['y'])
+            draw_b.text(temp_pos, f"{today_forecast[0]:.0f}/{today_forecast[1]:.0f}", font=get_font("jp", 16), fill=1)
 
-        HP = LO['hourly_pos']
-        for i, r in enumerate(hourly_rows[3:6]): # 3, 6, 9時間後
-            bx = weather_base_x + 90 + (i * 42)
+        HP = LO['weather']['hourly']
+        target_hourly = hourly_rows[2::3][:3]
+        for i, r in enumerate(target_hourly): # 3, 6, 9時間後
+            bx = weather_base_x + HP['start_x'] + (i * HP['step'])
             dt_h = datetime.strptime(r[0], "%Y/%m/%d %H:%M")
-            draw_b.text((bx + 5, py + HP['time_y']), dt_h.strftime("%H:%M"), font=get_font("jp", 10), fill=1)
-            draw_b.text((bx + 8, py + HP['icon_y']), get_weather_icon(r[1], r[2], sr_time, ss_time, dt_h), font=get_font("weather", 22), fill=1)
-            draw_b.text((bx + 18, py + HP['temp_y']), f"{r[3]:.0f}°", font=get_font("jp", 11), fill=1)
+            draw_b.text((bx + HP['time_x'], py + HP['time_y']), dt_h.strftime("%H:%M"), font=get_font("jp", 10), fill=1)
+            
+            icon_char = get_weather_icon(r[1], r[2], sr_time, ss_time, dt_h)
+            is_rain_h = "Rain" in r[1] or "Snow" in r[1] or "Rain" in r[2] or "Snow" in r[2]
+            icon_x, icon_y = bx + HP['icon_x'], py + HP['icon_y']
+            font_h = get_font("weather", 22)
 
-        DP = LO['daily_pos']
-        draw_b.rectangle((weather_base_x + 90, py + DP['box_y'], weather_base_x + 215, py + DP['box_y'] + DP['box_h']), outline=1, width=2)
+            draw_weather_icon_smart(draw_b, draw_r, (icon_x, icon_y), icon_char, font_h, is_rain_h)
+
+            draw_b.text((bx + HP['temp_x'], py + HP['temp_y']), f"{r[3]:.0f}°", font=get_font("jp", 11), fill=1)
+
+    
+
+            HP = LO['weather']['hourly']
+
+            target_hourly = hourly_rows[2::3][:3]
+
+            for i, r in enumerate(target_hourly): # 3, 6, 9時間後
+
+                bx = weather_base_x + HP['start_x'] + (i * HP['step'])
+
+                dt_h = datetime.strptime(r[0], "%Y/%m/%d %H:%M")
+
+                draw_b.text((bx + HP['time_x'], py + HP['time_y']), dt_h.strftime("%H:%M"), font=get_font("jp", 10), fill=1)
+
+                
+
+                icon_char = get_weather_icon(r[1], r[2], sr_time, ss_time, dt_h)
+
+                is_rain_h = "Rain" in r[1] or "Snow" in r[1] or "Rain" in r[2] or "Snow" in r[2]
+
+                icon_x, icon_y = bx + HP['icon_x'], py + HP['icon_y']
+
+                font_h = get_font("weather", 22)
+
+    
+
+                draw_weather_icon_smart(draw_b, draw_r, (icon_x, icon_y), icon_char, font_h, is_rain_h)
+
+    
+
+                draw_b.text((bx + HP['temp_x'], py + HP['temp_y']), f"{r[3]:.0f}°", font=get_font("jp", 11), fill=1)
+
+        DP = LO['weather']['daily']
+        draw_b.rectangle((weather_base_x + DP['box_x'], py + DP['box_y'], weather_base_x + DP['box_x'] + DP['box_w'], py + DP['box_y'] + DP['box_h']), outline=1, width=2)
         for i, r in enumerate(daily_rows):
-            bx = weather_base_x + 90 + (i * 62)
+            bx = weather_base_x + DP['start_x'] + (i * DP['step'])
             dt_d = datetime.strptime(r[0], "%Y/%m/%d")
-            draw_b.text((bx + 8, py + DP['day_y']), JP_WEEKDAYS[dt_d.weekday()], font=get_font("jp", 14), fill=1)
-            draw_b.text((bx + 30, py + DP['icon_y']), get_weather_icon(r[1], r[2]), font=get_font("weather", 16), fill=1)
-            draw_b.text((bx + 33, py + DP['temp_y']), f"{r[3]:.0f}/{r[4]:.0f}", font=get_font("jp", 10), fill=1)
+            draw_b.text((bx + DP['day_x'], py + DP['day_y']), JP_WEEKDAYS[dt_d.weekday()], font=get_font("jp", 14), fill=1)
+            # 明日以降は常に昼アイコン (12:00判定)
+            icon_char = get_weather_icon(r[1], r[2], check_time=dt_d.replace(hour=12))
+            is_rain_d = "Rain" in r[1] or "Snow" in r[1] or "Rain" in r[2] or "Snow" in r[2]
+            
+            draw_weather_icon_smart(draw_b, draw_r, (bx + DP['icon_x'], py + DP['icon_y']), icon_char, get_font("weather", 16), is_rain_d)
+            
+            draw_b.text((bx + DP['temp_x'], py + DP['temp_y']), f"{r[3]:.0f}/{r[4]:.0f}", font=get_font("jp", 10), fill=1)
 
-    warning_x = div1_x + 10
+    WP = LO['weather']['warn']
+    warning_x = div1_x + WP['x_off']
     alert_text = weather_row[5] if weather_row and weather_row[5] else ""
     alerts = [a.strip() for a in alert_text.split(',') if a.strip()] if alert_text else []
     def get_priority(t):
@@ -342,13 +449,13 @@ def create_dashboard_layers():
 
     if alerts:
         a_font = get_font("jp", 14)
-        BAR_W, BAR_M, PITCH = 4, 2, 17
+        BAR_W, BAR_M, PITCH = WP['bar_w'], WP['bar_m'], WP['pitch']
         MAX_ITEMS = 10  # 2列x5行
         
         for i, alert in enumerate(alerts):
             if i >= MAX_ITEMS:
                 # 最後のスペースに「他」を表示
-                draw_b.text((warning_x + 52, py + 1 + (4 * PITCH)), f"..他", font=a_font, fill=1)
+                draw_b.text((warning_x + WP['other_x'], py + 1 + (4 * PITCH)), f"..他", font=a_font, fill=1)
                 break
 
             # 文字列短縮
@@ -361,7 +468,7 @@ def create_dashboard_layers():
             row = i // 2
             
             # 幅108pxを2等分 (54pxずつ)
-            x_pos = warning_x + (col * 54)
+            x_pos = warning_x + (col * WP['col_w'])
             y_pos = py + 1 + (row * PITCH)
             
             # 5行目(index 8,9)に入ろうとして、かつまだ続きがある場合は「他」のために左側で止める処理
@@ -375,37 +482,38 @@ def create_dashboard_layers():
                 
             draw_b.text((x_pos, y_pos), display_text[:3], font=a_font, fill=1)
 
-    EP = LO['env_pos']
+    EP = LO['env']
     draw_b.line((div2_x, py + EP['mid_line'], px + pbox['w'], py + EP['mid_line']), fill=1, width=2)
-    ev_x, vx_off = div2_x + 4, 33
+    ev_x, vx_off = div2_x + EP['lbl_x'], EP['val_x']
     lbl_f, val_f = get_font("jp", 16), get_font("jp", 16)
     c_t = f"{remo_row[0]:.1f}" if remo_row else "--"
     c_h = f"{remo_row[1]:.1f}" if remo_row else "--"
     o_t = f"{weather_row[2]:.1f}" if weather_row else "--"
     pr = f"{weather_row[3]:.0f}" if weather_row else "--"
     
-    draw_b.text((ev_x, py+EP['room_lbl_y']), "室温", font=lbl_f, fill=1)
+    draw_b.text((ev_x, py+EP['room_y']), "室温", font=lbl_f, fill=1)
     if remo_row and remo_row[0] > 28.0:
-        draw_b.text((ev_x+vx_off, py+EP['room_val_y']), f"{c_t}°C", font=val_f, fill=1)
-        draw_r.text((ev_x+vx_off, py+EP['room_val_y']), f"{c_t}°C", font=val_f, fill=0)
+        draw_b.text((ev_x+vx_off, py+EP['room_y']), f"{c_t}°C", font=val_f, fill=1)
+        draw_r.text((ev_x+vx_off, py+EP['room_y']), f"{c_t}°C", font=val_f, fill=0)
     else:
-        draw_b.text((ev_x+vx_off, py+EP['room_val_y']), f"{c_t}°C", font=val_f, fill=1)
-    draw_b.text((ev_x, py+EP['humi_lbl_y']), "湿度", font=lbl_f, fill=1)
-    draw_b.text((ev_x+vx_off, py+EP['humi_val_y']), f"{c_h}%", font=val_f, fill=1)
-    draw_b.text((ev_x, py+EP['out_lbl_y']), "外気", font=lbl_f, fill=1)
-    draw_b.text((ev_x+vx_off, py+EP['out_val_y']), f"{o_t}°C", font=val_f, fill=1)
-    draw_b.text((ev_x, py+EP['pres_lbl_y']), "気圧", font=lbl_f, fill=1)
-    draw_b.text((ev_x+vx_off, py+EP['pres_val_y']), f"{pr} hPa", font=val_f, fill=1)
+        draw_b.text((ev_x+vx_off, py+EP['room_y']), f"{c_t}°C", font=val_f, fill=1)
+    draw_b.text((ev_x, py+EP['humi_y']), "湿度", font=lbl_f, fill=1)
+    draw_b.text((ev_x+vx_off, py+EP['humi_y']), f"{c_h}%", font=val_f, fill=1)
+    draw_b.text((ev_x, py+EP['out_y']), "外気", font=lbl_f, fill=1)
+    draw_b.text((ev_x+vx_off, py+EP['out_y']), f"{o_t}°C", font=val_f, fill=1)
+    draw_b.text((ev_x, py+EP['pres_y']), "気圧", font=lbl_f, fill=1)
+    draw_b.text((ev_x+vx_off, py+EP['pres_y']), f"{pr} hPa", font=val_f, fill=1)
 
     l_f = get_font("jp_bold", 16)
     cy, _ = draw_card_smart(draw_b, draw_r, LO['col1_x'], LO['cards_y'], LO['col1_w'], LO['h_sys'], "SYSTEM & DATABASE", l_f)
     s_f, s_s = get_font("jp", 16), get_system_stats()
-    draw_b.text((LO['col1_x']+10, cy-2), f"CPU: {s_s['cpu_temp']}  Load: {s_s['load']}", font=s_f, fill=0)
-    draw_b.text((LO['col1_x']+10, cy+18), f"Mem: {s_s['mem']}  Disk: {s_s['disk']}", font=s_f, fill=0)
-    draw_b.line((LO['col1_x']+10, cy+45, LO['col1_x']+LO['col1_w']-10, cy+45), fill=0)
+    SP = LO['sys']
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row1']), f"CPU: {s_s['cpu_temp']}  Load: {s_s['load']}", font=s_f, fill=0)
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2']), f"Mem: {s_s['mem']}  Disk: {s_s['disk']}", font=s_f, fill=0)
+    draw_b.line((LO['col1_x']+SP['pad_x'], cy+SP['line'], LO['col1_x']+LO['col1_w']-SP['pad_x'], cy+SP['line']), fill=0)
     db = get_db_stats()
-    draw_b.text((LO['col1_x']+10, cy+53), f"Total: {db['total']}   New: +{db['new']}", font=s_f, fill=0)
-    draw_b.text((LO['col1_x']+10, cy+73), f"DB Size: {db['size']}", font=s_f, fill=0)
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row3']), f"Total: {db['total']}   New: +{db['new']}", font=s_f, fill=0)
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row4']), f"DB Size: {db['size']}", font=s_f, fill=0)
 
     m_y = LO['cards_y'] + LO['h_sys'] + LO['gap']
     draw_card_smart(draw_b, draw_r, LO['col1_x'], m_y, LO['col1_w'], LO['h_market'], "MARKET WATCH", l_f)
@@ -502,24 +610,31 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
             current_val = hist_values[-1]
             change = current_val - prev_close_val
 
-            plt.figure(figsize=((cell_w+MP['chart_w_adj'])/50, (cell_h+MP['chart_h_adj'])/50), dpi=50)
+            fig = plt.figure(figsize=((cell_w+MP['chart_w_adj'])/50, (cell_h+MP['chart_h_adj'])/50), dpi=50)
+            fig.patch.set_facecolor('white')
             # 前日終値の基準線 (黒点線)
-            plt.axhline(y=prev_close_val, color='black', linestyle='--', linewidth=1)
+            plt.axhline(y=prev_close_val, color='black', linestyle='--', linewidth=1.2)
 
             if len(hist_values) >= 4:
                 x_idx = np.arange(len(hist_values))
                 x_new = np.linspace(0, len(hist_values)-1, 200)
                 spl = make_interp_spline(x_idx, hist_values, k=3)
-                plt.plot(x_new, spl(x_new), color='black', linewidth=2)
+                plt.plot(x_new, spl(x_new), color='black', linewidth=3)
             else:
-                plt.plot(hist_values, color='black', linewidth=2)
+                plt.plot(hist_values, color='black', linewidth=3)
             
             plt.axis('off'); plt.tight_layout(pad=0)
-            buf = io.BytesIO(); plt.savefig(buf, format='png', transparent=True); plt.close(); buf.seek(0)
-            chart = Image.open(buf).convert("1")
+            buf = io.BytesIO(); plt.savefig(buf, format='png', facecolor='white', transparent=False); plt.close(); buf.seek(0)
             
-            target = draw_r if change < 0 else draw_b
-            target.bitmap((int(x+MP['txt_x']), int(y+MP['chart_y'])), chart, fill=0)
+            # 白背景・黒線 -> 反転して 黒背景(0)・白線(1) にする。bitmapは1の部分をfillで塗るため。
+            chart = ImageOps.invert(Image.open(buf).convert("L")).convert("1")
+            cx, cy = int(x+MP['txt_x']), int(y+MP['chart_y'])
+            
+            if change < 0:
+                draw_r.bitmap((cx, cy), chart, fill=0) # 赤で描く
+                draw_b.bitmap((cx, cy), chart, fill=1) # 黒を抜く
+            else:
+                draw_b.bitmap((cx, cy), chart, fill=0) # 黒で描く
             
             draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['name_y']), item["name"], get_font("jp_bold", 14))
             name_w = draw_b.textlength(item["name"], font=get_font("jp_bold", 14))
