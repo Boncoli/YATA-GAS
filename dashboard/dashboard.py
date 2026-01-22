@@ -311,16 +311,37 @@ def create_dashboard_layers():
     if alerts:
         a_font = get_font("jp", 14)
         BAR_W, BAR_M, PITCH = 4, 2, 17
-        for i in range(min(len(alerts), 5)):
-            y_p = py + 1 + (i * PITCH)
-            if i == 4 and len(alerts) > 5:
-                draw_b.text((warning_x, y_p), f"..他 {len(alerts)-4} 件", font=a_font, fill=1)
-            else:
-                alert = alerts[i]
-                if "警報" in alert:
-                    draw_r.rectangle((warning_x-BAR_M-BAR_W, y_p+5, warning_x-BAR_M, y_p+17), fill=0)
-                    draw_b.rectangle((warning_x-BAR_M-BAR_W, y_p+5, warning_x-BAR_M, y_p+17), fill=1)
-                draw_b.text((warning_x, y_p), alert[:6], font=a_font, fill=1)
+        MAX_ITEMS = 10  # 2列x5行
+        
+        for i, alert in enumerate(alerts):
+            if i >= MAX_ITEMS:
+                # 最後のスペースに「他」を表示
+                draw_b.text((warning_x + 52, py + 1 + (4 * PITCH)), f"..他", font=a_font, fill=1)
+                break
+
+            # 文字列短縮
+            # "特別警報" -> "特", "警報"/"注意報" -> 削除
+            display_text = alert.replace("特別警報", "特").replace("警報", "").replace("注意報", "")
+            is_warning = "警報" in alert
+
+            # 2列配置 (左:0, 右:1)
+            col = i % 2
+            row = i // 2
+            
+            # 幅108pxを2等分 (54pxずつ)
+            x_pos = warning_x + (col * 54)
+            y_pos = py + 1 + (row * PITCH)
+            
+            # 5行目(index 8,9)に入ろうとして、かつまだ続きがある場合は「他」のために左側で止める処理
+            if row == 4 and len(alerts) > MAX_ITEMS and col == 1:
+                 draw_b.text((x_pos, y_pos), "..他", font=a_font, fill=1)
+                 break
+
+            if is_warning:
+                draw_r.rectangle((x_pos-BAR_M-BAR_W, y_pos+5, x_pos-BAR_M, y_pos+17), fill=0)
+                draw_b.rectangle((x_pos-BAR_M-BAR_W, y_pos+5, x_pos-BAR_M, y_pos+17), fill=1)
+                
+            draw_b.text((x_pos, y_pos), display_text[:3], font=a_font, fill=1)
 
     EP = LO['env_pos']
     draw_b.line((div2_x, py + EP['mid_line'], px + pbox['w'], py + EP['mid_line']), fill=1, width=2)
