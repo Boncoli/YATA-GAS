@@ -245,13 +245,35 @@ def create_dashboard_layers():
     dbox = LO['date_box']; dx, dy = dbox['x'], dbox['y']
     draw_b.rectangle((dx, dy, dx + dbox['w'], dy + dbox['h']), outline=1, width=2)
     holiday_name = jp_hols.get(now.date())
-    is_weekend = (now.weekday() >= 5) or holiday_name
-    if is_weekend:
-        draw_b.text((dx + LO['pad'], dy), str(now.day), font=get_font("clock", FS['date_num']), fill=1) 
-        draw_r.text((dx + LO['pad'], dy), str(now.day), font=get_font("clock", FS['date_num']), fill=0) 
+    
+    # 日付 (数字) - 常に白文字
+    draw_b.text((dx + LO['pad'], dy), str(now.day), font=get_font("clock", FS['date_num']), fill=1)
+
+    # 曜日 - 中央揃え & 祝日対応
+    w_center_x = dx + (dbox['w'] // 2)
+    w_font = get_font("jp_bold", FS['date_day'])
+    wd_str = JP_WEEKDAYS[now.weekday()]
+
+    if holiday_name:
+        # "月 祝" の場合 (曜日は白、祝は赤)
+        gap = 4
+        hol_mark = "祝"
+        wd_w = draw_b.textlength(wd_str, font=w_font)
+        hm_w = draw_b.textlength(hol_mark, font=w_font)
+        total_w = wd_w + gap + hm_w
+        
+        start_x = w_center_x - (total_w / 2)
+        
+        # 曜日(白)
+        draw_b.text((start_x, dy + 60), wd_str, font=w_font, fill=1)
+        # 祝(赤)
+        draw_b.text((start_x + wd_w + gap, dy + 60), hol_mark, font=w_font, fill=1) # 白抜き
+        draw_r.text((start_x + wd_w + gap, dy + 60), hol_mark, font=w_font, fill=0) # 赤
     else:
-        draw_b.text((dx + LO['pad'], dy), str(now.day), font=get_font("clock", FS['date_num']), fill=1)
-    draw_b.text((dx + 30, dy + 60), JP_WEEKDAYS[now.weekday()], font=get_font("jp", FS['date_day']), fill=1)
+        # 通常 (曜日のみ白)
+        wd_w = draw_b.textlength(wd_str, font=w_font)
+        start_x = w_center_x - (wd_w / 2)
+        draw_b.text((start_x, dy + 60), wd_str, font=w_font, fill=1)
 
     clock_x = LO['clock_x']
     if holiday_name:
