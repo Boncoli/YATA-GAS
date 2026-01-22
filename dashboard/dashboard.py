@@ -275,8 +275,18 @@ def create_dashboard_layers():
         is_rain = "Rain" in str(weather_row) or "Snow" in str(weather_row)
         icon_f = get_font("weather", FS['icon_lg'])
         if is_rain:
-            draw_b.text((weather_base_x + 2, py + 2), cur_icon, font=icon_f, fill=1)
-            draw_r.text((weather_base_x + 2, py + 2), cur_icon, font=icon_f, fill=0)
+            # 1pxの白縁取り（8方向）
+            offsets = [(-1, -1), (0, -1), (1, -1),
+                       (-1,  0),          (1,  0),
+                       (-1,  1), (0,  1), (1,  1)]
+            base_x, base_y = weather_base_x + 2, py + 2
+            
+            for dx, dy in offsets:
+                draw_b.text((base_x + dx, base_y + dy), cur_icon, font=icon_f, fill=1)
+            
+            # 本体（赤）
+            draw_b.text((base_x, base_y), cur_icon, font=icon_f, fill=1) # 白抜き
+            draw_r.text((base_x, base_y), cur_icon, font=icon_f, fill=0) # 赤
         else:
             draw_b.text((weather_base_x + 2, py + 2), cur_icon, font=icon_f, fill=1)
         if today_forecast:
