@@ -3,10 +3,14 @@ from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
 # --- 設定 ---
-# 画面サイズ (7.5インチ電子ペーパー)
 WIDTH, HEIGHT = 800, 480
-# フォントのパス
-FONT_DIR = os.path.expanduser("~/yata_fonts")
+# dashboard/tools/ から見た dashboard/fonts/ へのパス
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FONT_DIR = os.path.join(BASE_DIR, "fonts")
+
+if not os.path.exists(FONT_DIR):
+    # フォールバック
+    FONT_DIR = os.path.expanduser("~/yata_fonts")
 FONT_JP_BOLD = os.path.join(FONT_DIR, "NotoSansCJKjp-Bold.otf")
 FONT_EN_BOLD = os.path.join(FONT_DIR, "RobotoMono-Bold.ttf")
 

@@ -13,10 +13,12 @@ TICKERS = [
     {"symbol": "6869.T", "name": "Sysmex"},
 ]
 
-# フォントパス (英数用と日本語用)
-FONT_EN_BOLD = os.path.expanduser("~/yata_fonts/RobotoMono-Bold.ttf")
-# ★追加: 日本語フォント（▲▼用）
-FONT_JP_BOLD = os.path.expanduser("~/yata_fonts/NotoSansCJKjp-Bold.otf")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FONT_DIR = os.path.join(BASE_DIR, "fonts")
+
+# フォント設定 (Mplusへ変更)
+FONT_EN_BOLD = os.path.join(FONT_DIR, "Mplus1Code-Bold.ttf")
+FONT_JP_BOLD = os.path.join(FONT_DIR, "Mplus1-Bold.ttf")
 
 # --- 個別のミニチャートを作る関数 ---
 def create_mini_chart(ticker_symbol, width, height):
