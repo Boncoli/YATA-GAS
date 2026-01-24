@@ -39,5 +39,6 @@ __pycache__/
 
 # --- Fonts (Optional) ---
 # リポジトリを軽量に保ちたい場合は、以下の # を外してください
-# *.ttf
-# *.otf
+*.ttf
+*.otf
+dashboard/fonts/
