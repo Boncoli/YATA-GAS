@@ -11,7 +11,6 @@ import traceback
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import matplotlib.pyplot as plt
-import yfinance as yf
 import pandas_datareader.data as web
 import numpy as np
 from scipy.interpolate import make_interp_spline
@@ -555,56 +554,122 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         current_val, prev_close_val = 0, 0
         col_name = db_col_map.get(item["symbol"])
 
-        # --- STEP 1: Yahoo Finance 取得 ---
+        # --- STEP 1: DB からデータを取得 (yfinance は BAN 回避のため廃止) ---
         try:
-            yf_sym = item["symbol"]
-            ticker = yf.Ticker(yf_sym)
-            hist = ticker.history(period="2d", interval="15m") # 15分足で細かく取る
-            if not hist.empty:
-                df = hist.reset_index().rename(columns={"Close": col_name, "Datetime": "date", "Date": "date"})
-                # 前日終値 (最新日の前の日の最後の値)
-                days = df['date'].dt.date.unique()
-                if len(days) > 1:
-                    prev_close_val = df[df['date'].dt.date == days[-2]][col_name].iloc[-1]
-                    df = df[df['date'].dt.date == days[-1]] # 最新日のみ
-                else:
-                    prev_close_val = df[col_name].iloc[0]
-                date_label = days[-1].strftime("%m/%d")
-        except: pass
+            conn = sqlite3.connect(DB_PATH)
+            # 直近400件取得 (十分な「静止期間」を探すため広めに)
+            q = f"SELECT date, {col_name} FROM finance_log WHERE {col_name} IS NOT NULL ORDER BY date DESC LIMIT 400"
+            raw_df = pd.read_sql(q, conn)
+            conn.close()
+            
+            if not raw_df.empty:
+                raw_df['date'] = pd.to_datetime(raw_df['date'])
+                raw_df = raw_df.sort_values('date').reset_index(drop=True)
+                
+                vals = raw_df[col_name].values
+                dates = raw_df['date'].values
+                n = len(vals)
 
-        # --- STEP 2: DB フォールバック & 全無変化区間の Omit ---
-        if df.empty:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                q = f"SELECT date, {col_name} FROM finance_log WHERE {col_name} IS NOT NULL ORDER BY date DESC LIMIT 1500"
-                full_df = pd.read_sql(q, conn)
-                conn.close()
+                # --- A. 末尾(最新)のトリミング ---
+                # 「最後に値が動いた地点」を探す。
+                # 最新から遡って、変化点を見つける。
+                last_change_idx = n - 1
+                for i in range(n - 1, 0, -1):
+                    if vals[i] != vals[i-1]:
+                        last_change_idx = i
+                        break
+                
+                # 末尾の静止が5点(約1時間強)以上続くなら、そこをチャートの右端とする
+                # (動きが終わった直後までを表示)
+                cutoff_idx = n
+                if (n - 1) - last_change_idx >= 5:
+                    cutoff_idx = last_change_idx + 1 # 変化後の最初の静止点まで含める
+                
+                # チャート候補データ (一旦ここまでの範囲とする)
+                # ただしデータが少なすぎる場合はトリミングしない
+                if cutoff_idx < 5: cutoff_idx = n
 
-                if not full_df.empty:
-                    full_df['date'] = pd.to_datetime(full_df['date'])
-                    latest_day = full_df['date'].dt.date.iloc[0]
-                    today_df = full_df[full_df['date'].dt.date == latest_day].sort_values('date').copy()
-                    
-                    if not today_df.empty:
-                        # 【重要】値が前回と違う行だけを抽出（＝変化がない横棒をすべて削除）
-                        # ただし、一番最初の点と一番最後の点は形を維持するために残す
-                        today_df['changed'] = today_df[col_name].shift() != today_df[col_name]
-                        today_df.iloc[0, today_df.columns.get_loc('changed')] = True
-                        today_df.iloc[-1, today_df.columns.get_loc('changed')] = True
-                        
-                        df = today_df[today_df['changed']].copy()
-                        date_label = latest_day.strftime("%m/%d")
+                target_vals = vals[:cutoff_idx]
+                target_dates = dates[:cutoff_idx]
+                
+                # --- B. 開始点(基準値)の探索 ---
+                # トリミング地点から過去へ遡り、「8点(約2時間)以上値が変わらない期間」を探す。
+                # その静止期間の値こそが「前日終値(基準値)」である。
+                
+                prev_close_val = target_vals[0]
+                start_plot_idx = 0
+                
+                # 連続同一値のカウンター
+                stable_count = 1
+                found_baseline = False
+                
+                # 変動開始地点 (時系列的な開始点) を保持する変数
+                # 初期値はデータの先頭(0)ではなく、末尾付近であることを想定しないといけないが、
+                # ループ内で「最初の変化」を見つけた時点で更新される。
+                # もし一度も変化がなければ(ずっと平坦なら)、volatility_start_idxは更新されないか、初期値の扱いになる。
+                volatility_start_idx = 0
 
-                        # 前日終値
-                        day_str = latest_day.strftime("%Y/%m/%d")
-                        conn = sqlite3.connect(DB_PATH)
-                        p_q = f"SELECT {col_name} FROM finance_log WHERE date < '{day_str}' AND {col_name} IS NOT NULL ORDER BY date DESC LIMIT 1"
-                        p_df = pd.read_sql(p_q, conn)
-                        conn.close()
-                        prev_close_val = p_df[col_name].iloc[0] if not p_df.empty else df[col_name].iloc[0]
-            except: pass
+                for i in range(len(target_vals) - 2, -1, -1):
+                    if target_vals[i] != target_vals[i+1]:
+                        # 値が変わった = ここより右側(i+1以降)が「新しい変動ブロック」
+                        volatility_start_idx = i + 1
+                        stable_count = 1
+                    else:
+                        # 値が変わらない
+                        stable_count += 1
+                        # 静止期間が一定以上続いた場合、ここが「基準となる静止期間」であると判定
+                        if stable_count >= 8:
+                            prev_close_val = target_vals[i]
+                            # チャートの開始位置は、変動が始まる直前の点 (静止期間の最後の1点) とする
+                            # これにより、基準値から変動への遷移が描画される
+                            start_plot_idx = volatility_start_idx - 1
+                            if start_plot_idx < 0: start_plot_idx = 0
+                            
+                            found_baseline = True
+                            break
+                
+                # もし基準が見つからない場合(ずっと変動している、またはデータ不足)
+                if not found_baseline:
+                     start_plot_idx = 0
+                     prev_close_val = target_vals[0]
 
-        # --- STEP 3: 描画 (お昼休みを詰めた状態でスプライン) ---
+                # --- C. チャート用データの確定 ---
+                # 基準値より後のデータのみをプロットする
+                df = pd.DataFrame({
+                    'date': target_dates[start_plot_idx:], 
+                    col_name: target_vals[start_plot_idx:]
+                })
+                
+                # 現在値（表示上の最新値）
+                current_val = df[col_name].iloc[-1]
+                date_label = df['date'].iloc[-1].strftime("%m/%d %H:%M") # 時間も入れた方が分かりやすいかも
+
+                # 変化検知フラグ (軽量化: スプラインを綺麗に引くため、極端に変化がない点は間引いてもよいが
+                # 今回はロジックで範囲を絞ったので、全点描画でもOK。一応連続重複削除は入れておく)
+                # df = df[df[col_name].shift() != df[col_name]].copy() # これをやると階段状になるので、スプラインなら全点推奨
+                # ユーザー要望: "変動しているポイントのみつなげてチャート化" -> 重複削除する
+                df_plot = df.loc[df[col_name].shift() != df[col_name]].copy()
+                if len(df_plot) < 2: df_plot = df # 点が少なすぎたら元に戻す
+
+            else:
+                df_plot = pd.DataFrame()
+
+        except Exception as e:
+            print(f"DB Fetch Error for {item['name']}: {e}")
+            df_plot = pd.DataFrame()
+
+        # --- STEP 2: 描画 ---
+        # データが無い、あるいは計算不能時は初期値のまま
+        if not df_plot.empty:
+            hist_values = df_plot[col_name].values
+            change = current_val - prev_close_val # 基準値との差
+        else:
+            hist_values = []
+            change = 0
+            current_val = 0
+            prev_close_val = 0 # 安全策
+        change = current_val - prev_close_val
+        
         if not df.empty and len(df) >= 2:
             hist_values = df[col_name].values
             current_val = hist_values[-1]
@@ -623,6 +688,16 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
             else:
                 plt.plot(hist_values, color='black', linewidth=3)
             
+            # 軸範囲の調整 (点線を確実に含める)
+            all_vals = np.append(hist_values, prev_close_val)
+            y_min, y_max = np.min(all_vals), np.max(all_vals)
+            margin = (y_max - y_min) * 0.15 if y_max != y_min else y_max * 0.01
+            plt.ylim(y_min - margin, y_max + margin)
+
+            # USD/JPYの場合、Y軸を反転 (値が小さい=円高 を上に)
+            if item["symbol"] == "JPY=X":
+                plt.gca().invert_yaxis()
+            
             plt.axis('off'); plt.tight_layout(pad=0)
             buf = io.BytesIO(); plt.savefig(buf, format='png', facecolor='white', transparent=False); plt.close(); buf.seek(0)
             
@@ -636,12 +711,28 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
             else:
                 draw_b.bitmap((cx, cy), chart, fill=0) # 黒で描く
             
-            draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['name_y']), item["name"], get_font("jp_bold", 14))
-            name_w = draw_b.textlength(item["name"], font=get_font("jp_bold", 14))
-            draw_smart_text(draw_b, draw_r, (x+MP['txt_x'] + name_w + 5, y+MP['name_y'] + 2), f"[{date_label}]", get_font("jp", 10))
-            draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['val_y']), 
-                            f"{'▲' if change>0 else '▼' if change<0 else '-'}{item['fmt'].format(current_val)}", 
-                            get_font("jp", 14), COLOR_RED if change < 0 else COLOR_BLACK)
+        # テキスト情報はグラフの有無に関わらず描画
+        draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['name_y']), item["name"], get_font("jp_bold", 14))
+        name_w = draw_b.textlength(item["name"], font=get_font("jp_bold", 14))
+        draw_smart_text(draw_b, draw_r, (x+MP['txt_x'] + name_w + 5, y+MP['name_y'] + 2), f"[{date_label}]", get_font("jp", 10))
+        
+        # 変化記号と色: プラス=黒(▲), マイナス=赤(▼), 変わらず=黒(±)
+        sign_char = '▲' if change > 0 else '▼' if change < 0 else '±'
+        text_color = COLOR_RED if change < 0 else COLOR_BLACK
+        
+        # 1. 現在値 (大きく)
+        val_str = f"{sign_char}{item['fmt'].format(current_val)}"
+        val_font = get_font("jp", 14)
+        draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['val_y']), val_str, val_font, text_color)
+        
+        # 2. 差分 (横に同じ大きさで)
+        val_w = draw_b.textlength(val_str, font=val_font)
+        diff_val_str = item['fmt'].format(abs(change))
+        diff_sign = '+' if change > 0 else '-' if change < 0 else '±'
+        diff_str = f"({diff_sign}{diff_val_str})"
+        
+        # メインと同じフォントサイズ(14px)で表示
+        draw_smart_text(draw_b, draw_r, (x+MP['txt_x'] + val_w + 4, y+MP['val_y']), diff_str, val_font, text_color)
         
         time.sleep(0.1)
 
