@@ -7,81 +7,80 @@ const dbPath = process.env.DB_PATH || path.join(__dirname, '../yata.db');
 console.log(`Using Database: ${dbPath}`);
 const db = new Database(dbPath);
 
-// URL正規化関数 (YATA.jsと同等)
-function normalizeUrl(url) {
-  if (!url) return "";
-  let s = String(url).trim();
-  try { s = decodeURIComponent(s); } catch (e) {}
-  s = s.toLowerCase();
-  s = s.split('?')[0].split('#')[0];
-  s = s.replace(/\/$/, "");
-  s = s.replace(/^https?:\/\/(www\.)?/, "//");
-  return s;
-}
-
-function cleanDuplicates() {
+function cleanDuplicatesFast() {
   try {
-    // 1. 全データ取得
-    const rows = db.prepare('SELECT id, url, date, title, vector FROM collect').all();
-    console.log(`Total rows checked: ${rows.length}`);
+    console.log("Starting FAST cleanup via SQL...");
 
-    const uniqueMap = new Map(); // Key: normalizedUrl, Value: row
-    const idsToDelete = [];
-
-    rows.forEach(row => {
-      const normUrl = normalizeUrl(row.url || row.id);
-      
-      if (!uniqueMap.has(normUrl)) {
-        // 新出URLなら登録
-        uniqueMap.set(normUrl, row);
-      } else {
-        // 重複発見！ どちらを残すか判定
-        const existing = uniqueMap.get(normUrl);
-        
-        // 判定基準A: ベクトルがある方を優先
-        const existingHasVector = existing.vector && existing.vector.length > 10;
-        const currentHasVector = row.vector && row.vector.length > 10;
-
-        if (!existingHasVector && currentHasVector) {
-           // 新しい方がベクトルを持っているので、既存を捨てて乗り換え
-           idsToDelete.push(existing.id);
-           uniqueMap.set(normUrl, row);
-        } else if (existingHasVector && !currentHasVector) {
-           // 既存が優秀なので、新しい方を捨てる
-           idsToDelete.push(row.id);
-        } else {
-           // 判定基準B: 両方あるorないなら、日付が新しい方を残す（あるいはIDが新しい方）
-           // ここでは単純に「後から来た方を重複」として削除
-           idsToDelete.push(row.id);
-        }
-      }
-    });
-
-    if (idsToDelete.length === 0) {
-      console.log("✅ No duplicates found.");
-      return;
-    }
-
-    console.log(`⚠️ Found ${idsToDelete.length} duplicate items. Deleting...`);
-
-    // 削除実行
-    const deleteStmt = db.prepare('DELETE FROM collect WHERE id = ?');
-    const deleteMany = db.transaction((ids) => {
-      for (const id of ids) deleteStmt.run(id);
-    });
-
-    deleteMany(idsToDelete);
-    console.log(`🗑️ Deleted ${idsToDelete.length} rows successfully.`);
+    // 1. URL重複の削除 (正規化URLベース)
+    // URLの http/https, www有無, 末尾スラッシュ を無視してグルーピング
+    // 日付が新しい方を残す (MAX(rowid))
+    // ※SQLiteで正規表現置換は標準でできないため、簡易的な正規化(RTRIM, LOWER)で対応
+    //   より厳密な正規化はNode側でやる必要があるが、速度優先で今回は「完全一致」に近いレベルの重複を消す
     
-    // 結果確認
-    const finalCount = db.prepare('SELECT count(*) as c FROM collect').get().c;
-    console.log(`Final row count: ${finalCount}`);
+    // 【SQL戦略】
+    // タイトルの「空白除去」「小文字化」を行った結果が同じなら重複とみなす
+    // 優先順位: 1.要約(summary)があるもの 2.日付(date)が新しいもの
+    
+    const sql = `
+      DELETE FROM collect 
+      WHERE rowid NOT IN (
+        SELECT rowid FROM (
+          SELECT 
+            rowid,
+            ROW_NUMBER() OVER (
+              PARTITION BY 
+                -- タイトルの正規化: 小文字化して、前後の空白を除去
+                LOWER(TRIM(title)) 
+              ORDER BY 
+                -- 優先順位1: 要約が長い（中身がある）方を優先
+                (CASE WHEN length(summary) > 10 THEN 1 ELSE 0 END) DESC,
+                -- 優先順位2: 日付が新しい方を優先
+                date DESC,
+                rowid DESC
+            ) as rn
+          FROM collect
+          WHERE title IS NOT NULL AND title != ''
+        ) 
+        WHERE rn = 1
+      );
+    `;
+
+    console.log("Executing SQL for Title Duplicates...");
+    const result = db.prepare(sql).run();
+    console.log(`🗑️ Deleted ${result.changes} duplicate rows (Title based).`);
+
+    // URLベースの重複削除（run-ram.shには入っていないのでここでやる）
+    // URLも小文字化・TRIMして比較
+    const sqlUrl = `
+      DELETE FROM collect 
+      WHERE rowid NOT IN (
+        SELECT rowid FROM (
+          SELECT 
+            rowid,
+            ROW_NUMBER() OVER (
+              PARTITION BY LOWER(TRIM(url)) 
+              ORDER BY (CASE WHEN length(summary) > 10 THEN 1 ELSE 0 END) DESC, date DESC
+            ) as rn
+          FROM collect
+        ) 
+        WHERE rn = 1
+      );
+    `;
+    
+    console.log("Executing SQL for URL Duplicates...");
+    const resultUrl = db.prepare(sqlUrl).run();
+    console.log(`🗑️ Deleted ${resultUrl.changes} duplicate rows (URL based).`);
+
+    // 仕上げ: VACUUM
+    console.log("Vacuuming database...");
+    db.exec('VACUUM');
+    console.log("✅ Done.");
 
   } catch (e) {
-    console.error("Error during cleanup:", e);
+    console.error("Error:", e);
   } finally {
     db.close();
   }
 }
 
-cleanDuplicates();
+cleanDuplicatesFast();
