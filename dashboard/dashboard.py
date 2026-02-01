@@ -16,6 +16,8 @@ import numpy as np
 from scipy.interpolate import make_interp_spline
 import requests
 import holidays
+import argparse
+import matplotlib.dates as mdates
 
 # ==========================================
 #  YATA DASHBOARD - Master Config Edition
@@ -196,8 +198,10 @@ def send_discord(message):
         data = json.dumps({"content": message}).encode("utf-8")
         req = urllib.request.Request(DISCORD_WEBHOOK_URL, data=data, 
                                      headers={"Content-Type": "application/json", "User-Agent": "Python/3.9"})
-        urllib.request.urlopen(req)
-    except: pass
+        # タイムアウトを設定して無限待機を防止 (デフォルト10秒)
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"Discord Send Error: {e}")
 
 def get_font(weight, size):
     """
@@ -449,37 +453,7 @@ def create_dashboard_layers():
 
             draw_b.text((bx + HP['temp_x'], py + HP['temp_y']), f"{r[3]:.0f}°", font=get_font("medium", 11), fill=1)
 
-    
-
-            HP = LO['weather']['hourly']
-
-            target_hourly = hourly_rows[2::3][:3]
-
-            for i, r in enumerate(target_hourly): # 3, 6, 9時間後
-
-                bx = weather_base_x + HP['start_x'] + (i * HP['step'])
-
-                dt_h = datetime.strptime(r[0], "%Y/%m/%d %H:%M")
-
-                draw_b.text((bx + HP['time_x'], py + HP['time_y']), dt_h.strftime("%H:%M"), font=get_font("medium", 10), fill=1)
-
-                
-
-                icon_char = get_weather_icon(r[1], r[2], sr_time, ss_time, dt_h)
-
-                is_rain_h = "Rain" in r[1] or "Snow" in r[1] or "Rain" in r[2] or "Snow" in r[2]
-
-                icon_x, icon_y = bx + HP['icon_x'], py + HP['icon_y']
-
-                font_h = get_font("weather", 22)
-
-    
-
-                draw_weather_icon_smart(draw_b, draw_r, (icon_x, icon_y), icon_char, font_h, is_rain_h)
-
-    
-
-                draw_b.text((bx + HP['temp_x'], py + HP['temp_y']), f"{r[3]:.0f}°", font=get_font("medium", 11), fill=1)
+        # ▼▼▼ 修正箇所：ここに存在した重複コード（3時間予報の再描画）を削除しました ▼▼▼
 
         DP = LO['weather']['daily']
         draw_b.rectangle((weather_base_x + DP['box_x'], py + DP['box_y'], weather_base_x + DP['box_x'] + DP['box_w'], py + DP['box_y'] + DP['box_h']), outline=1, width=2)
@@ -692,8 +666,8 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
                 
                 # もし基準が見つからない場合(ずっと変動している、またはデータ不足)
                 if not found_baseline:
-                     start_plot_idx = 0
-                     prev_close_val = target_vals[0]
+                      start_plot_idx = 0
+                      prev_close_val = target_vals[0]
 
                 # --- C. チャート用データの確定 ---
                 # 基準値より後のデータのみをプロットする
@@ -793,20 +767,552 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         
         time.sleep(0.1)
 
+def create_weather_detail_layers():
+    """天気詳細モード: 3時間予報グラフ(気温+降水確率) + 週間予報"""
+    img_b = Image.new('1', (WIDTH, HEIGHT), 1)
+    img_r = Image.new('1', (WIDTH, HEIGHT), 1)
+    draw_b = ImageDraw.Draw(img_b); draw_r = ImageDraw.Draw(img_r)
+    
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 現在の天気 (alert_eventsを追加)
+        cur = conn.cursor()
+        cur.execute("SELECT main_weather, description, temp, humidity, pressure, alert_events FROM weather_log ORDER BY datetime DESC LIMIT 1")
+        cur_w = cur.fetchone()
+        
+        # 3時間予報 (直近24時間分)
+        # データが1時間毎の場合と3時間毎の場合があるため、多めに取得してPython側で調整する
+        now_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+        cur.execute("SELECT datetime, temp, weather_main, weather_desc, pop FROM weather_hourly WHERE datetime > ? ORDER BY datetime ASC LIMIT 48", (now_str,))
+        raw_hourly = cur.fetchall()
+        
+        # 3時間ごとのデータに間引く
+        hourly_data = []
+        if raw_hourly:
+            # 最初のデータは採用
+            hourly_data.append(raw_hourly[0])
+            last_dt = datetime.strptime(raw_hourly[0][0], "%Y/%m/%d %H:%M")
+            
+            for row in raw_hourly[1:]:
+                curr_dt = datetime.strptime(row[0], "%Y/%m/%d %H:%M")
+                # 3時間以上経過していれば採用
+                if (curr_dt - last_dt).total_seconds() >= 3 * 3600:
+                    hourly_data.append(row)
+                    last_dt = curr_dt
+                    
+            # 9個(24時間分)に絞る
+            hourly_data = hourly_data[:9]
+
+        # 週間予報 (明日から7日分)
+        today_str = datetime.now().strftime("%Y/%m/%d")
+        cur.execute("SELECT date, weather_main, weather_desc, temp_max, temp_min, pop FROM weather_forecast WHERE date > ? ORDER BY date ASC LIMIT 7", (today_str,))
+        daily_data = cur.fetchall()
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return img_b, img_r
+    finally:
+        conn.close()
+
+    # --- 1. Header (0 - 110px) ---
+    draw_b.rectangle((0, 0, WIDTH, 110), fill=0) # 黒帯
+    
+    if cur_w:
+        # 左: 特大アイコン (視覚的中央へさらに上へ)
+        icon_f = get_font("weather", 90)
+        icon_char = get_weather_icon(cur_w[0], cur_w[1])
+        draw_b.text((20, -10), icon_char, font=icon_f, fill=1)
+        
+        # 中央: 気温 (超特大)
+        temp_str = f"{cur_w[2]:.1f}°C"
+        # フォントのアセンダを考慮して少しマイナスへ
+        draw_b.text((140, -15), temp_str, font=get_font("bold", 75), fill=1)
+        
+        # 補足情報 (湿度・気圧) - 気温の下
+        sub_str = f"Humi: {cur_w[3]}%   Pres: {cur_w[4]}hPa"
+        draw_b.text((150, 80), sub_str, font=get_font("medium", 18), fill=1)
+        
+        # 右: 日付・時刻 (少し小さくして上に詰める)
+        now = datetime.now()
+        date_str = now.strftime("%Y/%m/%d")
+        day_str = JP_WEEKDAYS[now.weekday()]
+        time_str = now.strftime("%H:%M")
+        
+        # 右端配置
+        date_x = WIDTH - 200
+        draw_b.text((date_x, 5), f"{date_str} ({day_str})", font=get_font("bold", 20), fill=1)
+        draw_b.text((date_x, 28), time_str, font=get_font("bold", 46), fill=1)
+        
+        # 警報・注意報表示 (ヘッダー上部、メイン画面同様の2列グリッド配置)
+        alert_text = cur_w[5] if cur_w[5] else ""
+        alerts = [a.strip() for a in alert_text.split(',') if a.strip()] if alert_text else []
+        
+        # 優先度ソート関数
+        def get_priority(t):
+            if "特別警報" in t: return 0
+            if "警報" in t: return 1
+            return 2
+            
+        alerts.sort(key=get_priority)
+        
+        if alerts:
+            # 視認性を重視して上詰め配置
+            # 気温の右側、日付の左側のスペースを活用
+            base_x = 380 
+            base_y = 10  # 上詰め
+            col_w = 105 # 列幅
+            pitch = 22  # 行送り(メイン画面22pxに合わせる)
+            bar_w, bar_m = 4, 4
+            a_font = get_font("medium", 14)
+            
+            MAX_ITEMS = 8 # 2x4まで表示可能
+            
+            for i, alert in enumerate(alerts):
+                if i >= MAX_ITEMS:
+                    # 最後のスペースに「他」
+                    c = 1; r = 3
+                    dx = base_x + (c * col_w)
+                    dy = base_y + (r * pitch)
+                    draw_b.text((dx, dy), "..他", font=a_font, fill=1)
+                    break
+                
+                # 文字列短縮
+                disp = alert.replace("特別警報", "特").replace("警報", "").replace("注意報", "")
+                is_warning = "警報" in alert
+                
+                col = i % 2
+                row = i // 2
+                
+                x_pos = base_x + (col * col_w)
+                y_pos = base_y + (row * pitch)
+                
+                # スタイル描画 (メイン画面準拠)
+                if is_warning:
+                    # 赤バー (赤0/黒1 = 赤)
+                    draw_r.rectangle((x_pos, y_pos+2, x_pos + bar_w, y_pos + 16), fill=0)
+                    draw_b.rectangle((x_pos, y_pos+2, x_pos + bar_w, y_pos + 16), fill=1)
+                    # 文字 (白)
+                    draw_b.text((x_pos + bar_w + bar_m, y_pos), disp, font=a_font, fill=1)
+                else:
+                    # 注意報 (白文字のみ)
+                    draw_b.text((x_pos, y_pos), disp, font=a_font, fill=1)
+
+    # --- 2. Hourly Chart (120px - 280px) ---
+    # 今後24時間分 (3h x 8 = 24h + 始点 = 9個)
+    target_hourly = hourly_data[:9] 
+    
+    if target_hourly:
+        times = [datetime.strptime(r[0], "%Y/%m/%d %H:%M") for r in target_hourly]
+        temps = [r[1] for r in target_hourly]
+        pops = [r[4] if r[4] is not None else 0 for r in target_hourly]
+        icons = [r[2] for r in target_hourly] # weather_main
+        descs = [r[3] for r in target_hourly] # weather_desc
+        
+        plt.rcParams.update({'font.size': 14})
+        # 高さを少し減らしてアイコン用のスペースを空ける (160 -> 130px 程度)
+        fig, ax1 = plt.subplots(figsize=(16, 2.6), dpi=50) 
+        fig.patch.set_facecolor('white')
+        
+        # 枠線削除
+        for spine in ['top', 'right', 'left']:
+            ax1.spines[spine].set_visible(False)
+        ax1.spines['bottom'].set_color('black')
+            
+        # 降水確率 (棒) -> 右軸
+        ax2 = ax1.twinx()
+        for spine in ['top', 'right', 'left', 'bottom']:
+            ax2.spines[spine].set_visible(False)
+        ax2.bar(times, pops, color='red', width=0.06, alpha=1.0, align='center') # 幅を少し狭める
+        ax2.set_ylim(0, 100)
+        ax2.set_yticks([])
+        
+        # 気温 (折れ線) -> 左軸
+        ax1.plot(times, temps, color='black', marker='o', markersize=6, linewidth=4)
+        
+        # 数値表示
+        for x, y in zip(times, temps):
+            ax1.text(x, y + 0.5, f"{y:.0f}", ha='center', va='bottom', fontsize=20, fontweight='bold', color='black')
+
+        # --- 3. 完全同期レイアウト描画 ---
+        
+        # グラフ描画エリア定義
+        margin_left = 40
+        chart_w_px = WIDTH - (margin_left * 2) # 720px
+        chart_h_px = 110 # 高さ短縮 (140->110) で週間予報との被りを防ぐ
+        
+        # Matplotlib内部のマージン率 (左右に少し余白を持たせて見切れを防ぐ)
+        mp_margin_rate = 0.06 
+        
+        # PIL側のX座標計算
+        # 描画幅の実質領域 = 全幅 * (1 - 左右マージン率*2)
+        inner_w = chart_w_px * (1.0 - (mp_margin_rate * 2))
+        num_points = len(times)
+        step_px = inner_w / (num_points - 1)
+        
+        # 左端オフセット = 全体左マージン + グラフ内左マージン
+        start_x = margin_left + (chart_w_px * mp_margin_rate)
+        
+        x_coords = [start_x + (i * step_px) for i in range(num_points)]
+        
+        # Y座標定義 (時間 -> アイコン -> グラフ の順に変更)
+        time_y = 118
+        icon_y = 145
+        chart_start_y = 205 # さらに下げて隙間を作る
+        
+        # 1. アイコンと時間を描画
+        for i, (main, desc) in enumerate(zip(icons, descs)):
+            cx = x_coords[i] 
+            dt = times[i]
+            chk_icon = get_weather_icon(main, desc, check_time=dt)
+            is_rain = "Rain" in main or "Snow" in main
+            
+            # 時間 (一番上)
+            time_str = dt.strftime("%H")
+            f_time = get_font("bold", 22)
+            time_w = draw_b.textlength(time_str, font=f_time)
+            draw_b.text((cx - time_w/2, time_y), time_str, font=f_time, fill=0)
+            
+            # アイコン (その下)
+            f_icon = get_font("weather", 38)
+            icon_w = draw_b.textlength(chk_icon, font=f_icon)
+            
+            if is_rain:
+                draw_r.text((cx - icon_w/2, icon_y), chk_icon, font=f_icon, fill=0)
+            else:
+                draw_b.text((cx - icon_w/2, icon_y), chk_icon, font=f_icon, fill=0)
+
+        # 2. Matplotlibでグラフ生成
+        plt.rcParams.update({'font.size': 14})
+        fig = plt.figure(figsize=(chart_w_px/50, chart_h_px/50), dpi=50)
+        fig.patch.set_facecolor('white')
+        
+        # マージンを設定して見切れを防ぐ
+        # left/rightで内側に余白を作る -> データ点はその内側に描画される
+        # これによりPILの座標(inner_w)と一致する
+        plt.subplots_adjust(left=mp_margin_rate, right=1.0-mp_margin_rate, bottom=0, top=1)
+        
+        ax1 = fig.add_subplot(111)
+        ax1.set_axis_off()
+        
+        ax2 = ax1.twinx()
+        ax2.set_axis_off()
+        ax2.set_ylim(0, 100)
+        ax2.bar(times, pops, color='red', width=0.04, alpha=1.0, align='center')
+
+        ax1.set_xlim(times[0], times[-1])
+        
+        t_min, t_max = min(temps), max(temps)
+        margin_t = (t_max - t_min) * 0.5 if t_max != t_min else 5
+        ax1.set_ylim(t_min - margin_t, t_max + margin_t)
+        
+        ax1.plot(times, temps, color='black', marker='o', markersize=9, linewidth=4)
+        
+        for x, y in zip(times, temps):
+            ax1.text(x, y + (margin_t * 0.15), f"{y:.0f}", ha='center', va='bottom', fontsize=20, fontweight='bold', color='black')
+
+        # 画像保存と貼り付け
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', facecolor='white')
+        plt.close() # 保存後に閉じる
+        buf.seek(0)
+        
+        # 画像貼り付け (PILの計算したLeftマージン位置に貼る)
+        src_img = Image.open(buf).convert("RGB")
+        
+        # 色分離
+        arr = np.array(src_img)
+        white_mask = (arr[:,:,0] > 220) & (arr[:,:,1] > 220) & (arr[:,:,2] > 220)
+        red_mask = (arr[:,:,0] > 150) & (arr[:,:,1] < 100) & (arr[:,:,2] < 100)
+        black_mask = (~white_mask) & (~red_mask)
+        
+        img_r_arr = red_mask.astype(np.uint8) * 255
+        chart_red = Image.fromarray(img_r_arr, mode='L').convert('1')
+        img_b_arr = black_mask.astype(np.uint8) * 255
+        chart_black = Image.fromarray(img_b_arr, mode='L').convert('1')
+        
+        draw_b.bitmap((margin_left, chart_start_y), chart_black, fill=0)
+        draw_r.bitmap((margin_left, chart_start_y), chart_red, fill=0)
+
+    # --- 3. Weekly Forecast (290px - 480px) ---
+    if daily_data:
+        # 開始位置を下げる (300 -> 330)
+        y_start = 330
+        box_w = WIDTH // len(daily_data)
+        
+        # 区切り線
+        draw_b.line((20, y_start-10, WIDTH-20, y_start-10), fill=0, width=3)
+        
+        for i, day in enumerate(daily_data):
+            x = i * box_w
+            cx = x + (box_w // 2) 
+            
+            # 日付
+            dt = datetime.strptime(day[0], "%Y/%m/%d")
+            d_str = f"{dt.day}"
+            wd_str = f"({JP_WEEKDAYS[dt.weekday()]})"
+            
+            d_font = get_font("bold", 24)
+            w_font = get_font("medium", 18)
+            
+            w_d = draw_b.textlength(d_str, font=d_font)
+            w_w = draw_b.textlength(wd_str, font=w_font)
+            
+            gap = 5
+            total_w = w_d + gap + w_w
+            start_x = cx - (total_w / 2)
+            
+            draw_smart_text(draw_b, draw_r, (start_x, y_start), d_str, d_font, COLOR_BLACK)
+            
+            wd_color = COLOR_RED if dt.weekday() == 6 else COLOR_BLACK
+            draw_smart_text(draw_b, draw_r, (start_x + w_d + gap, y_start + 6), wd_str, w_font, wd_color)
+            
+            # アイコン (少し上に詰める: +40 -> +35)
+            icon_char = get_weather_icon(day[1], day[2], check_time=dt.replace(hour=12))
+            is_rain = "Rain" in day[1] or "Snow" in day[1]
+            icon_f = get_font("weather", 50)
+            
+            ix = cx - 25
+            iy = y_start + 35
+            
+            if is_rain:
+                draw_r.text((ix, iy), icon_char, font=icon_f, fill=0)
+            else:
+                draw_b.text((ix, iy), icon_char, font=icon_f, fill=0)
+                
+            # 気温 (上に詰める: +110 -> +95)
+            max_s = f"{day[3]:.0f}"
+            sep_s = " / "
+            min_s = f"{day[4]:.0f}"
+            
+            temp_font = get_font("bold", 24)
+            
+            w_max = draw_b.textlength(max_s, font=temp_font)
+            w_sep = draw_b.textlength(sep_s, font=temp_font)
+            w_min = draw_b.textlength(min_s, font=temp_font)
+            
+            total_w = w_max + w_sep + w_min
+            start_x = cx - (total_w / 2)
+            
+            temp_y = y_start + 95
+            
+            draw_smart_text(draw_b, draw_r, (start_x, temp_y), max_s, temp_font, COLOR_RED)
+            draw_smart_text(draw_b, draw_r, (start_x + w_max, temp_y), sep_s, temp_font, COLOR_BLACK)
+            draw_smart_text(draw_b, draw_r, (start_x + w_max + w_sep, temp_y), min_s, temp_font, COLOR_BLACK)
+            
+            # 降水確率 (上に詰める: +150 -> +130)
+            if day[5] is not None and int(day[5]) >= 30:
+                pop_s = f"{day[5]}%"
+                w = draw_b.textlength(pop_s, font=get_font("bold", 18))
+                draw_smart_text(draw_b, draw_r, (cx - (w/2), y_start + 130), pop_s, get_font("bold", 18), COLOR_BLACK)
+
+    return img_b, img_r
+
+def create_env_chart_layers():
+    """環境センサーモード: 室温・外気・湿度の24時間推移グラフ"""
+    img_b = Image.new('1', (WIDTH, HEIGHT), 1)
+    img_r = Image.new('1', (WIDTH, HEIGHT), 1)
+    draw_b = ImageDraw.Draw(img_b); draw_r = ImageDraw.Draw(img_r)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 過去24時間のデータを取得
+        yesterday = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Remo (室温・湿度) - 10分毎くらいに間引くか、そのまま描画してmatplotlibに任せる
+        df_remo = pd.read_sql(f"SELECT datetime, living_temp, living_humi FROM remo_log WHERE datetime > '{yesterday}' ORDER BY datetime ASC", conn)
+        
+        # Weather (外気・気圧)
+        df_weather = pd.read_sql(f"SELECT datetime, temp FROM weather_log WHERE datetime > '{yesterday}' ORDER BY datetime ASC", conn)
+        
+        # 最新値
+        cur = conn.cursor()
+        cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
+        cur_remo = cur.fetchone()
+        cur.execute("SELECT temp, pressure FROM weather_log ORDER BY datetime DESC LIMIT 1")
+        cur_weather = cur.fetchone()
+        
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return img_b, img_r
+    finally:
+        conn.close()
+
+    # --- Header ---
+    draw_b.rectangle((0, 0, WIDTH, 65), fill=0) # ヘッダー領域
+    
+    # タイトル
+    draw_b.text((15, 12), "ENV MONITOR", font=get_font("bold", 28), fill=1)
+    
+    # 最新値 4種 (In, Humi, Out, Pres)
+    if cur_remo and cur_weather:
+        # レイアウト: タイトルの右側に4つ並べる
+        start_x = 280
+        step_x = 130
+        lbl_y = 5
+        val_y = 28
+        
+        lbl_f = get_font("medium", 14)
+        val_f = get_font("bold", 26)
+        
+        # 1. Room (In)
+        draw_b.text((start_x, lbl_y), "ROOM", font=lbl_f, fill=1)
+        draw_b.text((start_x, val_y), f"{cur_remo[0]:.1f}°C", font=val_f, fill=1)
+        
+        # 2. Humi
+        draw_b.text((start_x + step_x, lbl_y), "HUMIDITY", font=lbl_f, fill=1)
+        draw_b.text((start_x + step_x, val_y), f"{cur_remo[1]:.0f}%", font=val_f, fill=1)
+        
+        # 3. Out
+        # 外気温はグラフの色(赤)に合わせて赤文字(白抜き+赤)にしたいが、黒背景上なので
+        # ここは白文字で統一し、ラベルで識別させる
+        draw_b.text((start_x + step_x*2, lbl_y), "OUTSIDE", font=lbl_f, fill=1)
+        draw_b.text((start_x + step_x*2, val_y), f"{cur_weather[0]:.1f}°C", font=val_f, fill=1)
+        
+        # 4. Pressure
+        draw_b.text((start_x + step_x*3 + 10, lbl_y), "PRESSURE", font=lbl_f, fill=1)
+        draw_b.text((start_x + step_x*3 + 10, val_y), f"{cur_weather[1]:.0f}hPa", font=get_font("bold", 22), fill=1) # 単位長いので少し小さく
+
+    # --- Chart ---
+    if not df_remo.empty and not df_weather.empty:
+        df_remo['datetime'] = pd.to_datetime(df_remo['datetime'])
+        df_weather['datetime'] = pd.to_datetime(df_weather['datetime'])
+        
+        plt.rcParams.update({'font.size': 18})
+
+        # RGBで作成 (後で色分離する)
+        fig, ax1 = plt.subplots(figsize=(16, 8), dpi=50) 
+        fig.patch.set_facecolor('white')
+        
+        # 不要な枠線を消す (モダン化)
+        for spine in ['top', 'right']:
+            ax1.spines[spine].set_visible(False)
+            
+        # --- 左軸: 気温 (Temperature) ---
+        # 室温: 黒・極太実線
+        line1, = ax1.plot(df_remo['datetime'], df_remo['living_temp'], 
+                          color='black', linewidth=8, linestyle='-', label='Room')
+        
+        # 外気: 赤・太実線 (アクセント)
+        # Matplotlibの 'red' は (1.0, 0.0, 0.0)
+        line2, = ax1.plot(df_weather['datetime'], df_weather['temp'], 
+                          color='red', linewidth=5, linestyle='-', label='Out')
+        
+        ax1.set_ylabel('Temp (°C)', fontsize=22, weight='bold', color='black')
+        ax1.tick_params(axis='y', colors='black', labelsize=18, width=2, length=6)
+        ax1.tick_params(axis='x', colors='black', labelsize=18, width=2, length=6)
+        
+        # --- 右軸: 湿度 (Humidity) ---
+        ax2 = ax1.twinx()
+        for spine in ['top', 'left']: # 右軸用なので左枠は不要(ax1にある)、上も不要
+            ax2.spines[spine].set_visible(False)
+        ax2.spines['right'].set_visible(True) # 右枠はあってもいいが、数値だけで十分なら消すのもあり。今回は残す
+
+        # 湿度: グレー(黒レイヤーでディザリングされるか、濃いグレーなら黒になる)・点線
+        # ここでは「黒の点線」として明示的に描く
+        line3, = ax2.plot(df_remo['datetime'], df_remo['living_humi'], 
+                          color='#444444', linewidth=3, linestyle=':', label='Humi')
+        
+        ax2.set_ylabel('Humidity (%)', fontsize=22, weight='bold', color='#444444')
+        ax2.set_ylim(0, 100)
+        ax2.tick_params(axis='y', colors='#444444', labelsize=18, width=2, length=6)
+        
+        # グリッド削除
+        ax1.grid(False)
+        ax2.grid(False)
+
+        # 凡例 (枠なし、上部配置)
+        lines = [line1, line2, line3]
+        labels = [l.get_label() for l in lines]
+        legend = ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, 1.15),
+                   ncol=3, fontsize=20, frameon=False)
+        
+        # 凡例のテキスト色を合わせる
+        plt.setp(legend.get_texts()[1], color='red') # Out を赤に
+        plt.setp(legend.get_texts()[2], color='#444444') # Humi をグレーに
+
+        # 時間軸 (時のみ表示)
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H'))
+        ax1.xaxis.set_major_locator(mdates.HourLocator(interval=2)) # 2時間ごと
+        
+        # 範囲をきっちり現在から24時間前に固定
+        end_time = datetime.now()
+        start_time = end_time - timedelta(hours=24)
+        ax1.set_xlim(start_time, end_time)
+        
+        # 回転なし(水平)に戻す
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=0, ha='center')
+        
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', facecolor='white')
+        plt.close()
+        buf.seek(0)
+        
+        # 画像処理: 色分解 (赤 vs 黒)
+        src_img = Image.open(buf).convert("RGB")
+        if src_img.width > WIDTH:
+             src_img = src_img.crop((0, 0, WIDTH, src_img.height))
+
+        # ピクセルデータを走査して分離 (Numpyを使うと高速だが、PILのみで実装)
+        import numpy as np
+        arr = np.array(src_img)
+        
+        # マスク作成
+        # 1. 白背景 (R,G,B > 220)
+        white_mask = (arr[:,:,0] > 220) & (arr[:,:,1] > 220) & (arr[:,:,2] > 220)
+        
+        # 2. 赤 (R > 150, G < 100, B < 100)
+        red_mask = (arr[:,:,0] > 150) & (arr[:,:,1] < 100) & (arr[:,:,2] < 100)
+        
+        # 3. 黒 (それ以外)
+        # 「白ではない」かつ「赤ではない」もの
+        black_mask = (~white_mask) & (~red_mask)
+        
+        # 画像生成: マスクがTrueの部分を255(白)にする
+        # draw.bitmapは「1(白)の部分」を指定色(fill=0)で塗るため。
+        
+        # 赤レイヤー: 赤マスク部分(True)を255にする
+        img_r_arr = red_mask.astype(np.uint8) * 255
+        chart_red = Image.fromarray(img_r_arr, mode='L').convert('1')
+        
+        # 黒レイヤー: 黒マスク部分(True)を255にする
+        img_b_arr = black_mask.astype(np.uint8) * 255
+        chart_black = Image.fromarray(img_b_arr, mode='L').convert('1')
+        
+        # 貼り付け
+        draw_b.bitmap((0, 70), chart_black, fill=0)
+        draw_r.bitmap((0, 70), chart_red, fill=0)
+
+    return img_b, img_r
+
+
 # --- 実行 ---
 if __name__ == "__main__":
     def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    
+    parser = argparse.ArgumentParser(description="YATA Dashboard")
+    parser.add_argument("--mode", type=str, default="default", help="Display mode: default, weather, env")
+    parser.add_argument("--no-epd", action="store_true", help="Skip e-Paper drawing")
+    args = parser.parse_args()
+
     try:
-        log("🚀 処理開始")
-        img_black, img_red = create_dashboard_layers()
+        log(f"🚀 処理開始 Mode: {args.mode}")
         
+        if args.mode == "weather":
+            img_black, img_red = create_weather_detail_layers()
+        elif args.mode == "env":
+            img_black, img_red = create_env_chart_layers()
+        else:
+            img_black, img_red = create_dashboard_layers()
+        
+        # Debug保存
         debug = Image.new("RGB", (WIDTH, HEIGHT), (255, 255, 255))
         debug.paste((0,0,0), mask=ImageOps.invert(img_black.convert("L")))
         debug.paste((255,0,0), mask=ImageOps.invert(img_red.convert("L")))
-        debug.save("/dev/shm/dashboard.png")
-        log("📸 保存完了")
+        debug_path = "/dev/shm/dashboard.png"
+        debug.save(debug_path)
+        log(f"📸 保存完了 ({args.mode}) -> {debug_path}")
 
-        if DRAW_TO_EPD:
+        if DRAW_TO_EPD and not args.no_epd:
             sys.path.append(os.path.expanduser("~/e-Paper/RaspberryPi_JetsonNano/python/lib"))
             from waveshare_epd import epd7in5b_V2
             epd = epd7in5b_V2.EPD()
@@ -814,6 +1320,7 @@ if __name__ == "__main__":
             epd.display(epd.getbuffer(img_black), epd.getbuffer(img_red))
             epd.sleep()
             log("🎉 EPD描画完了")
+            
     except Exception as e:
         log(f"⚠ Error: {e}")
         traceback.print_exc()
