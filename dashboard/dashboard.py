@@ -72,6 +72,7 @@ FS = {
     "temp_md": 14, "weather_txt": 12, "card_title": 16,
     "sys_text": 14, "stock_name": 14, "stock_val": 14,
     "news_src": 12, "news_body": 14, "trend_text": 14,
+    "aqi_text": 16, # 追加
 }
 
 # =========================================================
@@ -118,7 +119,7 @@ LO = {
     "weather": {
         # メイン天気 (左上)
         "main_icon": {"x": 2, "y": 2}, 
-        "main_temp": {"x": 55, "y": 65},
+        "main_temp": {"x": 57, "y": 65},
         
         # 3時間毎予報 (中央〜右)
         "hourly": {
@@ -135,6 +136,9 @@ LO = {
             "day_y": 62, "icon_y": 55, "temp_y": 77  # 各要素の内部Yオフセット
         },
         
+        # AQI (空気質) - sizeはFSへ移動
+        "aqi": {"x": -8, "y": 65}, 
+
         # 警報・注意報リスト
         "warn":   {
             "x_off": 10, "pitch": 17, # 開始Xオフセット, 行送り(高さ)
@@ -331,9 +335,12 @@ def create_dashboard_layers():
 
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
     try:
-        cur.execute("SELECT main_weather, description, temp, pressure, humidity, alert_events, sunrise_time, sunset_time FROM weather_log ORDER BY datetime DESC LIMIT 1")
+        cur.execute("SELECT main_weather, description, temp, pressure, humidity, alert_events, sunrise_time, sunset_time, aqi FROM weather_log ORDER BY datetime DESC LIMIT 1")
         weather_row = cur.fetchone()
+        # aqiは 9番目 (index 8)
         sr_time, ss_time = (weather_row[6], weather_row[7]) if weather_row and len(weather_row) >= 8 else (None, None)
+        aqi_val = weather_row[8] if weather_row and len(weather_row) >= 9 else None
+
         cur.execute("SELECT temp_max, temp_min FROM weather_forecast WHERE date = ?", (now.strftime("%Y/%m/%d"),))
         today_forecast = cur.fetchone()
         cur.execute("SELECT datetime, weather_main, weather_desc, temp FROM weather_hourly WHERE datetime > ? ORDER BY datetime ASC LIMIT 10", (now.strftime("%Y/%m/%d %H:%M"),))
@@ -346,7 +353,10 @@ def create_dashboard_layers():
         news_rows = cur.fetchall()
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
         trend_row = cur.fetchone()
-    except: hourly_rows, daily_rows, news_rows, trend_row, weather_row, today_forecast, remo_row = [], [], [], None, None, None, None
+    except Exception as e:
+        print(f"DEBUG: DB Error in create_dashboard_layers: {e}")
+        traceback.print_exc()
+        hourly_rows, daily_rows, news_rows, trend_row, weather_row, today_forecast, remo_row = [], [], [], None, None, None, None
     finally: conn.close()
 
     draw_b.rectangle((0, 0, WIDTH, LO['header_h']), fill=0)
@@ -430,6 +440,24 @@ def create_dashboard_layers():
         
         main_pos = (weather_base_x + LO['weather']['main_icon']['x'], py + LO['weather']['main_icon']['y'])
         draw_weather_icon_smart(draw_b, draw_r, main_pos, cur_icon, icon_f, is_rain)
+
+        # --- AQI表示 (追加) ---
+        if aqi_val is not None:
+            aqi_map = {1: "良", 2: "並", 3: "注", 4: "悪", 5: "死"}
+            aqi_text = f"空気:{aqi_map.get(aqi_val, '--')}"
+            
+            # LOから座標を取得, サイズはFSから取得
+            aqi_conf = LO['weather']['aqi']
+            aqi_font = get_font("medium", FS['aqi_text'])
+            aqi_pos = (weather_base_x + aqi_conf['x'], py + aqi_conf['y']) 
+            
+            if aqi_val >= 4:
+                # 警告時: 赤文字 (draw_rに描く)
+                # ※黒背景上の赤文字は見にくいかもしれないため、白抜き文字にする手もあるが一旦赤で。
+                draw_r.text(aqi_pos, aqi_text, font=aqi_font, fill=0)
+            else:
+                # 通常時: 白文字 (黒背景上なのでfill=1)
+                draw_b.text(aqi_pos, aqi_text, font=aqi_font, fill=1)
 
         if today_forecast:
             temp_pos = (weather_base_x + LO['weather']['main_temp']['x'], py + LO['weather']['main_temp']['y'])

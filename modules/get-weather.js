@@ -6,8 +6,23 @@ async function fetchWeather() {
   // excludeからdailyを削除, hourlyも含めるためにminutelyのみ除外
   const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${process.env.LAT}&lon=${process.env.LON}&exclude=minutely&units=metric&lang=ja&appid=${process.env.OWM_API_KEY}`;
   
+  // ★追加: 大気汚染API (Air Pollution)
+  const aqiUrl = `http://api.openweathermap.org/data/2.5/air_pollution?lat=${process.env.LAT}&lon=${process.env.LON}&appid=${process.env.OWM_API_KEY}`;
+
   try {
     const res = JSON.parse(UrlFetchApp.fetch(url).getContentText());
+    
+    // ★追加: AQI取得
+    let aqiData = { main: { aqi: 0 }, components: { co: 0, no2: 0, o3: 0, pm2_5: 0, pm10: 0 } };
+    try {
+      const aqiRes = JSON.parse(UrlFetchApp.fetch(aqiUrl).getContentText());
+      if (aqiRes.list && aqiRes.list.length > 0) {
+        aqiData = aqiRes.list[0];
+      }
+    } catch (e) {
+      console.warn("AQI Fetch Warning:", e.message);
+    }
+
     const cur = res.current;
     
     const nowStr = new Date().toLocaleString('ja-JP', {
@@ -27,8 +42,9 @@ async function fetchWeather() {
     const alertNames = uniqueAlerts.join(', '); // 例: "強風注意報, 雷注意報"
     const alertCount = uniqueAlerts.length;    // 重複を除いた種類数
 
-    // weather_logテーブルへの保存（20カラム）
-    const stmt = db.prepare(`INSERT OR REPLACE INTO weather_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // weather_logテーブルへの保存（26カラム）
+    // aqi, co, no2, o3, pm2_5, pm10 を追加
+    const stmt = db.prepare(`INSERT OR REPLACE INTO weather_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     stmt.run(
       nowStr,
       cur.weather[0].main,
@@ -48,10 +64,17 @@ async function fetchWeather() {
       cur.snow ? cur.snow['1h'] : 0,
       formatUnixTime(cur.sunrise),
       formatUnixTime(cur.sunset),
-      alertCount, // 19番目: 重複なしの件数
-      alertNames  // 20番目: 重複なしの名前
+      alertCount, 
+      alertNames,
+      // ★AQI関連
+      aqiData.main.aqi,
+      aqiData.components.co,
+      aqiData.components.no2,
+      aqiData.components.o3,
+      aqiData.components.pm2_5,
+      aqiData.components.pm10
     );
-    console.log(`[Success] Current weather recorded: ${nowStr}`);
+    console.log(`[Success] Current weather recorded: ${nowStr} (AQI: ${aqiData.main.aqi})`);
 
     // --- Forecast処理 (Daily) ---
     if (res.daily) {
