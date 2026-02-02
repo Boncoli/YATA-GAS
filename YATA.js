@@ -113,12 +113,13 @@ const AppConfig = (function() {
         },
         Limits: {
           RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
+          MAX_ITEMS_PER_FEED: 10,            // 1つのRSSから取得する最大記事数
           RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
-          RSS_CHUNK_SIZE: 5,                // RSS並列収集のチャンクサイズ
+          RSS_CHUNK_SIZE: 5,                 // RSS並列収集のチャンクサイズ
           RSS_INTER_CHUNK_DELAY: 1000,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
           BATCH_SIZE: 30,                    // LLM一括処理時のバッチサイズ
-          BATCH_FETCH_DAYS: 30,               // レポート生成時の一括取得日数
+          BATCH_FETCH_DAYS: 30,              // レポート生成時の一括取得日数
           LINKS_PER_TREND: 3,                // トレンドレポートに表示するリンク数
           BACKFILL_DELAY: 500                // バックフィル時の待機時間 (ms)
         },
@@ -2293,7 +2294,10 @@ function collectRssFeeds() {
         const items = parseRssXml(response.getContentText(), meta.rssUrl);
         if (!items) return;
 
-        items.forEach(item => {
+        items.forEach((item, index) => {
+          const maxLimit = AppConfig.get().System.Limits.MAX_ITEMS_PER_FEED || 10;
+          if (index >= maxLimit) return;
+
           try {
             if (!item.link || !item.title) return;
             const normalizedLink = normalizeUrl(item.link);
@@ -4434,6 +4438,104 @@ function _test_calculateCosineSimilarity() {
   if (Math.abs(sim - 0.7071) > 0.001) throw new Error(`計算精度エラー: 期待値~0.707, 実際 ${sim}`);
 
   Logger.log("test_calculateCosineSimilarity: OK");
+}
+
+/**
+ * diagnoseRssLatency
+ * 【責務】RSSリストの全URLに対して順次アクセスし、応答時間を計測する。
+ * 最後に「遅い順」にソートしてログ出力し、ボトルネックを特定する。
+ */
+function diagnoseRssLatency() {
+  const sheet = getSheet(AppConfig.get().SheetNames.RSS_LIST);
+  if (!sheet) return;
+
+  // データ取得
+  const startRow = AppConfig.get().RssListSheet.DataRange.START_ROW;
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 2).getValues();
+
+  Logger.log(`--- 🐢 RSS応答速度診断 (全${data.length}件) ---`);
+  Logger.log("※ 1件ずつ通信するため、数分かかります。途中でタイムアウトしたら、ログに出ているところまでが計測結果です。");
+
+  const results = [];
+  
+  // Bot判定を避けるヘッダー
+  const options = {
+    'muteHttpExceptions': true,
+    'validateHttpsCertificates': false,
+    'headers': AppConfig.get().System.HttpHeaders
+  };
+
+  for (let i = 0; i < data.length; i++) {
+    const name = data[i][0];
+    const url = data[i][1];
+    if (!url) continue;
+
+    const startTime = new Date().getTime();
+    let status = "OK";
+    let size = 0;
+
+    try {
+      // 計測開始
+      const response = UrlFetchApp.fetch(url, options);
+      const endTime = new Date().getTime();
+      
+      const duration = endTime - startTime;
+      const code = response.getResponseCode();
+      size = response.getContentText().length;
+
+      // 結果を保存
+      results.push({
+        index: i + 2, // 行番号
+        name: name,
+        url: url,
+        time: duration,
+        code: code,
+        size: size
+      });
+      
+      // 進捗ログ (遅いものだけリアルタイム表示)
+      if (duration > 3000) {
+        Logger.log(`⚠️ [遅延検知] Row ${i+2}: ${duration}ms - ${name}`);
+      }
+
+    } catch (e) {
+      const endTime = new Date().getTime();
+      results.push({
+        index: i + 2,
+        name: name,
+        url: url,
+        time: endTime - startTime, // エラーになるまでにかかった時間
+        code: "ERROR",
+        size: 0,
+        error: e.message
+      });
+      Logger.log(`❌ [エラー] Row ${i+2}: ${e.message}`);
+    }
+  }
+
+  // --- 集計とランキング表示 ---
+  
+  // 遅い順（降順）にソート
+  results.sort((a, b) => b.time - a.time);
+
+  Logger.log("\n===================================");
+  Logger.log("     🐢 ワースト遅延ランキング (Top 10)     ");
+  Logger.log("===================================");
+
+  const top10 = results.slice(0, 10);
+  top10.forEach((r, idx) => {
+    const icon = r.code === 200 ? (r.time > 5000 ? "🟥" : "🟨") : "💀";
+    Logger.log(`${idx + 1}. ${icon} ${r.time}ms | Row:${r.index} | ${r.name}`);
+    Logger.log(`    URL: ${r.url}`);
+    if (r.error) Logger.log(`    Err: ${r.error}`);
+  });
+
+  Logger.log("\n【判定基準】");
+  Logger.log("🟢 1000ms未満: 優秀");
+  Logger.log("🟨 3000ms以上: 注意 (GASだと足を引っ張ります)");
+  Logger.log("🟥 10000ms以上: 危険 (即削除推奨)");
+  Logger.log("💀 ERROR: タイムアウトまたは接続拒否");
 }
 
 // #endregion
