@@ -45,14 +45,15 @@ const thresholdStr = thresholdDate.toISOString().split('T')[0];
 console.log(`削除対象: ${thresholdStr} 以前のデータ`);
 
 // --- メンテナンス対象テーブル定義 ---
-// table: テーブル名
-// dateCol: 日付が入っているカラム名
-// label: ログ表示用
 const targets = [
-    { table: 'weather_forecast', dateCol: 'date', label: '天気予報ログ' },
-    { table: 'weather_hourly', dateCol: 'datetime', label: '時間毎天気ログ' }, // datetimeはISO文字列想定
+    { table: 'weather_forecast', dateCol: 'date', label: '天気予報' },
+    { table: 'weather_hourly', dateCol: 'datetime', label: '時間毎天気' },
+    { table: 'weather_log', dateCol: 'datetime', label: '現在の天気ログ' },
+    { table: 'remo_log', dateCol: 'datetime', label: 'NatureRemoログ' },
+    { table: 'finance_log', dateCol: 'date', label: '金融データログ' },
+    { table: 'network_log', dateCol: 'date', label: 'ネットワークPingログ' },
+    { table: 'trend_log', dateCol: 'date', label: 'トレンドログ' },
     { table: 'log', dateCol: 'timestamp', label: 'システムログ' },
-    // historyはYATA.js側でもメンテされるが、念のため古いものを掃除
     { table: 'history', dateCol: 'date', label: '検索履歴' } 
 ];
 
