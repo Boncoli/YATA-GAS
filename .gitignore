@@ -17,6 +17,7 @@ yata.db
 # --- Logs ---
 *.log
 logs/
+archive/
 npm-debug.log*
 
 # --- OS & System generated files ---
