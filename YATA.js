@@ -112,9 +112,9 @@ const AppConfig = (function() {
           REPORT_GENERATION: 280 * 1000      // レポート生成の制限時間 (GAS制限考慮)
         },
         Limits: {
-          RSS_CHECK_ROWS: 3000,              // 重複チェック時に遡る行数
+          RSS_CHECK_ROWS: 20000,              // 重複チェック時に遡る行数
           MAX_ITEMS_PER_FEED: 10,            // 1つのRSSから取得する最大記事数
-          RSS_DATE_WINDOW_DAYS: 7,           // RSS記事の有効期限 (これより古い記事は取り込まない)
+          RSS_DATE_WINDOW_DAYS: 3,           // RSS記事の有効期限 (これより古い記事は取り込まない)
           RSS_CHUNK_SIZE: 5,                 // RSS並列収集のチャンクサイズ
           RSS_INTER_CHUNK_DELAY: 1000,       // チャンク間の待機時間 (ms)
           DATA_RETENTION_MONTHS: 6,          // データの保持期間
