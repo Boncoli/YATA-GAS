@@ -2228,7 +2228,7 @@ function collectRssFeeds() {
     const existingData = collectSheet.getRange(startCheckRow, 2, numRowsToCheck, 2).getValues();
     existingData.forEach(row => {
       if (row[1]) existingUrlSet.add(normalizeUrl(row[1])); 
-      if (row[0]) existingTitleSet.add(decodeHtmlEntities(String(row[0])).trim().toLowerCase());
+      if (row[0]) existingTitleSet.add(_normalizeTitleFingerprint(String(row[0])));
     });
   }
 
@@ -2302,34 +2302,14 @@ function collectRssFeeds() {
             if (!item.link || !item.title) return;
             const normalizedLink = normalizeUrl(item.link);
             const cleanTitle = stripHtml(item.title).trim();
-            const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
+            const fingerprint = _normalizeTitleFingerprint(cleanTitle);
 
-            // 重複チェック (セット内の最新記事と比較)
+            // 1. URL重複チェック (最速)
             if (existingUrlSet.has(normalizedLink)) return;
             
-            // 2. タイトル完全一致チェック (正規化済み)
-            if (existingTitleSet.has(normTitleToCheck)) return;
-
-            // ★追加: タイトル類似度チェック (既存タイトル群と比較)
-            // 動作が重くなるため、最新の収集分(chunkNewItems)と、
-            // existingTitleSetの一部に対してのみ行うのが現実的ですが、
-            // ここではシンプルに「既存タイトルと似すぎていないか」を確認します。
-            
-            // ※注意: existingTitleSetはSetなので直接ループできません。
-            // 配列化するか、Set作成時に配列も保持しておく必要があります。
-            // パフォーマンスを考慮し、ここでは「今回の実行で追加した記事(chunkNewItems)」との重複だけを防ぐ簡易版を推奨します。
-            
-            let isDuplicate = false;
-            // 今回のバッチ内で既に追加しようとしている記事と似ているか？
-            for (const newItem of chunkNewItems) {
-               const existingTitle = decodeHtmlEntities(newItem[1]).toLowerCase();
-               // 類似度が0.9 (90%) 以上なら重複とみなす
-               if (calculateLevenshteinSimilarity(normTitleToCheck, existingTitle) > 0.9) {
-                 isDuplicate = true;
-                 break;
-               }
-            }
-            if (isDuplicate) return;
+            // 2. タイトル指紋重複チェック (高速・高精度)
+            // 記号の違いや全角半角、URL変更を伴う重複をここで弾く
+            if (existingTitleSet.has(fingerprint)) return;
 
             if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) return;
             
@@ -2343,7 +2323,7 @@ function collectRssFeeds() {
             ]);
             // 追加した記事も即座に重複除外セットに追加
             existingUrlSet.add(normalizedLink);
-            existingTitleSet.add(normTitleToCheck);
+            existingTitleSet.add(fingerprint);
           } catch (e) {}
         });
       });
@@ -2955,7 +2935,56 @@ function isRecentArticle(pubDate, daysLimit = 7) {
 }
 
 /**
- * normalizeUrl (強化版)
+
+ * _normalizeTitleFingerprint
+
+ * 【重要】重複チェック用のタイトル指紋を作成。
+
+ * 全角を半角に、記号と空白を排除し、小文字化する。
+
+ * これにより「微修正されたタイトル」も同一視して弾けるようにする。
+
+ */
+
+function _normalizeTitleFingerprint(title) {
+
+  if (!title) return "";
+
+  let norm = title.trim();
+
+  
+
+  // 1. HTMLエンティティ解除 & 小文字化
+
+  norm = decodeHtmlEntities(norm).toLowerCase();
+
+  
+
+  // 2. 全角英数字→半角、全角スペース→半角 (GAS環境互換の簡易実装)
+
+  norm = norm.replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+
+  
+
+  // 3. 記号と空白をすべて削除
+
+  // 英数字、ひらがな、カタカナ、漢字以外を削ぎ落とす
+
+  norm = norm.replace(/[^\w\d\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/g, "");
+
+  
+
+  return norm;
+
+}
+
+
+
+/**
+
+ * normalizeUrl
+
+ (強化版)
  * 【責務】URLを比較用に正規化する。Googleリダイレクト対応。
  */
 function normalizeUrl(url) {
