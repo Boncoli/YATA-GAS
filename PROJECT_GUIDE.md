@@ -105,10 +105,19 @@ DBの肥大化を防ぐため、古い記事は定期的に JSON ファイルへ
 ```
 
 **アーカイブ・メンテナンス**:
+> [!CAUTION]
+> **重要: 手動DB操作の注意点**
+> このプロジェクトは `run-ram.sh` によりDBをRAM上で運用しています。手動でDBを操作（アーカイブや削除など）する場合は、必ず以下の手順を守ってください。
+> 1. `export DB_PATH=/dev/shm/yata.db` を設定してからスクリプトを実行。
+> 2. 実行後、`cp /dev/shm/yata.db yata.db` でディスクに書き戻す。
+> これを怠ると、バックグラウンドプロセスの終了時にメモリ上の古いデータでディスクが上書きされてしまいます。
+
 ```bash
-# 古い記事をJSONに退避する場合のフロー例 (要スクリプト調整)
-node tasks/archive-old-articles.js  # DB内でアーカイブテーブルへ移動
+# 古い記事をJSONに退避する場合のフロー例
+export DB_PATH=/dev/shm/yata.db
+node tasks/archive-old-articles.js  # RAM上のDBを整理
 node tasks/export-archive-json.js   # JSONへ書き出し
+cp /dev/shm/yata.db yata.db         # ディスクへ反映
 sqlite3 yata.db "DROP TABLE collect_archive; VACUUM;" # 後始末
 ```
 
