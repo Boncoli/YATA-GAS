@@ -1,0 +1,140 @@
+[
+  {
+    "label": "MAZDA Newsroom (Official・US)",
+    "url": "https://news.mazdausa.com/media-library?pagetemplate=rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Google News (MAZDA + Patent)",
+    "url": "https://news.google.com/rss/search?q=Mazda+Patent&hl=en-US&gl=US&ceid=US:en",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "MacRumors",
+    "url": "https://feeds.macrumors.com/MacRumors-Front",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "9to5Mac",
+    "url": "https://9to5mac.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Daring Fireball (John Gruber)",
+    "url": "https://daringfireball.net/feeds/main",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "VideoCardz",
+    "url": "https://videocardz.com/rss-feed",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Tom's Hardware",
+    "url": "https://www.tomshardware.com/feeds.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "TechPowerUp",
+    "url": "https://www.techpowerup.com/rss/news",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "The Verge",
+    "url": "https://www.theverge.com/rss/index.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "TechnoEdge (テクノエッジ)",
+    "url": "https://www.techno-edge.net/rss20/index.rdf",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Hacker News (Top)",
+    "url": "https://news.ycombinator.com/rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "GIGAZINE",
+    "url": "https://gigazine.net/news/rss_2.0/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "MacRumors",
+    "url": "https://feeds.macrumors.com/MacRumors-All",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Autocar（UK・老舗自動車メディア）",
+    "url": "https://www.autocar.co.uk/rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Electrek（EV特化）",
+    "url": "https://electrek.co/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "MIT Technology Review",
+    "url": "https://www.technologyreview.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Ars Technica",
+    "url": "https://arstechnica.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Hacker News – Best",
+    "url": "https://news.ycombinator.com/rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ITmedia NEWS",
+    "url": "https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ASCII.jp",
+    "url": "https://ascii.jp/rss.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Stratechery（Ben Thompson）",
+    "url": "https://stratechery.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Benedict Evans",
+    "url": "https://www.ben-evans.com/benedictevans?format=rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "hololive公式ニュース（最重要）",
+    "url": "https://hololive.hololivepro.com/news/feed/",
+    "category": "General",
+    "active": true
+  }
+]

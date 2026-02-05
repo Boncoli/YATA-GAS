@@ -70,6 +70,13 @@ DBの肥大化を防ぐため、古い記事は定期的に JSON ファイルへ
     *   書き出し後、DB内の `collect_archive` テーブルは削除 (`DROP`) して軽量化。
     *   **現状**: 2026年2月5日 17:00 (JST) 以前のデータ 11,659 件は `archive/collect_before_20260205_1700.json` に退避済み。
 
+### RSSフィードのローカル管理 (2026/02 移行)
+システムの自律性を高めるため、RSSフィードのリスト管理を Google スプレッドシートからローカルの JSON ファイルへ移行しました。
+
+*   **データファイル**: `rss-list.json` (プロジェクトルート)
+*   **優先順位**: `gas-bridge.js` は、この JSON ファイルが存在する場合、スプレッドシートよりも優先して読み込みます。
+*   **管理スクリプト**: `tasks/manage-feeds.js` を使用して、CLIから対話的に管理可能です。
+
 ---
 
 ## 4. データフロー
@@ -119,6 +126,14 @@ node tasks/archive-old-articles.js  # RAM上のDBを整理
 node tasks/export-archive-json.js   # JSONへ書き出し
 cp /dev/shm/yata.db yata.db         # ディスクへ反映
 sqlite3 yata.db "DROP TABLE collect_archive; VACUUM;" # 後始末
+```
+
+**RSSフィード管理**:
+```bash
+node tasks/manage-feeds.js list             # 一覧表示
+node tasks/manage-feeds.js add "URL" "名前"  # フィード追加
+node tasks/manage-feeds.js remove 0         # インデックス指定で削除
+node tasks/manage-feeds.js toggle 0         # 有効/無効の切り替え
 ```
 
 **ダッシュボード確認**:
