@@ -136,5 +136,23 @@
     "url": "https://hololive.hololivepro.com/news/feed/",
     "category": "General",
     "active": true
+  },
+  {
+    "label": "AUTOMATON",
+    "url": "https://automaton-media.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Car Watch",
+    "url": "https://car.watch.impress.co.jp/data/rss/1.0/car/feed.rdf",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "The Verge (Features)",
+    "url": "https://www.theverge.com/rss/features/index.xml",
+    "category": "General",
+    "active": true
   }
 ]
