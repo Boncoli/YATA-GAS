@@ -112,7 +112,7 @@ const AppConfig = (function() {
           REPORT_GENERATION: 280 * 1000      // レポート生成の制限時間 (GAS制限考慮)
         },
         Limits: {
-          RSS_CHECK_ROWS: 20000,              // 重複チェック時に遡る行数
+          RSS_CHECK_ROWS: 20000,             // 重複チェック時に遡る行数
           MAX_ITEMS_PER_FEED: 10,            // 1つのRSSから取得する最大記事数
           RSS_DATE_WINDOW_DAYS: 3,           // RSS記事の有効期限 (これより古い記事は取り込まない)
           RSS_CHUNK_SIZE: 5,                 // RSS並列収集のチャンクサイズ
@@ -1836,12 +1836,12 @@ function runTrendAnalysis(targetKeyword, options = {}) {
   }
 }
 
-/** processSummarization: AI見出し生成（E列）＆ ベクトル生成（G列）
- * 【責務】シート内の「要約（見出し）」が空の記事を特定し、AI(LlmService)を使用して自動生成する。
- * さらに、生成された要約とタイトルを元にベクトル（Embedding）を生成し、G列に保存する。
- * 短い記事：タイトルまたはスプレッドシート数式(=GOOGLETRANSLATE)を使用。
- * 長い記事：LLM(ModelNano)を呼び出して要約を生成。
- * 【実行制限】GASの実行時間オーバーを避けるため、5分のタイムアウト制限を設けている。
+/**
+ * processSummarization (強化版)
+ * 【責務】
+ * 1. 見出しがない記事のAI要約＆ベクトル生成
+ * 2. 見出しはあるがベクトルがない記事のベクトル補完（修復）
+ * 3. ただし、30日以上前の古い記事は「軽量化済み」とみなして無視する（無限ループ防止）
  */
 function processSummarization() {
   const trendDataSheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
@@ -1855,105 +1855,134 @@ function processSummarization() {
   const startTime = new Date().getTime();
   const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
 
-  // ベクトル保存用の列インデックス (G列 = 6)
+  // ★設定: ベクトル生成を行う期間の限界（例: 30日以内）
+  // これより古い記事は、ベクトルが無くても無視します（メンテナンスジョブとの競合回避）
+  const VECTOR_GENERATION_WINDOW_DAYS = 30; 
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - VECTOR_GENERATION_WINDOW_DAYS);
+  cutoffDate.setHours(0, 0, 0, 0);
+
+  // 列インデックス (0始まり)
   const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
+  const SUMMARY_COL_INDEX = AppConfig.get().CollectSheet.Columns.SUMMARY - 1;
+  const TITLE_COL_INDEX = AppConfig.get().CollectSheet.Columns.URL - 2;
+  const ABSTRACT_COL_INDEX = AppConfig.get().CollectSheet.Columns.ABSTRACT - 1;
+  const DATE_COL_INDEX = 0; // A列
 
   const modelInfo = LlmService.getModelInfo();
-  Logger.log(`🤖 Model Info: Nano=${modelInfo.nano}, Mini=${modelInfo.mini} (Context: ${modelInfo.context})`);
+  Logger.log(`🤖 要約ジョブ開始 (Model: ${modelInfo.nano}/${modelInfo.mini}) - Cutoff: ${fmtDate(cutoffDate)}`);
 
   // データ範囲を取得
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
   const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
   const values = dataRange.getValues();
   
-  const articlesToSummarize = [];
-  const summaryColIndex = AppConfig.get().CollectSheet.Columns.SUMMARY - 1; // E列 (4)
+  const articlesToSummarize = []; // AI要約が必要な長い記事リスト
 
   let apiCallCount = 0;
   let vectorCount = 0;
-  
-  // ★変更: ループの前に移動（短い記事の更新も追跡するため）
   let minModifiedIndex = -1;
   let maxModifiedIndex = -1;
 
-  // 1. 要約が必要な記事を特定 & 短い記事は即時処理
-  values.forEach((row, index) => {
-    const currentHeadline = row[summaryColIndex];
-    const currentVector = row[VECTOR_COL_INDEX]; // 既存ベクトル確認
+  // --- 1. 走査 & 短い記事/ベクトル欠損の即時処理 ---
+  for (let i = 0; i < values.length; i++) {
+    // タイムアウトチェック (ループ毎)
+    if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
+      Logger.log(`タイムアウト回避のため、走査を中断しました（Row ${i}まで完了）。`);
+      break;
+    }
 
-    // 「見出しが空」または「ベクトルが空（バックフィル的措置）」の場合に処理対象とする
-    // ※今回は主に新規記事の見出し生成フローに合わせる
-    if (!currentHeadline || String(currentHeadline).trim() === "") {
-      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; 
-      const abstractText = row[AppConfig.get().CollectSheet.Columns.ABSTRACT - 1]; 
+    const row = values[i];
+    const rowDate = new Date(row[DATE_COL_INDEX]);
+
+    // ★重要: 古い記事は完全にスルーする
+    if (rowDate < cutoffDate) {
+      continue; 
+    }
+
+    const currentHeadline = row[SUMMARY_COL_INDEX];
+    const currentVector = row[VECTOR_COL_INDEX];
+
+    // 状態判定
+    const hasNoHeadline = (!currentHeadline || String(currentHeadline).trim() === "");
+    const hasHeadlineButNoVector = (!hasNoHeadline && (!currentVector || String(currentVector).trim() === ""));
+
+    // A. 見出しがない場合 (新規作成 + ベクトル生成)
+    if (hasNoHeadline) {
+      const title = row[TITLE_COL_INDEX]; 
+      const abstractText = row[ABSTRACT_COL_INDEX]; 
       
       const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
       
       if (isShort) {
-        // --- 短い記事の処理 ---
+        // --- 短い記事: 即時処理 ---
         let newHeadline = "";
-        
         try {
+          // 翻訳ロジック
           if (title && String(title).trim() !== "") {
-            // LanguageApp.translate で翻訳済みのテキストを取得する (数式は使わない)
-            if (isLikelyEnglish(String(title))) {
-              newHeadline = LanguageApp.translate(String(title), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
-              Utilities.sleep(200); // APIレート制限への配慮
-            } else {
-              newHeadline = String(title).trim();
-            }
-          } else if (abstractText && abstractText !== AppConfig.get().Llm.NO_ABSTRACT_TEXT) {
-            if (isLikelyEnglish(String(abstractText))) {
-              newHeadline = LanguageApp.translate(String(abstractText), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
-              Utilities.sleep(200);
-            } else {
-              newHeadline = String(abstractText).trim();
-            }
+             if (isLikelyEnglish(String(title))) {
+                newHeadline = LanguageApp.translate(String(title), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
+                Utilities.sleep(200); 
+             } else {
+                newHeadline = String(title).trim();
+             }
           } else {
-            newHeadline = AppConfig.get().Llm.MISSING_ABSTRACT_TEXT;
+             newHeadline = String(abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
           }
         } catch (e) {
-          Logger.log(`翻訳APIエラー(Row ${index + 2}): ${e.message} - 原文を使用します`);
           newHeadline = String(title || abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
         }
 
-        values[index][summaryColIndex] = newHeadline;
+        // 見出しセット
+        values[i][SUMMARY_COL_INDEX] = newHeadline;
 
-        // ★追加: 短い記事でもベクトルを生成する
-        try {
-          const textToEmbed = `Title: ${title}\nSummary: ${newHeadline}`;
-          const vector = LlmService.generateVector(textToEmbed);
-          if (vector) {
-            // 列拡張
-            while (values[index].length <= VECTOR_COL_INDEX) {
-              values[index].push("");
-            }
-            values[index][VECTOR_COL_INDEX] = vector.join(',');
-            vectorCount++;
-          }
-        } catch (e) {
-          Logger.log(`ベクトル生成エラー(Short) (Row: ${index + 2}): ${e.toString()}`);
-        }
+        // ベクトル生成 (即時)
+        _generateAndSetVector(values[i], title, newHeadline, VECTOR_COL_INDEX);
+        vectorCount++;
 
-        // 更新範囲を記録
-        if (minModifiedIndex === -1 || index < minModifiedIndex) minModifiedIndex = index;
-        if (index > maxModifiedIndex) maxModifiedIndex = index;
+        _markModified(i);
 
       } else {
-        // --- 長い記事はAI要約リストへ ---
-        articlesToSummarize.push({ originalRowIndex: index, title: title, abstractText: abstractText });
+        // --- 長い記事: 後でまとめてAI要約 ---
+        articlesToSummarize.push({ originalRowIndex: i, title: title, abstractText: abstractText });
+      }
+    } 
+    // B. 見出しはあるがベクトルがない場合 (ベクトル補完のみ)
+    else if (hasHeadlineButNoVector) {
+      const title = row[TITLE_COL_INDEX];
+      const headline = String(currentHeadline);
+      
+      // ベクトル生成 (即時)
+      const success = _generateAndSetVector(values[i], title, headline, VECTOR_COL_INDEX);
+      if (success) {
+        vectorCount++;
+        _markModified(i);
+        // APIレート制限への配慮
+        Utilities.sleep(200); 
       }
     }
-  });
 
-  // 2. 長い記事のAI要約 & ベクトル生成の実行
+    // 更新範囲記録ヘルパー
+    function _markModified(idx) {
+      if (minModifiedIndex === -1 || idx < minModifiedIndex) minModifiedIndex = idx;
+      if (idx > maxModifiedIndex) maxModifiedIndex = idx;
+    }
+  }
+
+  // --- 2. 長い記事のAI要約 & ベクトル生成 ---
   if (articlesToSummarize.length > 0) {
-    Logger.log(`${articlesToSummarize.length} 件の記事に対してAIによる見出し生成を試行します。`);
+    Logger.log(`${articlesToSummarize.length} 件の長文記事に対してAI要約を実行します。`);
     
+    // ★追加: カウンター変数を定義
+    let processedCount = 0;
+
     for (const article of articlesToSummarize) {
-      // タイムアウトチェック
+      // ★追加: 処理中のログを出す
+      processedCount++;
+      Logger.log(`[${processedCount}/${articlesToSummarize.length}] 処理中: ${article.title.substring(0, 20)}...`);
+
       if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
-        Logger.log(`タイムアウト回避のため、処理を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。`);
+        Logger.log(`タイムアウト回避のため、AI要約を中断しました（残り ${articlesToSummarize.length - apiCallCount} 件）。`);
         break; 
       }
 
@@ -1962,104 +1991,74 @@ function processSummarization() {
       apiCallCount++;
 
       let newHeadline = null;
-      const isSystemError = String(jsonString).includes("API Error") || String(jsonString).includes("いずれのLLMでも");
-
-      if (jsonString && !isSystemError) {
+      // JSONパース試行
+      if (jsonString && !String(jsonString).includes("API Error")) {
         try {
           const parsedJson = cleanAndParseJSON(jsonString);
-          if (parsedJson) {
-             newHeadline = parsedJson.tldr || parsedJson.summary;
-          }
+          if (parsedJson) newHeadline = parsedJson.tldr || parsedJson.summary;
           if (!newHeadline) newHeadline = String(jsonString).trim();
         } catch (e) {
-          Logger.log(`JSONパース失敗 (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
           newHeadline = String(jsonString).trim();
         }
-      } else {
-        Logger.log(`見出し生成システムエラー (Row: ${article.originalRowIndex + 2}): ${jsonString}`);
       }
 
-      if (newHeadline && String(newHeadline).trim() !== "" && !String(newHeadline).includes("API Error")) {
-        values[article.originalRowIndex][summaryColIndex] = newHeadline;
-
+      // 正常な見出しが得られた場合
+      if (newHeadline && !String(newHeadline).includes("API Error") && !String(newHeadline).includes("Safety")) {
+        values[article.originalRowIndex][SUMMARY_COL_INDEX] = newHeadline;
+        
         // ベクトル生成
-        try {
-          const textToEmbed = `Title: ${article.title}\nSummary: ${newHeadline}`;
-          const vector = LlmService.generateVector(textToEmbed);
-          
-          if (vector) {
-            while (values[article.originalRowIndex].length <= VECTOR_COL_INDEX) {
-              values[article.originalRowIndex].push("");
-            }
-            values[article.originalRowIndex][VECTOR_COL_INDEX] = vector.join(',');
-            vectorCount++;
-          }
-        } catch (e) {
-          Logger.log(`ベクトル生成エラー (Row: ${article.originalRowIndex + 2}): ${e.toString()}`);
-        }
+        _generateAndSetVector(values[article.originalRowIndex], article.title, newHeadline, VECTOR_COL_INDEX);
+        vectorCount++;
 
-        // 更新範囲を記録
-        if (minModifiedIndex === -1 || article.originalRowIndex < minModifiedIndex) {
-          minModifiedIndex = article.originalRowIndex;
-        }
-        if (article.originalRowIndex > maxModifiedIndex) {
-          maxModifiedIndex = article.originalRowIndex;
-        }
+        _markModified(article.originalRowIndex);
 
       } else {
-        // ★修正: エラー種別による分岐処理
+        // エラー時の処理 (恒久エラーなら書き込んで再処理防止)
         const errStr = String(newHeadline);
-        // 恒久的なエラーか判定 (ポリシー違反、短すぎる、コンテンツなし等)
-        // ※ API Error という文字列は _callLlmWithFallback が返すわけではなく、ここでの判定用。
-        // 実際のAPI戻り値に含まれるキーワードで判定する。
-        const isPermanentError = 
-             errStr.includes("Safety") 
-          || errStr.includes("Policy") 
-          || errStr.includes("Short") 
-          || errStr.includes("Empty")
-          || errStr.includes("短すぎ")
-          || errStr.includes("見出しを生成できません");
-
-        if (isPermanentError) {
-           // 再処理防止のため、セルに値を埋める
-           values[article.originalRowIndex][summaryColIndex] = `[Error] ${errStr.substring(0, 20)}...`; 
-           
-           if (minModifiedIndex === -1 || article.originalRowIndex < minModifiedIndex) minModifiedIndex = article.originalRowIndex;
-           if (article.originalRowIndex > maxModifiedIndex) maxModifiedIndex = article.originalRowIndex;
-           
-           Logger.log(`🚫 恒久的エラーのためスキップ扱いにしました (Row: ${article.originalRowIndex + 2}): ${errStr}`);
-        } else {
-           // 一時的エラー (Timeout, 503等) -> 何もしない (次回再試行)
-           Logger.log(`🔄 一時的エラーのため再試行対象として残します (Row: ${article.originalRowIndex + 2}): ${errStr}`);
+        if (errStr.includes("Safety") || errStr.includes("Policy") || errStr.includes("Empty")) {
+           values[article.originalRowIndex][SUMMARY_COL_INDEX] = `[Error] ${errStr.substring(0, 20)}...`;
+           _markModified(article.originalRowIndex);
         }
       }
-      
       Utilities.sleep(AppConfig.get().Llm.DELAY_MS);
     }
   }
 
-  // 3. シートへの部分書き込み (最適化済み)
+  // --- 3. シートへの書き戻し ---
   if (minModifiedIndex !== -1 && maxModifiedIndex !== -1) {
     const startRow = minModifiedIndex + 2; 
     const numRows = maxModifiedIndex - minModifiedIndex + 1;
-    
     const modifiedData = values.slice(minModifiedIndex, maxModifiedIndex + 1);
 
-    // 列数正規化
+    // 列数正規化 (ベクトル列まで確実に埋める)
     const maxColsInSlice = modifiedData.reduce((max, row) => Math.max(max, row.length), 0);
     const normalizedData = modifiedData.map(row => {
-      while (row.length < maxColsInSlice) {
-        row.push("");
-      }
+      while (row.length < maxColsInSlice) row.push("");
       return row;
     });
 
     const outputRange = trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice);
     outputRange.setValues(normalizedData);
     
-    Logger.log(`処理完了: 要約生成(API) ${apiCallCount} 件 / ベクトル生成 ${vectorCount} 件。シートの一部(Row ${startRow}〜${startRow + numRows - 1})を更新しました。`);
+    Logger.log(`処理完了: 要約生成(API) ${apiCallCount} 件 / ベクトル生成 ${vectorCount} 件。シート更新(Row ${startRow}〜${startRow + numRows - 1})`);
   } else {
     Logger.log("更新対象の記事はありませんでした。");
+  }
+
+  /** ヘルパー: ベクトル生成と配列へのセット */
+  function _generateAndSetVector(rowArray, title, summary, vecColIdx) {
+    try {
+      const textToEmbed = `Title: ${title}\nSummary: ${summary}`;
+      const vector = LlmService.generateVector(textToEmbed);
+      if (vector) {
+        while (rowArray.length <= vecColIdx) rowArray.push("");
+        rowArray[vecColIdx] = vector.join(',');
+        return true;
+      }
+    } catch (e) {
+      Logger.log(`ベクトル生成失敗: ${e.toString()}`);
+    }
+    return false;
   }
 }
 
@@ -2228,7 +2227,7 @@ function collectRssFeeds() {
     const existingData = collectSheet.getRange(startCheckRow, 2, numRowsToCheck, 2).getValues();
     existingData.forEach(row => {
       if (row[1]) existingUrlSet.add(normalizeUrl(row[1])); 
-      if (row[0]) existingTitleSet.add(decodeHtmlEntities(String(row[0])).trim().toLowerCase());
+      if (row[0]) existingTitleSet.add(_normalizeTitleFingerprint(String(row[0])));
     });
   }
 
@@ -2302,34 +2301,14 @@ function collectRssFeeds() {
             if (!item.link || !item.title) return;
             const normalizedLink = normalizeUrl(item.link);
             const cleanTitle = stripHtml(item.title).trim();
-            const normTitleToCheck = decodeHtmlEntities(cleanTitle).toLowerCase();
+            const fingerprint = _normalizeTitleFingerprint(cleanTitle);
 
-            // 重複チェック (セット内の最新記事と比較)
+            // 1. URL重複チェック (最速)
             if (existingUrlSet.has(normalizedLink)) return;
             
-            // 2. タイトル完全一致チェック (正規化済み)
-            if (existingTitleSet.has(normTitleToCheck)) return;
-
-            // ★追加: タイトル類似度チェック (既存タイトル群と比較)
-            // 動作が重くなるため、最新の収集分(chunkNewItems)と、
-            // existingTitleSetの一部に対してのみ行うのが現実的ですが、
-            // ここではシンプルに「既存タイトルと似すぎていないか」を確認します。
-            
-            // ※注意: existingTitleSetはSetなので直接ループできません。
-            // 配列化するか、Set作成時に配列も保持しておく必要があります。
-            // パフォーマンスを考慮し、ここでは「今回の実行で追加した記事(chunkNewItems)」との重複だけを防ぐ簡易版を推奨します。
-            
-            let isDuplicate = false;
-            // 今回のバッチ内で既に追加しようとしている記事と似ているか？
-            for (const newItem of chunkNewItems) {
-               const existingTitle = decodeHtmlEntities(newItem[1]).toLowerCase();
-               // 類似度が0.9 (90%) 以上なら重複とみなす
-               if (calculateLevenshteinSimilarity(normTitleToCheck, existingTitle) > 0.9) {
-                 isDuplicate = true;
-                 break;
-               }
-            }
-            if (isDuplicate) return;
+            // 2. タイトル指紋重複チェック (高速・高精度)
+            // 記号の違いや全角半角、URL変更を伴う重複をここで弾く
+            if (existingTitleSet.has(fingerprint)) return;
 
             if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) return;
             
@@ -2343,7 +2322,7 @@ function collectRssFeeds() {
             ]);
             // 追加した記事も即座に重複除外セットに追加
             existingUrlSet.add(normalizedLink);
-            existingTitleSet.add(normTitleToCheck);
+            existingTitleSet.add(fingerprint);
           } catch (e) {}
         });
       });
@@ -2955,7 +2934,56 @@ function isRecentArticle(pubDate, daysLimit = 7) {
 }
 
 /**
- * normalizeUrl (強化版)
+
+ * _normalizeTitleFingerprint
+
+ * 【重要】重複チェック用のタイトル指紋を作成。
+
+ * 全角を半角に、記号と空白を排除し、小文字化する。
+
+ * これにより「微修正されたタイトル」も同一視して弾けるようにする。
+
+ */
+
+function _normalizeTitleFingerprint(title) {
+
+  if (!title) return "";
+
+  let norm = title.trim();
+
+  
+
+  // 1. HTMLエンティティ解除 & 小文字化
+
+  norm = decodeHtmlEntities(norm).toLowerCase();
+
+  
+
+  // 2. 全角英数字→半角、全角スペース→半角 (GAS環境互換の簡易実装)
+
+  norm = norm.replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+
+  
+
+  // 3. 記号と空白をすべて削除
+
+  // 英数字、ひらがな、カタカナ、漢字以外を削ぎ落とす
+
+  norm = norm.replace(/[^\w\d\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/g, "");
+
+  
+
+  return norm;
+
+}
+
+
+
+/**
+
+ * normalizeUrl
+
+ (強化版)
  * 【責務】URLを比較用に正規化する。Googleリダイレクト対応。
  */
 function normalizeUrl(url) {
