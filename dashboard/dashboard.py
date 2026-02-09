@@ -349,7 +349,7 @@ def create_dashboard_layers():
         daily_rows = cur.fetchall()
         cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
         remo_row = cur.fetchone()
-        cur.execute("SELECT COALESCE(summary, title), source FROM (SELECT summary, title, source FROM collect WHERE summary IS NOT NULL OR title IS NOT NULL ORDER BY date DESC LIMIT 20) ORDER BY RANDOM() LIMIT 3")
+        cur.execute("SELECT COALESCE(summary, title), source FROM (SELECT summary, title, source FROM collect WHERE summary IS NOT NULL OR title IS NOT NULL ORDER BY date DESC LIMIT 40) ORDER BY RANDOM() LIMIT 3")
         news_rows = cur.fetchall()
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
         trend_row = cur.fetchone()
@@ -621,8 +621,8 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         # --- STEP 1: DB からデータを取得 (yfinance は BAN 回避のため廃止) ---
         try:
             conn = sqlite3.connect(DB_PATH)
-            # 直近400件取得 (十分な「静止期間」を探すため広めに)
-            q = f"SELECT date, {col_name} FROM finance_log WHERE {col_name} IS NOT NULL ORDER BY date DESC LIMIT 400"
+            # 直近1200件取得 (5分間隔運用で約4日分。土日をまたぐ変動を表示するため広めに)
+            q = f"SELECT date, {col_name} FROM finance_log WHERE {col_name} IS NOT NULL ORDER BY date DESC LIMIT 1200"
             raw_df = pd.read_sql(q, conn)
             conn.close()
             
@@ -643,22 +643,22 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
                         last_change_idx = i
                         break
                 
-                # 末尾の静止が5点(約1時間強)以上続くなら、そこをチャートの右端とする
-                # (動きが終わった直後までを表示)
+                # 末尾の静止が12点(約1時間)以上続くなら、そこをチャートの右端とする
+                # (動きが終わった直後までを表示することで、最新の「平坦な線」を短縮する)
                 cutoff_idx = n
-                if (n - 1) - last_change_idx >= 5:
+                if (n - 1) - last_change_idx >= 12:
                     cutoff_idx = last_change_idx + 1 # 変化後の最初の静止点まで含める
                 
-                # チャート候補データ (一旦ここまでの範囲とする)
-                # ただしデータが少なすぎる場合はトリミングしない
+                # チャート候補データ
                 if cutoff_idx < 5: cutoff_idx = n
 
                 target_vals = vals[:cutoff_idx]
                 target_dates = dates[:cutoff_idx]
                 
                 # --- B. 開始点(基準値)の探索 ---
-                # トリミング地点から過去へ遡り、「8点(約2時間)以上値が変わらない期間」を探す。
-                # その静止期間の値こそが「前日終値(基準値)」である。
+                # トリミング地点から過去へ遡り、「20点(約1.7時間)以上値が変わらない期間」を探す。
+                # 日本市場の昼休み(1時間)を基準点と誤認しないよう、1.5時間以上の停滞を条件とする。
+                # その静止期間の値こそが「市場が閉まっている間の基準値(前日終値相当)」である。
                 
                 prev_close_val = target_vals[0]
                 start_plot_idx = 0
@@ -666,34 +666,28 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
                 # 連続同一値のカウンター
                 stable_count = 1
                 found_baseline = False
-                
-                # 変動開始地点 (時系列的な開始点) を保持する変数
-                # 初期値はデータの先頭(0)ではなく、末尾付近であることを想定しないといけないが、
-                # ループ内で「最初の変化」を見つけた時点で更新される。
-                # もし一度も変化がなければ(ずっと平坦なら)、volatility_start_idxは更新されないか、初期値の扱いになる。
                 volatility_start_idx = 0
 
                 for i in range(len(target_vals) - 2, -1, -1):
                     if target_vals[i] != target_vals[i+1]:
-                        # 値が変わった = ここより右側(i+1以降)が「新しい変動ブロック」
+                        # 値が変わった = ここより右側(i+1以降)が「変動ブロック」
                         volatility_start_idx = i + 1
                         stable_count = 1
                     else:
                         # 値が変わらない
                         stable_count += 1
                         # 静止期間が一定以上続いた場合、ここが「基準となる静止期間」であると判定
-                        if stable_count >= 8:
+                        # 昼休み(12点/1時間)を避けるため20点(1時間40分)とする
+                        if stable_count >= 20:
                             prev_close_val = target_vals[i]
                             # チャートの開始位置は、変動が始まる直前の点 (静止期間の最後の1点) とする
-                            # これにより、基準値から変動への遷移が描画される
                             start_plot_idx = volatility_start_idx - 1
                             if start_plot_idx < 0: start_plot_idx = 0
-                            
                             found_baseline = True
                             break
                 
-                # もし基準が見つからない場合(ずっと変動している、またはデータ不足)
                 if not found_baseline:
+                      # 基準が見つからない（ずっと動いている、あるいは休みが短い）場合
                       start_plot_idx = 0
                       prev_close_val = target_vals[0]
 
@@ -774,16 +768,14 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         draw_smart_text(draw_b, draw_r, (x+MP['txt_x'] + name_w + 5, y+MP['name_y'] + 2), f"[{date_label}]", get_font("medium", 10))
         
         # 変化記号と色: プラス=黒(+), マイナス=赤(-), 変わらず=黒(=)
-        # Mplus1Code等で豆腐になるのを防ぐためASCII文字を使用
-        sign_char = '+' if change > 0 else '-' if change < 0 else '='
         text_color = COLOR_RED if change < 0 else COLOR_BLACK
         
-        # 1. 現在値 (大きく)
-        val_str = f"{sign_char}{item['fmt'].format(current_val)}"
+        # 1. 現在値 (大きく) - 符号は付けずに絶対値のみ表示
+        val_str = item['fmt'].format(current_val)
         val_font = get_font("medium", 14)
         draw_smart_text(draw_b, draw_r, (x+MP['txt_x'], y+MP['val_y']), val_str, val_font, text_color)
         
-        # 2. 差分 (横に同じ大きさで)
+        # 2. 差分 (横に同じ大きさで) - こちらには符号を付ける
         val_w = draw_b.textlength(val_str, font=val_font)
         diff_val_str = item['fmt'].format(abs(change))
         # 差分は符号を明示
@@ -1215,14 +1207,14 @@ def create_env_chart_layers():
             ax1.spines[spine].set_visible(False)
             
         # --- 左軸: 気温 (Temperature) ---
-        # 室温: 黒・極太実線
+        # 室温: 黒・太実線 (データ点数増に合わせて 8->6 に微調整)
         line1, = ax1.plot(df_remo['datetime'], df_remo['living_temp'], 
-                          color='black', linewidth=8, linestyle='-', label='Room')
+                          color='black', linewidth=6, linestyle='-', label='Room')
         
-        # 外気: 赤・太実線 (アクセント)
+        # 外気: 赤・実線 (5->4 に微調整)
         # Matplotlibの 'red' は (1.0, 0.0, 0.0)
         line2, = ax1.plot(df_weather['datetime'], df_weather['temp'], 
-                          color='red', linewidth=5, linestyle='-', label='Out')
+                          color='red', linewidth=4, linestyle='-', label='Out')
         
         ax1.set_ylabel('Temp (°C)', fontsize=22, weight='bold', color='black')
         ax1.tick_params(axis='y', colors='black', labelsize=18, width=2, length=6)
@@ -1234,10 +1226,9 @@ def create_env_chart_layers():
             ax2.spines[spine].set_visible(False)
         ax2.spines['right'].set_visible(True) # 右枠はあってもいいが、数値だけで十分なら消すのもあり。今回は残す
 
-        # 湿度: グレー(黒レイヤーでディザリングされるか、濃いグレーなら黒になる)・点線
-        # ここでは「黒の点線」として明示的に描く
+        # 湿度: グレー・点線 (3->2 に微調整)
         line3, = ax2.plot(df_remo['datetime'], df_remo['living_humi'], 
-                          color='#444444', linewidth=3, linestyle=':', label='Humi')
+                          color='#444444', linewidth=2, linestyle=':', label='Humi')
         
         ax2.set_ylabel('Humidity (%)', fontsize=22, weight='bold', color='#444444')
         ax2.set_ylim(0, 100)
