@@ -1837,11 +1837,7 @@ function runTrendAnalysis(targetKeyword, options = {}) {
 }
 
 /**
- * processSummarization (強化版)
- * 【責務】
- * 1. 見出しがない記事のAI要約＆ベクトル生成
- * 2. 見出しはあるがベクトルがない記事のベクトル補完（修復）
- * 3. ただし、30日以上前の古い記事は「軽量化済み」とみなして無視する（無限ループ防止）
+ * processSummarization (大規模データ対応・スマート読み込み版)
  */
 function processSummarization() {
   const trendDataSheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
@@ -1855,8 +1851,7 @@ function processSummarization() {
   const startTime = new Date().getTime();
   const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
 
-  // ★設定: ベクトル生成を行う期間の限界（例: 30日以内）
-  // これより古い記事は、ベクトルが無くても無視します（メンテナンスジョブとの競合回避）
+  // ★設定: ベクトル生成を行う期間の限界（30日）
   const VECTOR_GENERATION_WINDOW_DAYS = 30; 
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - VECTOR_GENERATION_WINDOW_DAYS);
@@ -1872,10 +1867,35 @@ function processSummarization() {
   const modelInfo = LlmService.getModelInfo();
   Logger.log(`🤖 要約ジョブ開始 (Model: ${modelInfo.nano}/${modelInfo.mini}) - Cutoff: ${fmtDate(cutoffDate)}`);
 
-  // データ範囲を取得
+  // --- 【ここが修正ポイント】メモリ節約読み込み ---
+  // 1. まず日付列(A列)だけを取得して、処理対象の行数を特定する (軽量)
+  const dateValues = trendDataSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let targetRowCount = 0;
+  
+  // 日付は降順（最新が上）前提
+  for (let i = 0; i < dateValues.length; i++) {
+    const d = new Date(dateValues[i][0]);
+    if (d < cutoffDate) {
+      // cutoffDateより古い記事が現れたら、そこまでの行数で打ち切る
+      targetRowCount = i; 
+      break;
+    }
+    // 最後まで新しい場合
+    targetRowCount = i + 1;
+  }
+
+  if (targetRowCount === 0) {
+    Logger.log("直近(Cutoff期間内)の記事がないため終了します。");
+    return;
+  }
+
+  // 2. 必要な行数分だけ、全列データを取得する (ここだけメモリ消費)
+  // 全行(lastRow-1)ではなく、targetRowCount(例えば12000行)だけ読む
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
-  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
+  const dataRange = trendDataSheet.getRange(2, 1, targetRowCount, maxCol);
   const values = dataRange.getValues();
+
+  Logger.log(`メモリ最適化: シート全${lastRow - 1}行中、直近${targetRowCount}行のみを読み込んで処理します。`);
   
   const articlesToSummarize = []; // AI要約が必要な長い記事リスト
 
@@ -1885,7 +1905,9 @@ function processSummarization() {
   let maxModifiedIndex = -1;
 
   // --- 1. 走査 & 短い記事/ベクトル欠損の即時処理 ---
+  // values.length は targetRowCount と同じになっている
   for (let i = 0; i < values.length; i++) {
+    // ... (以下のロジックは変更なし。そのままコピペ利用可能) ...
     // タイムアウトチェック (ループ毎)
     if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
       Logger.log(`タイムアウト回避のため、走査を中断しました（Row ${i}まで完了）。`);
@@ -1893,16 +1915,13 @@ function processSummarization() {
     }
 
     const row = values[i];
-    const rowDate = new Date(row[DATE_COL_INDEX]);
-
-    // ★重要: 古い記事は完全にスルーする
-    if (rowDate < cutoffDate) {
-      continue; 
-    }
-
+    // 日付判定は読み込み時に済ませているので、ここでは rowDate < cutoffDate のチェックは不要だが、念のため残しても害はない
+    
     const currentHeadline = row[SUMMARY_COL_INDEX];
     const currentVector = row[VECTOR_COL_INDEX];
 
+    // ... (以下、元のコードと同じ処理) ...
+    
     // 状態判定
     const hasNoHeadline = (!currentHeadline || String(currentHeadline).trim() === "");
     const hasHeadlineButNoVector = (!hasNoHeadline && (!currentVector || String(currentVector).trim() === ""));
@@ -1918,7 +1937,6 @@ function processSummarization() {
         // --- 短い記事: 即時処理 ---
         let newHeadline = "";
         try {
-          // 翻訳ロジック
           if (title && String(title).trim() !== "") {
              if (isLikelyEnglish(String(title))) {
                 newHeadline = LanguageApp.translate(String(title), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
@@ -1933,17 +1951,12 @@ function processSummarization() {
           newHeadline = String(title || abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
         }
 
-        // 見出しセット
         values[i][SUMMARY_COL_INDEX] = newHeadline;
-
-        // ベクトル生成 (即時)
         _generateAndSetVector(values[i], title, newHeadline, VECTOR_COL_INDEX);
         vectorCount++;
-
         _markModified(i);
 
       } else {
-        // --- 長い記事: 後でまとめてAI要約 ---
         articlesToSummarize.push({ originalRowIndex: i, title: title, abstractText: abstractText });
       }
     } 
@@ -1952,17 +1965,14 @@ function processSummarization() {
       const title = row[TITLE_COL_INDEX];
       const headline = String(currentHeadline);
       
-      // ベクトル生成 (即時)
       const success = _generateAndSetVector(values[i], title, headline, VECTOR_COL_INDEX);
       if (success) {
         vectorCount++;
         _markModified(i);
-        // APIレート制限への配慮
         Utilities.sleep(200); 
       }
     }
 
-    // 更新範囲記録ヘルパー
     function _markModified(idx) {
       if (minModifiedIndex === -1 || idx < minModifiedIndex) minModifiedIndex = idx;
       if (idx > maxModifiedIndex) maxModifiedIndex = idx;
@@ -1972,12 +1982,9 @@ function processSummarization() {
   // --- 2. 長い記事のAI要約 & ベクトル生成 ---
   if (articlesToSummarize.length > 0) {
     Logger.log(`${articlesToSummarize.length} 件の長文記事に対してAI要約を実行します。`);
-    
-    // ★追加: カウンター変数を定義
     let processedCount = 0;
 
     for (const article of articlesToSummarize) {
-      // ★追加: 処理中のログを出す
       processedCount++;
       Logger.log(`[${processedCount}/${articlesToSummarize.length}] 処理中: ${article.title.substring(0, 20)}...`);
 
@@ -1991,7 +1998,6 @@ function processSummarization() {
       apiCallCount++;
 
       let newHeadline = null;
-      // JSONパース試行
       if (jsonString && !String(jsonString).includes("API Error")) {
         try {
           const parsedJson = cleanAndParseJSON(jsonString);
@@ -2002,18 +2008,12 @@ function processSummarization() {
         }
       }
 
-      // 正常な見出しが得られた場合
       if (newHeadline && !String(newHeadline).includes("API Error") && !String(newHeadline).includes("Safety")) {
         values[article.originalRowIndex][SUMMARY_COL_INDEX] = newHeadline;
-        
-        // ベクトル生成
         _generateAndSetVector(values[article.originalRowIndex], article.title, newHeadline, VECTOR_COL_INDEX);
         vectorCount++;
-
         _markModified(article.originalRowIndex);
-
       } else {
-        // エラー時の処理 (恒久エラーなら書き込んで再処理防止)
         const errStr = String(newHeadline);
         if (errStr.includes("Safety") || errStr.includes("Policy") || errStr.includes("Empty")) {
            values[article.originalRowIndex][SUMMARY_COL_INDEX] = `[Error] ${errStr.substring(0, 20)}...`;
@@ -2030,7 +2030,6 @@ function processSummarization() {
     const numRows = maxModifiedIndex - minModifiedIndex + 1;
     const modifiedData = values.slice(minModifiedIndex, maxModifiedIndex + 1);
 
-    // 列数正規化 (ベクトル列まで確実に埋める)
     const maxColsInSlice = modifiedData.reduce((max, row) => Math.max(max, row.length), 0);
     const normalizedData = modifiedData.map(row => {
       while (row.length < maxColsInSlice) row.push("");
