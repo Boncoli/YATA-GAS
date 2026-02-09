@@ -4112,7 +4112,6 @@ function testAllRssFeeds() {
     return;
   }
 
-  // データ取得
   const startRow = AppConfig.get().RssListSheet.DataRange.START_ROW;
   const lastRow = sheet.getLastRow();
   if (lastRow < startRow) {
@@ -4120,73 +4119,208 @@ function testAllRssFeeds() {
     return;
   }
 
-  // 名前(A列)とURL(B列)を取得
   const data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 2).getValues();
+
   Logger.log(`--- RSS全件診断開始 (対象: ${data.length}件) ---`);
-  Logger.log(`※ 処理に時間がかかる場合があります...`);
 
-  let successCount = 0;
-  let errorCount = 0;
-  const errorReport = [];
 
-  // 収集時と同じヘッダーを使用（Bot判定回避のため）
+  const baseHeaders = AppConfig.get().System.HttpHeaders;
   const options = {
-    'muteHttpExceptions': true,
-    'validateHttpsCertificates': false,
-    'headers': AppConfig.get().System.HttpHeaders
+    muteHttpExceptions: true,
+    validateHttpsCertificates: false,
+    headers: {
+      ...baseHeaders,
+      "Accept": "application/atom+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8"
+    }
   };
 
-  data.forEach((row, index) => {
+  // 集計
+  let success = 0;
+  let emptyOk = 0;
+  let fail = 0;
+
+  const details = []; // {row, name, url, status, code, reason, hint}
+
+  data.forEach((row, idx) => {
     const name = row[0];
     const url = row[1];
-    const rowNum = startRow + index;
-
-    if (!url) return; // URL空欄はスキップ
+    const rowNum = startRow + idx;
+    if (!url) return;
 
     try {
-      // 1. 接続テスト
-      const response = UrlFetchApp.fetch(url, options);
-      const code = response.getResponseCode();
+      const res = UrlFetchApp.fetch(url, options);
+      const code = res.getResponseCode();
+      const headers = (typeof res.getHeaders === "function") ? res.getHeaders() : {};
+      const ctype = (headers && (headers["Content-Type"] || headers["content-type"])) ? String(headers["Content-Type"] || headers["content-type"]) : "";
+      const body = res.getContentText() || "";
+      const head = body.substring(0, 300).replace(/\s+/g, " ").trim();
 
       if (code !== 200) {
-        throw new Error(`HTTP Error ${code}`);
+        fail++;
+        details.push({
+          row: rowNum, name, url,
+          status: "FAIL",
+          code,
+          reason: `HTTP Error ${code}`,
+          hint: ""
+        });
+        return;
       }
 
-      // 2. パーステスト (既存のロジックで記事が取れるか)
-      const xml = response.getContentText();
-      const items = parseRssXml(xml, url);
 
-      if (items.length > 0) {
-        successCount++;
-        // 成功ログが多すぎると邪魔なので、進捗だけ少し出す
-        if (successCount % 10 === 0) Logger.log(`... ${successCount} 件 チェック完了`);
+      // ★追加：XMLかどうかを先に判定（Content-Typeと先頭で判定）
+      const isXml = looksLikeXml(body, ctype);
+
+      // ★変更：XMLでない場合だけHTML判定をする（XMLなら絶対にHTML扱いしない）
+      if (!isXml && looksLikeHtmlStrict(body, ctype)) {
+        fail++;
+        details.push({
+          row: rowNum, name, url,
+          status: "FAIL",
+          code,
+          reason: "200だがHTML返却（ブロック/リダイレクト/ログイン誘導の疑い）",
+          hint: `Content-Type=${ctype} / head="${head.slice(0, 120)}..."`
+        });
+        return;
+      }
+
+
+      // パース（Atom/RSS/RDF対応済み）
+      const items = parseRssXml(body, url); // ←既存ロジックを利用 [1](https://cordis.europa.eu/projects)
+
+      if (items && items.length > 0) {
+        success++;
+        return;
+      }
+
+      // items=0 の場合：空フィード（正常）か、構造違い/別形式かを分類
+      const emptyKind = classifyEmptyFeed(body, url);
+
+      if (emptyKind.isEmptyButOk) {
+        emptyOk++;
+        details.push({
+          row: rowNum, name, url,
+          status: "EMPTY_BUT_OK",
+          code,
+          reason: emptyKind.reason,
+          hint: `head="${head.slice(0, 120)}..."`
+        });
       } else {
-        // 接続OKだが記事が取れない (パース失敗 or 記事ゼロ)
-        throw new Error("記事数 0件 (XML構造違い or 記事なし)");
+        fail++;
+        details.push({
+          row: rowNum, name, url,
+          status: "FAIL",
+          code,
+          reason: emptyKind.reason || "記事数0件（XML構造違い/未知形式の可能性）",
+          hint: `Content-Type=${ctype} / head="${head.slice(0, 120)}..."`
+        });
       }
 
     } catch (e) {
-      errorCount++;
-      // エラー内容は詳細に記録
-      errorReport.push(`Row ${rowNum}: [${name}] - ${e.message}\n   URL: ${url}`);
+      fail++;
+      details.push({
+        row: rowNum, name, url,
+        status: "FAIL",
+        code: "EXCEPTION",
+        reason: e.message || String(e),
+        hint: ""
+      });
     }
   });
 
-  // --- 診断結果出力 ---
   Logger.log("\n=============================");
-  Logger.log("      RSS 診断レポート       ");
+  Logger.log(" RSS 診断レポート（改良版） ");
   Logger.log("=============================");
-  Logger.log(`✅ 成功: ${successCount} 件`);
-  Logger.log(`❌ 失敗: ${errorCount} 件`);
+  Logger.log(`✅ SUCCESS: ${success} 件`);
+  Logger.log(`🟡 EMPTY_BUT_OK: ${emptyOk} 件`);
+  Logger.log(`❌ FAIL: ${fail} 件`);
 
-  if (errorCount > 0) {
-    Logger.log("\n【失敗したフィード一覧】");
-    Logger.log(errorReport.join("\n\n"));
-    Logger.log("\n※ HTTP Error 403/429 はブロックされている可能性があります。");
-    Logger.log("※ 「記事数 0件」は、RSSの形式が変わっているか、空のフィードです。");
+  // FAIL と EMPTY_BUT_OK だけ詳細表示（成功は数が多いので省略）
+  const show = details.filter(d => d.status !== "SUCCESS");
+  if (show.length > 0) {
+    Logger.log("\n【詳細】");
+    show.forEach(d => {
+      Logger.log(
+        `Row ${d.row}: [${d.name}] - ${d.status} - ${d.reason}\n` +
+        `  URL: ${d.url}\n` +
+        `  Code: ${d.code}\n` +
+        (d.hint ? `  Hint: ${d.hint}\n` : "")
+      );
+    });
   } else {
-    Logger.log("\n🎉 おめでとうございます！全てのRSSフィードが正常です。");
+    Logger.log("\n🎉 全フィードが正常（または空でも正常扱い）です。");
   }
+}
+
+
+// ---- ヘルパー：HTMLっぽい返却か判定 ----
+function looksLikeHtmlStrict(text, contentType) {
+  if (!text) return false;
+  const t = text.trim().toLowerCase();
+  const ct = (contentType || "").toLowerCase();
+
+  // Content-Typeが明確にHTML
+  if (ct.includes("text/html")) return true;
+
+  // 先頭がHTMLドキュメント
+  if (t.startsWith("<!doctype html") || t.startsWith("<html")) return true;
+
+  // <head>と<body>の両方があり、かつXML宣言がない場合はHTML寄り
+  if (!t.startsWith("<?xml") && t.includes("<head") && t.includes("<body")) return true;
+
+  // ※ "login" や "sign in" など “単語” では判定しない（RSS本文で普通に出るため）
+  return false;
+}
+
+function looksLikeXml(text, contentType) {
+  const t = (text || "").trim().toLowerCase();
+  const ct = (contentType || "").toLowerCase();
+
+  // Content-Type優先（rss+xml / atom+xml / rdf+xml / xml）
+  if (ct.includes("application/rss+xml")) return true;
+  if (ct.includes("application/atom+xml")) return true;
+  if (ct.includes("application/rdf+xml")) return true;
+  if (ct.includes("xml")) return true;
+
+  // 先頭判定（実データとしてXMLっぽい）
+  return (
+    t.startsWith("<?xml") ||
+    t.startsWith("<rss") ||
+    t.startsWith("<feed") ||
+    t.startsWith("<rdf:rdf") ||
+    t.startsWith("<rdf")
+  );
+}
+
+// ---- ヘルパー：items=0 のとき、空フィードとして正常か分類 ----
+function classifyEmptyFeed(xml, url) {
+  const t = (xml || "").trim();
+
+  // Atom feed（Google Alerts/medRxivなど）：<feed> はあるが <entry> が無い＝新着なしの可能性
+  const isAtom = t.startsWith("<feed") || t.includes('xmlns="http://www.w3.org/2005/Atom"');
+  if (isAtom) {
+    const hasEntry = /<entry[\s>]/i.test(t);
+    if (!hasEntry) {
+      // Google Alertsは空が普通に起こる
+      if (String(url).includes("google.com/alerts/feeds") || String(url).includes("google.co.jp/alerts/feeds")) {
+        return { isEmptyButOk: true, reason: "Atom feed（Google Alerts）：最近の結果なし/新着0件" };
+      }
+      // 一般のAtomでも「新着0件」はあり得るので、基本はOK扱い
+      return { isEmptyButOk: true, reason: "Atom feed：新着0件の可能性（<entry>なし）" };
+    }
+  }
+
+  // RSS feed：<rss>はあるが <item> が無い＝新着0件/形式差の可能性
+  const isRss = /<rss[\s>]/i.test(t) || /<channel[\s>]/i.test(t);
+  if (isRss) {
+    const hasItem = /<item[\s>]/i.test(t);
+    if (!hasItem) {
+      return { isEmptyButOk: true, reason: "RSS feed：新着0件の可能性（<item>なし）" };
+    }
+  }
+
+  // ここまで来ると「XMLっぽいがRSS/Atomとして判定不能」か「別形式」
+  return { isEmptyButOk: false, reason: "XMLは取得できたがRSS/Atomとして記事抽出できず" };
 }
 
 /**
