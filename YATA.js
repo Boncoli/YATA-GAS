@@ -2356,31 +2356,41 @@ function collectRssFeeds() {
             const cleanTitle = stripHtml(item.title).trim();
             const fingerprint = _normalizeTitleFingerprint(cleanTitle);
 
-            // 1. URL重複チェック (最速)
+            // 1. URL重複チェック
             if (existingUrlSet.has(normalizedLink)) return;
             
-            // 2. タイトル指紋重複チェック (高速・高精度)
-            // 記号の違いや全角半角、URL変更を伴う重複をここで弾く
+            // 2. タイトル指紋重複チェック
             if (existingTitleSet.has(fingerprint)) return;
 
             if (!item.pubDate || !isRecentDate(item.pubDate, DATE_LIMIT_DAYS)) return;
             
-            // ★日付解析ロジックを追加
+            // ★日付解析ロジック
             let articleDate = new Date(item.pubDate);
-            // パース失敗（Invalid Date）の場合は、安全策として現在時刻を使う
             if (isNaN(articleDate.getTime())) {
               articleDate = new Date();
             }
+
+            // ★カテゴリタグの整形ロジック
+            let abstractText = stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim().replace(/[\r\n]+/g, " ");
             
+            if (item.categories && item.categories.length > 0) {
+              // 重複を除去してカンマ区切りに
+              const uniqueTags = [...new Set(item.categories)].join(", ");
+              // Abstractの末尾に [Tags: ...] 形式で追記
+              if (uniqueTags) {
+                abstractText += ` [Tags: ${uniqueTags}]`;
+              }
+            }
+
             chunkNewItems.push([
-              articleDate, // ★ 記事の日時を使用
+              articleDate,      // 正しい日付
               cleanTitle,
               item.link,
-              stripHtml(item.description || AppConfig.get().Llm.NO_ABSTRACT_TEXT).trim().replace(/[\r\n]+/g, " "),
+              abstractText,     // タグ付きの要約本文
               "",
               meta.siteName
             ]);
-            // 追加した記事も即座に重複除外セットに追加
+            
             existingUrlSet.add(normalizedLink);
             existingTitleSet.add(fingerprint);
           } catch (e) {}
@@ -3097,17 +3107,13 @@ function isRecentDate(dateStr, daysLimit) {
 }
 
 /**
- * parseRssXml
+ * parseRssXml (カテゴリ抽出対応版)
  * 【責務】RSSのXML文字列をパースして記事オブジェクトの配列を返す。
- * 【対応フォーマット】RSS 2.0, Atom, RSS 1.0 (RDF)
- * @param {string} xml - RSSのXML文字列
- * @param {string} url - エラーログ用のURL
- * @returns {Array} 記事オブジェクトの配列
+ * 【対応】RSS 2.0, Atom, RSS 1.0 (RDF) + カテゴリタグ抽出
  */
 function parseRssXml(xml, url) {
   try {
-    // 1. 最低限のサニタイズ（制御文字削除 & エスケープ漏れ修正のみ）
-    // ※タグの書き換えは行わない
+    // 1. 最低限のサニタイズ
     let safeXml = xml.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
     safeXml = safeXml.replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[a-f\d]+);)/gi, '&amp;');
 
@@ -3122,37 +3128,24 @@ function parseRssXml(xml, url) {
     const root = document.getRootElement();
     let itemNodes = [];
 
-    // 2. 記事ノードの探索 (名前空間を無視して探すヘルパーを使用)
-    
-    // パターンA: <channel> がある場合 (RSS 2.0 / Mixed)
+    // 2. 記事ノードの探索
     const channel = getChildNoNs(root, 'channel');
     if (channel) {
-      // channelの下の item または entry を探す
       itemNodes = getChildrenNoNs(channel, 'item');
-      if (itemNodes.length === 0) {
-        itemNodes = getChildrenNoNs(channel, 'entry'); // 混合型対策
-      }
+      if (itemNodes.length === 0) itemNodes = getChildrenNoNs(channel, 'entry');
     }
-
-    // パターンB: ルート直下を探す (RSS 1.0 / Atom)
-    if (itemNodes.length === 0) {
-      itemNodes = getChildrenNoNs(root, 'item'); // RSS 1.0 (RDF)
-    }
-    if (itemNodes.length === 0) {
-      itemNodes = getChildrenNoNs(root, 'entry'); // Atom
-    }
+    if (itemNodes.length === 0) itemNodes = getChildrenNoNs(root, 'item');
+    if (itemNodes.length === 0) itemNodes = getChildrenNoNs(root, 'entry');
 
     if (itemNodes.length === 0) return [];
 
-    // 3. データ抽出 (名前空間無視で中身を取り出す)
+    // 3. データ抽出
     return itemNodes.map(node => {
       // リンク取得
       let link = getXmlValue(node, ['link', 'origLink']); 
       if (!link) {
-        // <link href="..."> 形式 (Atom系) を属性から探す
         const allChildren = node.getChildren();
         for (const c of allChildren) {
-          // タグ名が link で、href属性を持っているか確認
           if (c.getName().toLowerCase() === 'link' && c.getAttribute('href')) {
             link = c.getAttribute('href').getValue();
             break;
@@ -3160,12 +3153,26 @@ function parseRssXml(xml, url) {
         }
       }
 
+      // ★追加: カテゴリタグの収集
+      const categories = [];
+      const catNodes = getChildrenNoNs(node, 'category');
+      catNodes.forEach(c => {
+        let txt = c.getText(); // RSS 2.0 (<category>Tag</category>)
+        if (!txt) txt = c.getAttribute('term') ? c.getAttribute('term').getValue() : ""; // Atom (<category term="Tag"/>)
+        if (txt) categories.push(txt.trim());
+      });
+      // Dublin Core (dc:subject) も探す
+      const subjectNodes = getChildrenNoNs(node, 'subject'); // namespace無視ヘルパー使用
+      subjectNodes.forEach(s => {
+        if(s.getText()) categories.push(s.getText().trim());
+      });
+
       return {
         title: getXmlValue(node, ['title']),
         link: link,
         description: getXmlValue(node, ['description', 'encoded', 'content', 'summary']),
-        // 各種日付タグ候補を順に試す
         pubDate: getXmlValue(node, ['pubDate', 'date', 'updated', 'published', 'dc:date']),
+        categories: categories, // ★ここに追加
         source: "AutoDetect"
       };
     });
