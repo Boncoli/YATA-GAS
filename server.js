@@ -37,6 +37,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS drive_logs (
     battery INTEGER     -- iPhoneのバッテリー残量
 )`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS fuel_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    odometer REAL,      -- 総走行距離 (km)
+    amount REAL,        -- 給油量 (L)
+    price INTEGER,      -- 単価
+    location TEXT,      -- 住所
+    note TEXT
+)`);
+
 const app = express();
 const PORT = 3001; // Grafanaと被らないように3001に変更
 
@@ -61,6 +71,24 @@ app.post('/api/carplay-log', (req, res) => {
         insert.run(action, timestamp, latitude, longitude, altitude, address, note, battery);
         
         res.json({ status: "success", message: "Logged successfully" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ status: "error", message: e.message });
+    }
+});
+
+// 0.2 燃費ログ API
+app.post('/api/fuel-log', (req, res) => {
+    try {
+        const { timestamp, odometer, amount, price, location, note } = req.body;
+        const ts = timestamp || new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+        
+        console.log(`[IoT] Fuel Log: ${odometer}km, ${amount}L at ${location}`);
+
+        const insert = db.prepare("INSERT INTO fuel_logs (timestamp, odometer, amount, price, location, note) VALUES (?, ?, ?, ?, ?, ?)");
+        insert.run(ts, odometer, amount, price, location, note);
+        
+        res.json({ status: "success", message: "Fuel logged successfully" });
     } catch (e) {
         console.error(e);
         res.status(500).json({ status: "error", message: e.message });
