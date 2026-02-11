@@ -68,7 +68,7 @@ FONT_WEATHER = os.path.join(FONT_BASE, "WeatherIcons.ttf")
 
 FS = {
     "clock": 74, "date_num": 50, "date_day": 16,
-    "icon_lg": 54, "icon_md": 22, "icon_sm": 16,
+    "icon_lg": 50, "icon_md": 22, "icon_sm": 16,
     "temp_md": 14, "weather_txt": 12, "card_title": 16,
     "sys_text": 14, "stock_name": 14, "stock_val": 14,
     "news_src": 12, "news_body": 14, "trend_text": 14,
@@ -113,31 +113,31 @@ LO = {
         
         "hol_bg_y1": 75,     # 祝日名背景の開始Y
         "hol_bg_y2": 95,     # 祝日名背景の終了Y
-        "hol_txt_y": 74,     # 祝日名テキストのY座標
+        "hol_txt_y": 73,     # 祝日名テキストのY座標
         "clock_hol_y": -20   # 祝日時の時計のY座標 (祝日名と重ならないよう更に上へ)
     },
     "weather": {
         # メイン天気 (左上)
-        "main_icon": {"x": 2, "y": 2}, 
-        "main_temp": {"x": 57, "y": 65},
+        "main_icon": {"x": 15, "y": -1}, 
+        "main_temp": {"x": 57, "y": 70},
         
         # 3時間毎予報 (中央〜右)
         "hourly": {
             "start_x": 90, "step": 42,           # 開始X位置, 1つごとの横幅
             "time_x": 7, "icon_x": 8, "temp_x": 18,  # 各要素の内部Xオフセット
-            "time_y": 3, "icon_y": 12, "temp_y": 40  # 各要素の内部Yオフセット
+            "time_y": 3, "icon_y": 10, "temp_y": 41  # 各要素の内部Yオフセット
         },
         
         # 週間予報 (下段)
         "daily":  {
             "box_x": 90, "box_w": 125, "box_y": 54, "box_h": 35, # 枠線の矩形
             "start_x": 90, "step": 62,           # 開始X位置, 1つごとの横幅
-            "day_x": 8, "icon_x": 30, "temp_x": 33,  # 各要素の内部Xオフセット
-            "day_y": 62, "icon_y": 55, "temp_y": 77  # 各要素の内部Yオフセット
+            "day_x": 8, "icon_x": 33, "temp_x": 33,  # 各要素の内部Xオフセット
+            "day_y": 64, "icon_y": 55, "temp_y": 77  # 各要素の内部Yオフセット
         },
         
         # AQI (空気質) - sizeはFSへ移動
-        "aqi": {"x": -8, "y": 65}, 
+        "aqi": {"x": -7, "y": 70}, 
 
         # 警報・注意報リスト
         "warn":   {
@@ -250,21 +250,24 @@ def get_weather_icon(main, description, sunrise=None, sunset=None, check_time=No
         return NIGHT_ICON_MAP.get(icon, icon)
     return icon
 
-def draw_weather_icon_smart(draw_b, draw_r, xy, icon_char, font, is_highlight=False):
+def draw_highlight_text(draw_b, draw_r, xy, text, font):
     x, y = xy
+    # 1px Outline (8 directions)
+    offsets = [(-1, -1), (0, -1), (1, -1),
+               (-1,  0),          (1,  0),
+               (-1,  1), (0,  1), (1,  1)]
+    for dx, dy in offsets:
+        draw_b.text((x + dx, y + dy), text, font=font, fill=1)
+    # Body (Red with white mask)
+    draw_b.text((x, y), text, font=font, fill=1)
+    draw_r.text((x, y), text, font=font, fill=0)
+
+def draw_weather_icon_smart(draw_b, draw_r, xy, icon_char, font, is_highlight=False):
     if is_highlight:
-        # 1px Outline (8 directions)
-        offsets = [(-1, -1), (0, -1), (1, -1),
-                   (-1,  0),          (1,  0),
-                   (-1,  1), (0,  1), (1,  1)]
-        for dx, dy in offsets:
-            draw_b.text((x + dx, y + dy), icon_char, font=font, fill=1)
-        # Body (Red with white mask)
-        draw_b.text((x, y), icon_char, font=font, fill=1)
-        draw_r.text((x, y), icon_char, font=font, fill=0)
+        draw_highlight_text(draw_b, draw_r, xy, icon_char, font)
     else:
         # Standard (Black/White)
-        draw_b.text((x, y), icon_char, font=font, fill=1)
+        draw_b.text(xy, icon_char, font=font, fill=1)
 
 def draw_smart_text(draw_b, draw_r, xy, text, font, color_type=COLOR_BLACK):
     target = draw_r if color_type == COLOR_RED else draw_b
@@ -382,7 +385,7 @@ def create_dashboard_layers():
     wd_str = JP_WEEKDAYS[now.weekday()]
 
     if holiday_name:
-        # "月 祝" の場合 (曜日は白、祝は赤)
+        # "月 祝" の場合 (曜日は白、祝は赤 + 白縁取り)
         gap = 4
         hol_mark = "祝"
         wd_w = draw_b.textlength(wd_str, font=w_font)
@@ -393,9 +396,8 @@ def create_dashboard_layers():
         
         # 曜日(白)
         draw_b.text((start_x, dy + LO['header']['day_y']), wd_str, font=w_font, fill=1)
-        # 祝(赤)
-        draw_b.text((start_x + wd_w + gap, dy + LO['header']['day_y']), hol_mark, font=w_font, fill=1) # 白抜き
-        draw_r.text((start_x + wd_w + gap, dy + LO['header']['day_y']), hol_mark, font=w_font, fill=0) # 赤
+        # 祝(赤 + 白縁取り)
+        draw_highlight_text(draw_b, draw_r, (start_x + wd_w + gap, dy + LO['header']['day_y']), hol_mark, w_font)
     else:
         # 通常 (曜日のみ白)
         wd_w = draw_b.textlength(wd_str, font=w_font)
@@ -452,9 +454,8 @@ def create_dashboard_layers():
             aqi_pos = (weather_base_x + aqi_conf['x'], py + aqi_conf['y']) 
             
             if aqi_val >= 4:
-                # 警告時: 赤文字 (draw_rに描く)
-                # ※黒背景上の赤文字は見にくいかもしれないため、白抜き文字にする手もあるが一旦赤で。
-                draw_r.text(aqi_pos, aqi_text, font=aqi_font, fill=0)
+                # 警告時: 赤文字 + 白縁取り (黒背景上で浮き上がらせる)
+                draw_highlight_text(draw_b, draw_r, aqi_pos, aqi_text, aqi_font)
             else:
                 # 通常時: 白文字 (黒背景上なのでfill=1)
                 draw_b.text(aqi_pos, aqi_text, font=aqi_font, fill=1)
@@ -613,6 +614,9 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         x, y = start_x + (c * cell_w), start_y + (r * cell_h)
         draw_b.rectangle((x, y, x+cell_w, y+cell_h), outline=0, width=1)
         
+        # 為替(JPY=X)かどうかを判定
+        is_currency = item["symbol"] == "JPY=X" or "USD/JPY" in item["name"]
+        
         df = pd.DataFrame()
         date_label = ""
         current_val, prev_close_val = 0, 0
@@ -753,7 +757,7 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
             chart = ImageOps.invert(Image.open(buf).convert("L")).convert("1")
             cx, cy = int(x+MP['txt_x']), int(y+MP['chart_y'])
             
-            if change < 0:
+            if change < 0 and not is_currency:
                 draw_r.bitmap((cx, cy), chart, fill=0) # 赤で描く
                 draw_b.bitmap((cx, cy), chart, fill=1) # 黒を抜く
             else:
@@ -768,7 +772,8 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
         draw_smart_text(draw_b, draw_r, (x+MP['txt_x'] + name_w + 5, y+MP['name_y'] + 2), f"[{date_label}]", get_font("medium", 10))
         
         # 変化記号と色: プラス=黒(+), マイナス=赤(-), 変わらず=黒(=)
-        text_color = COLOR_RED if change < 0 else COLOR_BLACK
+        # 為替(USD/JPY)の場合は常に黒
+        text_color = COLOR_RED if (change < 0 and not is_currency) else COLOR_BLACK
         
         # 1. 現在値 (大きく) - 符号は付けずに絶対値のみ表示
         val_str = item['fmt'].format(current_val)

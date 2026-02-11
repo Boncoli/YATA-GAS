@@ -68,15 +68,29 @@ DBの肥大化を防ぐため、古い記事は定期的に JSON ファイルへ
     *   手順: `collect` テーブルから条件に合うデータを `collect_archive` へ移動 -> `collect` から削除。
 2.  **JSONエクスポート**:
     *   `collect_archive` の内容を `archive/` フォルダへ JSON として書き出し。
-    *   書き出し後、DB内の `collect_archive` テーブルは削除 (`DROP`) して軽量化。
-    *   **現状**: 2026年2月5日 17:00 (JST) 以前のデータ 11,659 件は `archive/collect_before_20260205_1700.json` に退避済み。
+    *   **重要**: 書き出し後、DB内の `collect_archive` テーブルは手動で削除 (`DROP`) し、`VACUUM` を実行しないとファイルサイズは削減されません。
+    *   **実績**: 2026年2月11日、アーカイブ残存データの削除と VACUUM により 217MB -> 32MB への削減を確認。
 
-### RSSフィードのローカル管理 (2026/02 移行)
-システムの自律性を高めるため、RSSフィードのリスト管理を Google スプレッドシートからローカルの JSON ファイルへ移行しました。
+### 定期メンテナンス (自動)
+*   **頻度**: 毎月1日 04:00 (crontab設定済み)
+*   **実行ファイル**: `tasks/maintenance-db.js`
+*   **対象**: 各種ログテーブル (`weather_log`, `remo_log`, `finance_log` 等) を180日分保持してアーカイブ・削除。
+*   **注意**: この自動処理には `collect` (ニュース記事) テーブルは含まれません。記事の整理は必要に応じて手動で行います。
 
-*   **データファイル**: `rss-list.json` (プロジェクトルート)
-*   **優先順位**: `gas-bridge.js` は、この JSON ファイルが存在する場合、スプレッドシートよりも優先して読み込みます。
-*   **管理スクリプト**: `tasks/manage-feeds.js` を使用して、CLIから対話的に管理可能です。
+### 設定データのローカル管理 (2026/02 移行)
+システムの自律性を高めるため、外部（Google スプレッドシート等）に依存していた設定データをローカルの JSON ファイルへ移行しました。
+
+*   **RSSフィード**: `rss-list.json` (プロジェクトルート)
+*   **LLMプロンプト**: `prompts.json` (プロジェクトルート)
+*   **優先順位**: `gas-bridge.js` は、これらの JSON ファイルが存在する場合、スプレッドシートよりも優先して読み込みます。
+*   **管理**: フィードは `tasks/manage-feeds.js` で管理可能です。プロンプトは直接 JSON を編集するか、後述の同期コマンドでスプレッドシートから更新できます。
+
+### 通知・レポート機能
+*   **Discord 投稿 (アクティブ)**: `tasks/do-discord-digest.js` により、毎朝前日のハイライトを投稿します。
+*   **メールレポート (モック)**: `YATA.js` の `sendPersonalizedReport` 機能は実装されていますが、ローカル環境の `gas-bridge.js` では**実際の送信（SMTP等）は行わず、コンソールへのログ出力のみ**を行っています。
+    *   **理由**: ラズパイ環境での不要な外部依存（メールパスワード管理等）を避けるため。
+    *   **拡張**: 実際に送信が必要な場合は、`gas-bridge.js` の `handleEmail` 関数内に `nodemailer` 等の送信ロジックを実装してください。
+*   **件名タグ**: メール（ログ）の件名には `[YATA-DAILY]` や `[YATA-WEEKLY]` タグが自動付与されるよう Bridge 側で制御しています。
 
 ---
 
@@ -85,12 +99,15 @@ DBの肥大化を防ぐため、古い記事は定期的に JSON ファイルへ
 1.  **起動 (`run-ram.sh`)**: Disk DB -> RAM DB コピー。環境変数 `DB_PATH` 設定。
 2.  **収集 (`do-collect`)**: RSSフェッチ -> 重複チェック -> RAM DBへ保存。
 3.  **加工 (`do-summarize`)**: 未要約記事抽出 -> LLM要約・ベクトル化 -> RAM DB更新。
-4.  **終了 (`run-ram.sh`)**: RAM DB -> Disk DB 書き戻し。
-5.  **表示 (`dashboard.py`)**: Disk DB を読み取り専用で参照して描画。
+4.  **配信**: 
+    - Discord: `do-discord-digest.js` が昨日のまとめを生成して投稿。
+    - メール: `do-send-report.js` が週報等を生成（現在はログ出力のみ）。
+5.  **終了 (`run-ram.sh`)**: RAM DB -> Disk DB 書き戻し。
+6.  **表示 (`dashboard.py`)**: Disk DB を読み取り専用で参照して描画。
 
 > [!NOTE]
-> **2026/02/09 更新**:
-> システムの更新間隔を「10分」から「5分」に短縮しました。これに伴い、`dashboard.py` のチャート描画ロジック（取得件数や線の太さ）を調整済みです。
+> **2026/02/11 更新**:
+> 設定データの完全ローカル管理、および Discord 毎日速報・メール週報（モック）のスケジュール運用を開始しました。
 
 ---
 
@@ -133,6 +150,12 @@ cp /dev/shm/yata.db yata.db         # ディスクへ反映
 sqlite3 yata.db "DROP TABLE collect_archive; VACUUM;" # 後始末
 ```
 
+**設定データの同期 (スプレッドシート -> ローカル)**:
+```bash
+# プロンプトの同期 (prompts.json の更新)
+node -e 'const f=require("sync-fetch"),fs=require("fs"); const csv=f(process.env.PROMPTS_CSV_URL).text(); const rows=csv.split(/\r?\n/).map(l=>l.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c=>c.replace(/^"(.*)"$/,"$1").trim())); const p={}; rows.forEach((r,i)=>{if(i>0 && r[0]) p[r[0].trim()]=r[1].trim();}); fs.writeFileSync("prompts.json", JSON.stringify(p,null,2)); console.log("prompts.json updated.");'
+```
+
 **RSSフィード管理**:
 ```bash
 node tasks/manage-feeds.js list             # 一覧表示
@@ -152,4 +175,4 @@ cd dashboard && python3 dashboard.py
 ```
 
 ---
-*Last Updated: 2026-02-09 by Gemini Agent*
+*Last Updated: 2026-02-11 by Gemini Agent*
