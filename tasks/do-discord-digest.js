@@ -90,6 +90,16 @@ ${summary}`
 
   if (response.getResponseCode() === 204 || response.getResponseCode() === 200) {
     console.log("✅ Successfully posted to Discord.");
+    
+    // history テーブルに保存 (週刊レポートのソースとして利用)
+    try {
+      const historySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("history");
+      // [Date, Keyword, Summary, Vector]
+      historySheet.appendRow([new Date(), "DISCORD_DIGEST", summary, ""]);
+      console.log("✅ Saved digest to history table.");
+    } catch (e) {
+      console.error("Failed to save to history:", e.message);
+    }
   } else {
     console.error(`❌ Failed to post to Discord. Status: ${response.getResponseCode()}`);
   }
