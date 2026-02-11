@@ -17,6 +17,7 @@
     "ejs": "^3.1.10",
     "express": "^5.2.1",
     "googleapis": "^169.0.0",
+    "nodemailer": "^8.0.1",
     "rss-parser": "^3.13.0",
     "sync-fetch": "^0.6.0"
   }
