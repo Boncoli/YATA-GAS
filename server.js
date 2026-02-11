@@ -18,6 +18,25 @@ if (fs.existsSync('/dev/shm/yata.db')) {
 require('./lib/gas-bridge.js'); 
 require('./lib/yata-loader.js');
 
+// ---------------------------------------------------------
+// DB初期化 (CarPlayログ用テーブル)
+// ---------------------------------------------------------
+const dbPath = process.env.DB_PATH;
+const Database = require('better-sqlite3');
+const db = new Database(dbPath);
+
+db.exec(`CREATE TABLE IF NOT EXISTS drive_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT,        -- 'connect' or 'disconnect'
+    timestamp TEXT,
+    latitude REAL,
+    longitude REAL,
+    altitude REAL,      -- 高度を追加
+    address TEXT,
+    note TEXT,
+    battery INTEGER     -- iPhoneのバッテリー残量
+)`);
+
 const app = express();
 const PORT = 3001; // Grafanaと被らないように3001に変更
 
@@ -31,6 +50,32 @@ app.use(express.static(path.join(__dirname, 'local_public')));
 // ---------------------------------------------------------
 // API定義
 // ---------------------------------------------------------
+
+// 0. CarPlay ログ API
+app.post('/api/carplay-log', (req, res) => {
+    try {
+        const { action, timestamp, latitude, longitude, altitude, address, note, battery } = req.body;
+        console.log(`[IoT] CarPlay ${action}: ${address || (latitude + ',' + longitude)} (Alt: ${altitude}m)`);
+
+        const insert = db.prepare("INSERT INTO drive_logs (action, timestamp, latitude, longitude, altitude, address, note, battery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        insert.run(action, timestamp, latitude, longitude, altitude, address, note, battery);
+        
+        res.json({ status: "success", message: "Logged successfully" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ status: "error", message: e.message });
+    }
+});
+
+// 0.1 ドライブログ履歴取得 API
+app.get('/api/drive-history', (req, res) => {
+    try {
+        const rows = db.prepare("SELECT * FROM drive_logs ORDER BY timestamp ASC").all();
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // 1. 検索 API
 app.post('/api/search', async (req, res) => {

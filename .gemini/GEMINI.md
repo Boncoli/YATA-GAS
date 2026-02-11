@@ -29,4 +29,27 @@
 - **Gitリポジトリ**: `main`は会社との共通ブランチ、`local-raspi`はラズパイ専用ブランチです。lib/YATA.jsの修正時はブランチ間の競合に細心の注意を払ってください。
 
 ---
+
+## 6. ユーザーコンテキスト & パーソナライズ
+- **自宅ハードウェア・IT環境**:
+    - **メインPC**: Ryzen 7 7800X3D / RTX 4070 Ti / MSI B850M / Thermaltake The Tower 300（水冷）
+    - **モニター**: JAPANEXT製WQHD HDR対応モニターをメインとしたデュアルディスプレイ環境
+    - **NAS**: Synology DS220j
+    - **IoT**: Raspberry Pi (hostname: `boncoli`) + Nature Remo + Grafanaダッシュボード
+- **技術・関心分野**:
+    - Python / GAS による実用ツール開発（RSS＋AI要約「YATA」）
+    - BIOSチューニング、省電力化、動画エンコード最適化（HandBrake / AV1 / H.265）
+- **嗜好・ライフスタイル**:
+    - **車**: マツダ CX-80（ロングドライブが趣味）
+    - 一人旅・ビジホ（東横イン志向）
+    - ホロライブ箱推し、FF14 / Cyberpunk 2077 / RimWorld / Cities: Skylines II
+    - 焼肉好き、祖父直伝の「豚天」レシピ再現チャレンジ
+- **属性**:
+    - **居住地**: 兵庫県・明石周辺
+    - **職業**: 診断薬・医療機器系メーカーで試薬系開発に従事
+- **ライフログ・インフラ (2026/02 構築)**:
+    - iPhoneショートカット ➔ Tailscale ➔ RasPi (`server.js`) の連携により、`InCar/OutCar`, `InHome/OutHome`, `photo` 等の行動ログを自動蓄積。
+    - 蓄積されたデータは `/map.html` で視覚化され、知的好奇心のアーカイブとして活用。
+
+---
 この掟は YATA プロジェクトの魂です。今日も `PROJECT_GUIDE.md` と共に、最高にスマートなニュース環境を作り上げましょう！
