@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA - Drive Log Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            max-width: 300px;
+            pointer-events: auto;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #2c3e50; }
+        .stats { font-size: 14px; color: #555; }
+    </style>
+</head>
+<body>
+
+    <div class="info-panel">
+        <h2>🚗 CX-80 Drive Log</h2>
+        <div id="stats-content" class="stats">読み込み中...</div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // 地図の初期化
+        const map = L.map('map', { zoomControl: false }).setView([34.67, 135.03], 13);
+        L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+        // 背景地図
+        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // カスタムアイコン
+        const createEmojiIcon = (emoji) => L.divIcon({
+            html: `<div style="font-size: 24px;">${emoji}</div>`,
+            className: 'emoji-marker',
+            iconSize: [30, 30],
+            iconAnchor: [15, 30]
+        });
+
+        // レイヤーグループ
+        const carLayer = L.layerGroup();
+        const homeLayer = L.layerGroup();
+        const photoLayer = L.layerGroup();
+        const iphoneTrackLayer = L.layerGroup();
+        const otherLayer = L.layerGroup();
+        const pathLayer = L.layerGroup();
+
+        const overlayMaps = {
+            "🚗 走行ログ (Car)": carLayer,
+            "🏠 自宅 (Home)": homeLayer,
+            "📸 写真 (Photo)": photoLayer,
+            "📱 足取り (iPhone)": iphoneTrackLayer,
+            "📌 その他 (Other)": otherLayer,
+            "〰️ 接続線 (Path)": pathLayer
+        };
+        L.control.layers(null, overlayMaps, { position: 'bottomright', collapsed: true }).addTo(map);
+
+        carLayer.addTo(map); homeLayer.addTo(map); photoLayer.addTo(map);
+        iphoneTrackLayer.addTo(map); otherLayer.addTo(map); pathLayer.addTo(map);
+
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371000;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        fetch('/api/drive-history')
+            .then(res => res.json())
+            .then(data => {
+                const logs = data.logs || [];
+                const tracks = data.tracks || [];
+                
+                const pathCoords = [];
+                let logCount = 0;
+                let validPointsForBounds = [];
+
+                // 1. 通常ログの描画
+                logs.forEach(log => {
+                    // 緯度経度がないログは位置としては無視するが、件数には含めるか検討（一旦位置があるもののみカウント）
+                    if (log.latitude === null || log.longitude === null) return;
+                    
+                    const pos = [log.latitude, log.longitude];
+                    logCount++;
+                    pathCoords.push(pos);
+                    validPointsForBounds.push(pos);
+
+                    let markerColor = "#3498db";
+                    let iconEmoji = "📍";
+                    let targetLayer = otherLayer;
+
+                    if (log.action === "InCar") {
+                        markerColor = "#2ecc71"; iconEmoji = "🚗"; targetLayer = carLayer;
+                    } else if (log.action === "OutCar") {
+                        markerColor = "#e74c3c"; iconEmoji = "🅿️"; targetLayer = carLayer;
+                    } else if (log.action === "InHome" || log.action === "OutHome") {
+                        markerColor = "#f39c12"; iconEmoji = "🏠"; targetLayer = homeLayer;
+                    } else if (log.action === "photo") {
+                        markerColor = "#9b59b6"; iconEmoji = "📸"; targetLayer = photoLayer;
+                    } else if (log.action === "spot" || log.action === "manual") {
+                        markerColor = "#1abc9c"; iconEmoji = "📌"; targetLayer = otherLayer;
+                    }
+
+                    const marker = L.circleMarker(pos, {
+                        radius: 10, fillColor: markerColor, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
+                    });
+
+                    marker.bindPopup(`
+                        <div style="min-width: 200px; font-size: 14px; line-height: 1.6; color: #2c3e50;">
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 24px; margin-right: 10px;">${iconEmoji}</span>
+                                <strong style="font-size: 16px;">${log.action}</strong>
+                            </div>
+                            <div style="border-top: 1px solid #eee; padding-top: 8px;">
+                                <div style="margin-bottom: 4px;">📅 <span style="color: #555;">${log.timestamp}</span></div>
+                                <div style="margin-bottom: 4px;">📍 <span style="color: #555;">${log.address || '住所不明'}</span></div>
+                                <div style="margin-bottom: 4px;">⛰️ 高度: <span style="color: #555;">${log.altitude ? log.altitude.toFixed(1) + 'm' : '---'}</span></div>
+                                ${log.note ? `<div style="margin-top: 10px; padding: 8px; background: #fdfdfd; border: 1px solid ${markerColor}; border-left: 5px solid ${markerColor}; border-radius: 4px; word-wrap: break-word;"><strong>📝 Memo:</strong><br>${log.note}</div>` : ''}
+                            </div>
+                        </div>
+                    `);
+                    targetLayer.addLayer(marker);
+                });
+
+                // 2. 軌跡データの描画
+                let iphonePointTotal = 0;
+                tracks.forEach(track => {
+                    const points = track.path_data; // [[lat, lon, alt], ...]
+                    if (!points || points.length < 2) return;
+                    iphonePointTotal += track.point_count;
+
+                    // 10kmルールで分割
+                    let segments = [];
+                    let currentSegment = [points[0]];
+
+                    for (let i = 1; i < points.length; i++) {
+                        const dist = getDistance(points[i-1][0], points[i-1][1], points[i][0], points[i][1]);
+                        if (dist > 10000) {
+                            segments.push(currentSegment);
+                            currentSegment = [];
+                        }
+                        currentSegment.push(points[i]);
+                    }
+                    segments.push(currentSegment);
+
+                    segments.forEach((seg, sIdx) => {
+                        if (seg.length < 2) return;
+                        const latLons = seg.map(p => [p[0], p[1]]);
+                        latLons.forEach(ll => validPointsForBounds.push(ll));
+                        
+                        L.polyline(latLons, {
+                            color: '#2c3e50', weight: 3, opacity: 0.8, smoothFactor: 1
+                        }).addTo(iphoneTrackLayer).bindPopup(`📱 Track: ${track.note}`);
+
+                        L.marker(latLons[0], { icon: createEmojiIcon('🚩') }).addTo(iphoneTrackLayer).bindPopup(`🏁 Start: ${track.note}`);
+                        L.marker(latLons[latLons.length - 1], { icon: createEmojiIcon('🏁') }).addTo(iphoneTrackLayer).bindPopup(`🏁 End: ${track.note}`);
+                    });
+                });
+
+                // 接続線
+                if (pathCoords.length > 1) {
+                    L.polyline(pathCoords, { color: '#3498db', weight: 2, opacity: 0.5, dashArray: '5, 10' }).addTo(pathLayer);
+                }
+                
+                // 範囲を全データに合わせる
+                if (validPointsForBounds.length > 0) {
+                    map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50] });
+                }
+
+                document.getElementById('stats-content').innerHTML = `
+                    走行イベント: ${logCount} 件<br>
+                    外部インポート: ${tracks.length} 経路 (${iphonePointTotal} pts)<br>
+                    最新ログ: ${logs.length > 0 ? logs[logs.length-1].timestamp : 'なし'}
+                `;
+            })
+            .catch(err => {
+                console.error('Fetch error:', err);
+                document.getElementById('stats-content').innerText = 'データ取得エラー';
+            });
+    </script>
+</body>
+</html>
