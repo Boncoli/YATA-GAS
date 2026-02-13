@@ -86,7 +86,15 @@ fi
 # --- 3. 終わったらRAMからSDへ書き戻す (データの保存) ---
 if [ "$READ_ONLY_MODE" = false ]; then
     echo "[Wrapper] Syncing back to SD card..."
+    # WALとSHMも含めて同期するように改善
     cp "$RAM_DB" "$REAL_DB"
+    [ -f "$RAM_DB-wal" ] && cp "$RAM_DB-wal" "${REAL_DB}-wal"
+    [ -f "$RAM_DB-shm" ] && cp "$RAM_DB-shm" "${REAL_DB}-shm"
+    
+    # 書き戻したファイルの所有権を修正 (root実行対策)
+    # yata.dbの実体(シンボリックリンク先)に対して権限を設定
+    REAL_TARGET=$(readlink -f "$REAL_DB")
+    chmod 666 "$REAL_TARGET" "${REAL_TARGET}-wal" "${REAL_TARGET}-shm" 2>/dev/null
 else
     echo "[Wrapper] Read-only mode: Skipping sync back to SD card."
 fi
