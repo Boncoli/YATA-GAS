@@ -692,8 +692,13 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
                 
                 if not found_baseline:
                       # 基準が見つからない（ずっと動いている、あるいは休みが短い）場合
-                      start_plot_idx = 0
-                      prev_close_val = target_vals[0]
+                      if is_currency:
+                          # 為替の場合は直近24時間分（5分間隔で最大288点）に制限
+                          start_plot_idx = max(0, len(target_vals) - 288)
+                          prev_close_val = target_vals[start_plot_idx]
+                      else:
+                          start_plot_idx = 0
+                          prev_close_val = target_vals[0]
 
                 # --- C. チャート用データの確定 ---
                 # 基準値より後のデータのみをプロットする
