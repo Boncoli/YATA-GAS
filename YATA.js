@@ -284,10 +284,19 @@ const LlmService = (function() {
   function _httpFetch(url, options, serviceName) {
     try {
       const res = UrlFetchApp.fetch(url, options);
-      if (res.getResponseCode() !== 200) return null;
-      return cleanAndParseJSON(res.getContentText());
+      const code = res.getResponseCode();
+      const body = res.getContentText();
+
+      if (code !== 200) {
+        Logger.log(`[${serviceName}] ERROR CODE=${code}`);
+        Logger.log(body.substring(0,300));
+        return null;
+      }
+
+      return JSON.parse(body);
+
     } catch (e) {
-      _logError(serviceName, e, "通信例外");
+      Logger.log(`[${serviceName}] EXCEPTION=${e}`);
       return null;
     }
   }
@@ -314,22 +323,54 @@ const LlmService = (function() {
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     _recordUsage(`OpenAI(${openAiModel})`);
+
     const params = AppConfig.get().Llm.Params;
-    const payload = { 
-      model: openAiModel, 
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
-      max_tokens: params.MaxTokens, 
-      temperature: options.temperature ?? params.Temperature.WRITING 
+    const isGpt5Family = /^gpt-5/i.test(String(openAiModel || ""));
+
+    const payload = {
+      model: openAiModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ]
     };
-    const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
+
+    // 🔹 4.1系のみ temperature を送る
+    if (!isGpt5Family) {
+      payload.temperature = options.temperature ?? params.Temperature.WRITING;
+    }
+
+    // 🔹 トークン指定分岐
+    if (isGpt5Family) {
+      payload.max_completion_tokens = params.MaxTokens;
+    } else {
+      payload.max_tokens = params.MaxTokens;
+    }
+
+    const fetchOptions = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "Authorization": `Bearer ${openAiKey}` },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const json = _httpFetch(
+      "https://api.openai.com/v1/chat/completions",
+      fetchOptions,
+      "OpenAI"
+    );
+
     if (json && json.choices && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
       _trackCost(systemPrompt + userPrompt, content, `OpenAI:${openAiModel}`);
       return content !== "" ? content : null;
     }
+
     return null;
   }
+
+
   
   function _callAzureEmbedding(text, endpoint, apiKey) {
     if (!endpoint || !apiKey) return null;
@@ -3890,6 +3931,40 @@ function runAllTests() {
     throw e;
   }
 }
+
+/**
+ * testCurrentLlmModelRouting
+ * 【責務】LLMが正しくレスを返すか意思疎通確認。
+ */
+function testCurrentLlmModelRouting() {
+  const modelInfo = LlmService.getModelInfo();
+  Logger.log("--- [YATA] LLMモデル疎通テスト開始 ---");
+  Logger.log(`Context=${modelInfo.context}, nano=${modelInfo.nano}, mini=${modelInfo.mini}`);
+
+  const articleText = [
+    "OpenAIは新しい推論最適化機能を公開した。",
+    "企業導入ではレイテンシ・コスト・精度のトレードオフ設計が課題になる。",
+    "今後は要約と深掘り分析をモデル別に分離する設計が一般化する可能性がある。"
+  ].join(" ");
+
+  const nanoResult = LlmService.summarize(articleText);
+  if (!nanoResult || !String(nanoResult).trim()) {
+    throw new Error(`nanoモデル疎通失敗: ${modelInfo.nano}`);
+  }
+  Logger.log(`[nano:${modelInfo.nano}] len=${String(nanoResult).length} preview=${String(nanoResult).slice(0, 120)}`);
+
+  const miniSystemPrompt = "以下の文章の重要点を3つ、日本語で箇条書きで出力してください。";
+  const miniResult = LlmService.analyzeKeywordSearch(miniSystemPrompt, articleText, {
+    temperature: AppConfig.get().Llm.Params.Temperature.STRICT
+  });
+  if (!miniResult || !String(miniResult).trim()) {
+    throw new Error(`miniモデル疎通失敗: ${modelInfo.mini}`);
+  }
+  Logger.log(`[mini:${modelInfo.mini}] len=${String(miniResult).length} preview=${String(miniResult).slice(0, 120)}`);
+
+  Logger.log("✅ LLMモデル疎通ストに成功しました。");
+}
+
 
 /**
  * _test_parseRssXml_Fallback
