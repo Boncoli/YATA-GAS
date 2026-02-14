@@ -215,8 +215,9 @@ const HOME_POS = [34.671500678061975, 135.0307811853228];
                 
                 // 範囲を全データに合わせる
                 if (validPointsForBounds.length > 0) {
-                    const lastLog = logs.length > 0 ? logs[logs.length - 1] : null;
-                if (lastLog && lastLog.action === "InHome") {
+                    const lastHomeLog = logs.slice().reverse().find(l => l.action.includes("Home"));
+                const isAtHome = lastHomeLog && lastHomeLog.action.trim() === "InHome";
+                if (isAtHome) {
                     map.setView(HOME_POS, 16);
                 } else if (validPointsForBounds.length > 0) {
                     map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50], maxZoom: 15 });
