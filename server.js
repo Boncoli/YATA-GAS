@@ -185,6 +185,16 @@ app.get('/api/drive-history', (req, res) => {
     }
 });
 
+// 0.3 ニュース取得 API
+app.get('/api/news', (req, res) => {
+    try {
+        const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 100").all();
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 1. 検索 API
 app.post('/api/search', async (req, res) => {
     try {
