@@ -61,6 +61,7 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // 地図の初期化
+const HOME_POS = [34.671500678061975, 135.0307811853228];
         const map = L.map('map', { zoomControl: false }).setView([34.67, 135.03], 13);
         L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
@@ -121,9 +122,11 @@
                 // 1. 通常ログの描画
                 logs.forEach(log => {
                     // 緯度経度がないログは位置としては無視するが、件数には含めるか検討（一旦位置があるもののみカウント）
-                    if (log.latitude === null || log.longitude === null) return;
+                    let pos = [log.latitude, log.longitude];
+                    if (log.action.includes("Home") && (log.latitude === null || log.longitude === null)) pos = HOME_POS;
+                    if (pos[0] === null || pos[1] === null) return;
                     
-                    const pos = [log.latitude, log.longitude];
+                    
                     logCount++;
                     pathCoords.push(pos);
                     validPointsForBounds.push(pos);
@@ -212,7 +215,14 @@
                 
                 // 範囲を全データに合わせる
                 if (validPointsForBounds.length > 0) {
-                    if (validPointsForBounds.length > 0) { map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50], maxZoom: 15 }); } else { map.setView([34.67, 135.03], 13); }
+                    const lastLog = logs.length > 0 ? logs[logs.length - 1] : null;
+                if (lastLog && lastLog.action === "InHome") {
+                    map.setView(HOME_POS, 16);
+                } else if (validPointsForBounds.length > 0) {
+                    map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50], maxZoom: 15 });
+                } else {
+                    map.setView(HOME_POS, 13);
+                }
                 }
 
                 document.getElementById('stats-content').innerHTML = `
