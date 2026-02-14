@@ -96,7 +96,7 @@
         L.control.layers(null, overlayMaps, { position: 'bottomright', collapsed: true }).addTo(map);
 
         carLayer.addTo(map); homeLayer.addTo(map); photoLayer.addTo(map);
-        iphoneTrackLayer.addTo(map); otherLayer.addTo(map); pathLayer.addTo(map);
+        otherLayer.addTo(map);
 
         function getDistance(lat1, lon1, lat2, lon2) {
             const R = 6371000;
@@ -194,7 +194,7 @@
                     segments.forEach((seg, sIdx) => {
                         if (seg.length < 2) return;
                         const latLons = seg.map(p => [p[0], p[1]]);
-                        latLons.forEach(ll => validPointsForBounds.push(ll));
+                        // latLons.forEach(ll => validPointsForBounds.push(ll));
                         
                         L.polyline(latLons, {
                             color: '#2c3e50', weight: 3, opacity: 0.8, smoothFactor: 1
@@ -212,7 +212,7 @@
                 
                 // 範囲を全データに合わせる
                 if (validPointsForBounds.length > 0) {
-                    map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50] });
+                    if (validPointsForBounds.length > 0) { map.fitBounds(L.polyline(validPointsForBounds).getBounds(), { padding: [50, 50], maxZoom: 15 }); } else { map.setView([34.67, 135.03], 13); }
                 }
 
                 document.getElementById('stats-content').innerHTML = `
