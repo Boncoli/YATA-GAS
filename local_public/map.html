@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YATA - Drive Log Map</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; }
@@ -22,6 +23,27 @@
         }
         h2 { margin: 0 0 10px 0; font-size: 18px; color: #2c3e50; }
         .stats { font-size: 14px; color: #555; }
+        .news-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 45px;
+            height: 45px;
+            background: #007bff;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1001;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        .news-btn:hover {
+            background: #0056b3;
+            transform: scale(1.1);
+        }
     </style>
 </head>
 <body>
@@ -31,6 +53,9 @@
         <div id="stats-content" class="stats">読み込み中...</div>
     </div>
 
+    <a href="/news.html" class="news-btn" title="News Reader">
+        <i class="bi bi-newspaper" style="font-size: 22px;"></i>
+    </a>
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -119,9 +144,14 @@
                         markerColor = "#1abc9c"; iconEmoji = "📌"; targetLayer = otherLayer;
                     }
 
-                    const marker = L.circleMarker(pos, {
-                        radius: 10, fillColor: markerColor, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
-                    });
+                    let marker;
+                    if (log.action === "InHome" || log.action === "OutHome" || log.action === "InCar" || log.action === "OutCar" || log.action === "photo") {
+                        marker = L.marker(pos, { icon: createEmojiIcon(iconEmoji), zIndexOffset: 1000 });
+                    } else {
+                        marker = L.circleMarker(pos, {
+                            radius: 8, fillColor: markerColor, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
+                        });
+                    }
 
                     marker.bindPopup(`
                         <div style="min-width: 200px; font-size: 14px; line-height: 1.6; color: #2c3e50;">
