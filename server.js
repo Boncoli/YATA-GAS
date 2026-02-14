@@ -51,12 +51,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS drive_tracks (
 // ... (中略: fuel_logs)
 
 const app = express();
+const cors = require('cors');
 const PORT = 3001;
 
 // アップロード設定
 const upload = multer({ dest: '/tmp/yata-uploads/' });
 const xmlParser = new XMLParser({ ignoreAttributes: false });
 
+app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'local_public')));
@@ -214,11 +216,17 @@ app.post('/api/search', async (req, res) => {
 app.post('/api/summary', async (req, res) => {
     try {
         const { url } = req.body;
-        console.log(`[Web] 要約リクエスト: ${url}`);
+        console.log(`[Web] 🚀 AI要約リクエスト開始: ${url}`);
         
-        const summary = global.getWebPageSummary(url);
+        // YATA.jsの関数を呼び出し
+        const summary = await global.getWebPageSummary(url);
+        
+        console.log(`[Web] ✅ AI要約完了 (${summary ? summary.length : 0}文字)`);
+        if (!summary) return res.status(500).send("AI要約を生成できませんでした。");
+        
         res.send(summary);
     } catch (e) {
+        console.error(`[Web] ❌ AI要約エラー: ${e.message}`);
         res.status(500).send(e.message);
     }
 });
