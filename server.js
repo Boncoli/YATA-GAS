@@ -140,6 +140,28 @@ app.post('/api/import-gpx', upload.single('gpx_file'), (req, res) => {
 app.post('/api/carplay-log', (req, res) => {
     try {
         const { action, timestamp, latitude, longitude, altitude, address, note, battery } = req.body;
+        
+        // --- チャタリング防止ロジック (Debounce) ---
+        const lastLog = db.prepare("SELECT action, timestamp FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+        if (lastLog) {
+            const lastTime = new Date(lastLog.timestamp.replace(/-/g, '/'));
+            const currentTime = new Date(timestamp ? timestamp.replace(/-/g, '/') : new Date());
+            const diffMin = (currentTime - lastTime) / 1000 / 60;
+
+            // 5分以内のアクション制限
+            const isHomeAction = action.includes("Home");
+            const wasHomeAction = lastLog.action.includes("Home");
+            const isCarAction = action.includes("Car");
+            const wasCarAction = lastLog.action.includes("Car");
+
+            if (diffMin < 5) {
+                if ((isHomeAction && wasHomeAction) || (isCarAction && wasCarAction)) {
+                    console.log(`[IoT] ⚠️  Debounced (Ignored): ${action} (Last was ${lastLog.action} ${diffMin.toFixed(1)}m ago)`);
+                    return res.json({ status: "ignored", message: "Action debounced within 5 minutes" });
+                }
+            }
+        }
+
         console.log(`[IoT] CarPlay ${action}: ${address || (latitude + ',' + longitude)} (Alt: ${altitude}m)`);
 
         const insert = db.prepare("INSERT INTO drive_logs (action, timestamp, latitude, longitude, altitude, address, note, battery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
