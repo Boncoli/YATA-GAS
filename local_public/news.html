@@ -137,14 +137,30 @@
                     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' 
                 });
                 
+                let displayTitle = item.title;
+                let displaySummary = item.summary || item.abstract || '要約なし';
+                let isAiGenerated = !!item.summary;
+
+                if (isAiGenerated) {
+                    const firstPeriod = item.summary.indexOf('。');
+                    if (firstPeriod !== -1) {
+                        displayTitle = item.summary.substring(0, firstPeriod + 1);
+                        displaySummary = item.summary.substring(firstPeriod + 1).trim();
+                    } else {
+                        displayTitle = item.summary;
+                        displaySummary = "";
+                    }
+                }
+
                 const html = `
                     <div class="news-item" id="item-${index}">
                         <div class="d-flex align-items-center mb-1">
                             <span class="source-tag">${item.source || 'RSS'}</span>
                             <span class="news-date">${date}</span>
+                            ${isAiGenerated ? '<span class="badge bg-info-subtle text-info-emphasis ms-2" style="font-size:0.6rem; border: 1px solid rgba(0,123,255,0.2);">AI OPTIMIZED</span>' : ''}
                         </div>
-                        <a href="${item.url}" target="_blank" class="news-title">${item.title}</a>
-                        <div class="news-summary">${item.summary || item.abstract || '要約なし'}</div>
+                        <a href="${item.url}" target="_blank" class="news-title">${displayTitle}</a>
+                        ${displaySummary ? `<div class="news-summary">${displaySummary}</div>` : ''}
                         
                         <div class="action-bar">
                             <a href="${item.url}" target="_blank" class="btn-action">

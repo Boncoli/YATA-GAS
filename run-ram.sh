@@ -4,6 +4,15 @@
 REAL_DB="/home/boncoli/yata-local/yata.db"
 RAM_DB="/dev/shm/yata.db"
 SCRIPT_DIR="/home/boncoli/yata-local"
+
+# 引数解析
+SYNC_BACK=true
+if [[ "$1" == "--no-sync" ]]; then
+    SYNC_BACK=false
+    echo "[Wrapper] 🚀 Lazy Commit Mode: Sync back to SD will be skipped."
+    shift
+fi
+
 NODE_SCRIPT="$1"
 shift
 
@@ -11,6 +20,7 @@ shift
 READ_ONLY_MODE=false
 if [[ "$NODE_SCRIPT" == *"dashboard"* ]]; then
     READ_ONLY_MODE=true
+    SYNC_BACK=false
 fi
 
 # --- 1. RAMにDBがなければ、SDからコピーする ---
@@ -84,7 +94,7 @@ if [ "$READ_ONLY_MODE" = false ]; then
 fi
 
 # --- 3. 終わったらRAMからSDへ書き戻す (データの保存) ---
-if [ "$READ_ONLY_MODE" = false ]; then
+if [ "$SYNC_BACK" = true ]; then
     echo "[Wrapper] Syncing back to SD card..."
     # WALとSHMも含めて同期するように改善
     cp "$RAM_DB" "$REAL_DB"
@@ -92,10 +102,13 @@ if [ "$READ_ONLY_MODE" = false ]; then
     [ -f "$RAM_DB-shm" ] && cp "$RAM_DB-shm" "${REAL_DB}-shm"
     
     # 書き戻したファイルの所有権を修正 (root実行対策)
-    # yata.dbの実体(シンボリックリンク先)に対して権限を設定
     REAL_TARGET=$(readlink -f "$REAL_DB")
     chmod 666 "$REAL_TARGET" "${REAL_TARGET}-wal" "${REAL_TARGET}-shm" 2>/dev/null
 else
-    echo "[Wrapper] Read-only mode: Skipping sync back to SD card."
+    if [ "$READ_ONLY_MODE" = true ]; then
+        echo "[Wrapper] Read-only mode: Skipping sync back to SD card."
+    else
+        echo "[Wrapper] Lazy Commit: Changes remain on RAM. Sync back skipped."
+    fi
 fi
 echo "[Wrapper] Done."

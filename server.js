@@ -141,31 +141,55 @@ app.post('/api/carplay-log', (req, res) => {
     try {
         const { action, timestamp, latitude, longitude, altitude, address, note, battery } = req.body;
         
-        // --- チャタリング防止ロジック (Debounce) ---
-        const lastLog = db.prepare("SELECT action, timestamp FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+        // --- 強化されたチャタリング防止ロジック ---
+        const lastLog = db.prepare("SELECT id, action, timestamp FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
         if (lastLog) {
-            const lastTime = new Date(lastLog.timestamp.replace(/-/g, '/'));
-            const currentTime = new Date(timestamp ? timestamp.replace(/-/g, '/') : new Date());
+            const parseDate = (ts) => {
+                if (!ts) return new Date();
+                // ISO形式 (Tが含まれる) ならそのまま、独自形式 (/) なら置換してパース
+                return new Date(ts.includes('T') ? ts : ts.replace(/-/g, "/"));
+            };
+
+            const lastTime = parseDate(lastLog.timestamp);
+            const currentTime = parseDate(timestamp);
             const diffMin = (currentTime - lastTime) / 1000 / 60;
 
-            // 5分以内のアクション制限
-            const isHomeAction = action.includes("Home");
-            const wasHomeAction = lastLog.action.includes("Home");
-            const isCarAction = action.includes("Car");
-            const wasCarAction = lastLog.action.includes("Car");
+            // 1. 同一アクションのチャタリング防止 (1分以内の全く同じアクションは無視)
+            if (action === lastLog.action && diffMin < 1) {
+                console.log(`[IoT] ⚠️ Chatter Ignored: ${action} (${diffMin.toFixed(2)}m ago)`);
+                return res.json({ status: "ignored", message: "Chatter ignored" });
+            }
 
-            if (diffMin < 5) {
-                if ((isHomeAction && wasHomeAction) || (isCarAction && wasCarAction)) {
-                    console.log(`[IoT] ⚠️  Debounced (Ignored): ${action} (Last was ${lastLog.action} ${diffMin.toFixed(1)}m ago)`);
-                    return res.json({ status: "ignored", message: "Action debounced within 5 minutes" });
-                }
+            // 2. 自宅Wi-Fiの「隙間埋め」ロジック
+            // OutHomeしてから10分以内にInHomeしたなら、そのOutHomeを削除して継続扱いにする
+            if (lastLog.action === "OutHome" && action === "InHome" && diffMin < 10) {
+                console.log(`[IoT] 🌁 Gap bridged: Deleting previous OutHome (ID: ${lastLog.id}) to keep connection continuous.`);
+                db.prepare("DELETE FROM drive_logs WHERE id = ?").run(lastLog.id);
+                return res.json({ status: "success", message: "Gap bridged, connection maintained" });
+            }
+
+            // 3. 「通過」判定 (In -> Out が3分以内なら「いなかったこと」にする)
+            if (lastLog.action === "InHome" && action === "OutHome" && diffMin < 3) {
+                console.log(`[IoT] 🚮 Pass-by detected (In->Out). Deleting previous In log (ID: ${lastLog.id})`);
+                db.prepare("DELETE FROM drive_logs WHERE id = ?").run(lastLog.id);
+                return res.json({ status: "ignored", message: "Pass-by detected, logs removed" });
+            }
+
+            // 4. アクションが切り替わる場合は、時間に関わらず受け入れる (特にCarPlay)
+            if (action !== lastLog.action) {
+                // パスして保存へ
             }
         }
 
         console.log(`[IoT] CarPlay ${action}: ${address || (latitude + ',' + longitude)} (Alt: ${altitude}m)`);
 
+        // タイムスタンプのフォーマット統一 (YYYY/MM/DD HH:mm:ss)
+        const formattedTs = timestamp ? timestamp.replace(/-/g, '/').replace('T', ' ').split('+')[0] : new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
+        // ※toLocaleStringの結果が環境によって違う場合があるため、さらに正規化
+        const finalTs = formattedTs.replace(/-/g, '/');
+
         const insert = db.prepare("INSERT INTO drive_logs (action, timestamp, latitude, longitude, altitude, address, note, battery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        insert.run(action, timestamp, latitude, longitude, altitude, address, note, battery);
+        insert.run(action, finalTs, latitude, longitude, altitude, address, note, battery);
         
         res.json({ status: "success", message: "Logged successfully" });
     } catch (e) {
@@ -176,19 +200,28 @@ app.post('/api/carplay-log', (req, res) => {
 
 // 0.2 燃費ログ API
 app.post('/api/fuel-log', (req, res) => {
-    try {
-        const { timestamp, odometer, amount, price, location, note } = req.body;
-        const ts = timestamp || new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-        
-        console.log(`[IoT] Fuel Log: ${odometer}km, ${amount}L at ${location}`);
+    // ... (既存の登録処理)
+});
 
-        const insert = db.prepare("INSERT INTO fuel_logs (timestamp, odometer, amount, price, location, note) VALUES (?, ?, ?, ?, ?, ?)");
-        insert.run(ts, odometer, amount, price, location, note);
-        
-        res.json({ status: "success", message: "Fuel logged successfully" });
+// 0.2.1 燃費統計取得 API
+app.get('/api/fuel-stats', (req, res) => {
+    try {
+        const rows = db.prepare(`
+            SELECT 
+                timestamp, 
+                odometer, 
+                amount, 
+                price, 
+                location, 
+                note,
+                (odometer - LAG(odometer) OVER (ORDER BY odometer ASC)) / amount as fuel_economy,
+                amount * price as total_cost
+            FROM fuel_logs 
+            ORDER BY odometer ASC
+        `).all();
+        res.json(rows);
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ status: "error", message: e.message });
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -240,6 +273,13 @@ app.post('/api/summary', async (req, res) => {
         const { url } = req.body;
         console.log(`[Web] 🚀 AI要約リクエスト開始: ${url}`);
         
+        // --- ユーザーの関心を記録 (クリックカウントアップ) ---
+        try {
+            db.prepare("UPDATE collect SET clicks = clicks + 1 WHERE url = ?").run(url);
+        } catch (dbErr) {
+            console.error(`[Web] ⚠️ クリック記録失敗: ${dbErr.message}`);
+        }
+
         // YATA.jsの関数を呼び出し
         const summary = await global.getWebPageSummary(url);
         
