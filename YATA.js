@@ -2312,70 +2312,91 @@ function processSummarization() {
 }
 
 /**
- * backfillVectors: ベクトル未付与の記事に対してEmbeddingを一括実行
- * 【修正版】軽量化ポリシーに合わせて「直近1ヶ月以内」の記事のみを対象とする。
- * これにより、削除された過去のベクトルを無駄に再生成するのを防ぐ。
+ * backfillVectors (メモリ最適化版)
+ * 【責務】ベクトル未付与の記事に対してEmbeddingを一括実行
+ * 【改良】日付列だけを先にスキャンし、対象期間（直近1ヶ月など）のデータのみをメモリに展開する。
  */
 function backfillVectors() {
   const trendDataSheet = getSheet(AppConfig.get().SheetNames.TREND_DATA);
-  if (!trendDataSheet) {
-    Logger.log("エラー: collectシートが見つかりません。");
-    return;
-  }
+  if (!trendDataSheet) return;
+
   const lastRow = trendDataSheet.getLastRow();
   if (lastRow < 2) return;
 
   const startTime = new Date().getTime();
-  const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION;
-  const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; 
+  const TIME_LIMIT_MS = AppConfig.get().System.TimeLimit.SUMMARIZATION; // 約5分
+  const VECTOR_COL_INDEX = AppConfig.get().CollectSheet.Columns.VECTOR - 1; // 0始まりのインデックス
 
-  // ★追加設定: 何ヶ月前まで遡るか（軽量化期間と合わせる）
+  // ★設定: 何ヶ月前まで遡るか（軽量化ポリシーに合わせる）
   const TARGET_WINDOW_MONTHS = 1; 
   const thresholdDate = new Date();
   thresholdDate.setMonth(thresholdDate.getMonth() - TARGET_WINDOW_MONTHS);
   thresholdDate.setHours(0, 0, 0, 0);
 
+  Logger.log(`バックフィル開始: ${fmtDate(thresholdDate)} 以降の記事を対象にします。`);
+
+  // --- 1. 範囲特定フェーズ（軽量） ---
+  // A列(Date)だけを取得して、どこまで読み込むか決める
+  const dateValues = trendDataSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let targetRowCount = 0;
+
+  // データは降順（最新が上）前提
+  for (let i = 0; i < dateValues.length; i++) {
+    const d = new Date(dateValues[i][0]);
+    if (d < thresholdDate) {
+      // 閾値より古い記事が現れたら、そこで読み込みを打ち切る
+      targetRowCount = i; 
+      break;
+    }
+    targetRowCount = i + 1;
+  }
+
+  if (targetRowCount === 0) {
+    Logger.log("対象期間内の記事がありません。");
+    return;
+  }
+
+  // --- 2. データ取得フェーズ（必要な分だけ） ---
+  Logger.log(`メモリ最適化: 全${lastRow - 1}行中、直近の ${targetRowCount} 行のみ読み込みます。`);
+  
   const maxCol = Math.max(trendDataSheet.getLastColumn(), VECTOR_COL_INDEX + 1);
-  const dataRange = trendDataSheet.getRange(2, 1, lastRow - 1, maxCol);
+  // 必要な範囲だけ getValues する
+  const dataRange = trendDataSheet.getRange(2, 1, targetRowCount, maxCol);
   const values = dataRange.getValues();
   
   let processedCount = 0;
   let minModifiedIndex = -1;
   let maxModifiedIndex = -1;
 
+  // --- 3. 処理フェーズ ---
   for (let i = 0; i < values.length; i++) {
     // タイムアウトチェック
     if (new Date().getTime() - startTime > TIME_LIMIT_MS) {
-      Logger.log(`時間制限のため中断します。処理件数: ${processedCount}`);
+      Logger.log(`⏳ 時間制限のため中断します。今回処理数: ${processedCount}`);
       break;
     }
 
     const row = values[i];
-    const dateVal = new Date(row[0]); // A列: Date
-
-    // ★追加ガード: 記事が古すぎる場合は、ベクトルが無くても無視する
-    if (dateVal < thresholdDate) {
-      continue;
-    }
-
     const headline = row[AppConfig.get().CollectSheet.Columns.SUMMARY - 1]; // E列
     const currentVector = row[VECTOR_COL_INDEX]; // G列
 
-    // 見出しがあり、かつベクトルが空の場合に処理
+    // 「見出しがある」かつ「ベクトルがない」場合のみ生成
     if (headline && String(headline).trim() !== "" && (!currentVector || String(currentVector).trim() === "")) {
-      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // B列 (タイトル)
+      const title = row[AppConfig.get().CollectSheet.Columns.URL - 2]; // B列
       
       try {
+        // ベクトル生成 (Summary + Title)
         const textToEmbed = `Title: ${title}\nSummary: ${headline}`;
         const vector = LlmService.generateVector(textToEmbed);
         
         if (vector) {
-          while (values[i].length <= VECTOR_COL_INDEX) {
-            values[i].push("");
-          }
+          // 配列長が足りない場合のガード
+          while (values[i].length <= VECTOR_COL_INDEX) values[i].push("");
+          
           values[i][VECTOR_COL_INDEX] = vector.join(',');
           processedCount++;
           
+          // 更新範囲の記録
           if (minModifiedIndex === -1 || i < minModifiedIndex) minModifiedIndex = i;
           if (i > maxModifiedIndex) maxModifiedIndex = i;
         }
@@ -2383,29 +2404,31 @@ function backfillVectors() {
         Logger.log(`ベクトル生成エラー (Row: ${i + 2}): ${e.toString()}`);
       }
       
+      // レート制限考慮 (少し待機)
       Utilities.sleep(AppConfig.get().System.Limits.BACKFILL_DELAY); 
     }
   }
 
-  // シートへの書き戻し
+  // --- 4. 書き戻しフェーズ ---
   if (processedCount > 0 && minModifiedIndex !== -1) {
     const startRow = minModifiedIndex + 2;
     const numRows = maxModifiedIndex - minModifiedIndex + 1;
+    
+    // 変更があった部分だけスライスして書き戻す
     const modifiedData = values.slice(minModifiedIndex, maxModifiedIndex + 1);
     
-    // 列数正規化
+    // 列数を揃える（エラー防止）
     const maxColsInSlice = modifiedData.reduce((max, row) => Math.max(max, row.length), 0);
     const normalizedData = modifiedData.map(row => {
       while (row.length < maxColsInSlice) row.push("");
       return row;
     });
 
-    const outputRange = trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice);
-    outputRange.setValues(normalizedData);
+    trendDataSheet.getRange(startRow, 1, numRows, maxColsInSlice).setValues(normalizedData);
     
-    Logger.log(`バックフィル完了: 直近${TARGET_WINDOW_MONTHS}ヶ月以内の記事 ${processedCount} 件にベクトルを付与しました。`);
+    Logger.log(`✅ バックフィル完了: ${processedCount} 件にベクトルを付与しました。`);
   } else {
-    Logger.log(`バックフィル対象（直近${TARGET_WINDOW_MONTHS}ヶ月・見出しあり・ベクトルなし）は見つかりませんでした。`);
+    Logger.log("バックフィル対象（期間内・見出しあり・ベクトルなし）は見つかりませんでした。");
   }
 }
 
@@ -2490,10 +2513,19 @@ function collectRssFeeds() {
 
   // リクエスト作成とスケジューリング
   const rawRequests = [];
+  let skippedCount = 0;
   for (const row of rssDataRaw) {
     const siteName = row[rssCols.NAME - 1];
     const rssUrl = row[rssCols.URL - 1];
     if (!rssUrl) continue;
+
+    // ★追加: ブラックリストチェック
+    if (_isRssBlacklisted(rssUrl)) {
+      Logger.log(`🚫 Blacklisted (Skip): ${siteName}`);
+      skippedCount++;
+      continue;
+    }
+
     rawRequests.push({
       siteName: siteName,
       rssUrl: rssUrl,
@@ -2501,6 +2533,9 @@ function collectRssFeeds() {
       request: { url: rssUrl, ...fetchOptions }
     });
   }
+
+  if (skippedCount > 0) Logger.log(`情報: ${skippedCount} 件のRSSをブラックリスト回避のためスキップしました。`);
+
   const allScheduledRequests = _scheduleRequestsByDomain(rawRequests);
 
   // 今回のターゲット (startIndex以降)
@@ -2537,7 +2572,17 @@ function collectRssFeeds() {
       const chunkNewItems = [];
       responses.forEach((response, idx) => {
         const meta = chunkItems[idx];
-        if (response.getResponseCode() !== 200) return;
+        const code = response.getResponseCode();
+
+        // ★追加: ステータスコードによるストライク判定
+        if (code === 200) {
+          _resetRssStrike(meta.rssUrl); // 成功したらリセット
+        } else {
+          // 4xx, 5xx エラーなどはストライク追加
+          _addRssStrike(meta.rssUrl);
+          Logger.log(`❌ RSS Error (${code}): ${meta.siteName}`);
+          return; // 処理中断
+        }
 
         const items = parseRssXml(response.getContentText(), meta.rssUrl);
         if (!items) return;
@@ -4025,6 +4070,44 @@ function fetchRecentArticlesBatch(maxDays) {
   return rawData.map(r => ({
     date: new Date(r[0]), title: r[C.URL - 2], url: r[C.URL - 1], abstractText: r[C.ABSTRACT - 1], headline: r[C.SUMMARY - 1], source: r[C.SOURCE - 1], vectorStr: r[C.VECTOR - 1]
   })).filter(a => a.headline && String(a.headline).trim() !== "" && String(a.headline).indexOf("API Error") === -1);
+}
+
+// --- RSS Strike System Helpers ---
+
+/**
+ * URLごとの失敗回数を取得・判定
+ * @param {string} url - RSSのURL
+ * @returns {boolean} trueならスキップ対象(ブラックリスト入り)
+ */
+function _isRssBlacklisted(url) {
+  const MAX_STRIKES = 3; // 3回連続失敗でアウト
+  const props = PropertiesService.getScriptProperties();
+  const key = "RSS_STRIKE_" + Utilities.base64Encode(url).substring(0, 20); // URLを短くキー化
+  const strikes = parseInt(props.getProperty(key) || "0", 10);
+  return strikes >= MAX_STRIKES;
+}
+
+/**
+ * 失敗をカウント（ストライク追加）
+ */
+function _addRssStrike(url) {
+  const props = PropertiesService.getScriptProperties();
+  const key = "RSS_STRIKE_" + Utilities.base64Encode(url).substring(0, 20);
+  const strikes = parseInt(props.getProperty(key) || "0", 10) + 1;
+  props.setProperty(key, String(strikes));
+  Logger.log(`⚠️ RSS Strike ${strikes}: ${url}`);
+}
+
+/**
+ * 成功したのでリセット
+ */
+function _resetRssStrike(url) {
+  const props = PropertiesService.getScriptProperties();
+  const key = "RSS_STRIKE_" + Utilities.base64Encode(url).substring(0, 20);
+  // プロパティが存在する場合のみ削除（API節約）
+  if (props.getProperty(key)) {
+    props.deleteProperty(key);
+  }
 }
 
 // #endregion
