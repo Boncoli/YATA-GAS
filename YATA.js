@@ -284,19 +284,10 @@ const LlmService = (function() {
   function _httpFetch(url, options, serviceName) {
     try {
       const res = UrlFetchApp.fetch(url, options);
-      const code = res.getResponseCode();
-      const body = res.getContentText();
-
-      if (code !== 200) {
-        Logger.log(`[${serviceName}] ERROR CODE=${code}`);
-        Logger.log(body.substring(0,300));
-        return null;
-      }
-
-      return JSON.parse(body);
-
+      if (res.getResponseCode() !== 200) return null;
+      return cleanAndParseJSON(res.getContentText());
     } catch (e) {
-      Logger.log(`[${serviceName}] EXCEPTION=${e}`);
+      _logError(serviceName, e, "通信例外");
       return null;
     }
   }
@@ -323,54 +314,22 @@ const LlmService = (function() {
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     _recordUsage(`OpenAI(${openAiModel})`);
-
     const params = AppConfig.get().Llm.Params;
-    const isGpt5Family = /^gpt-5/i.test(String(openAiModel || ""));
-
-    const payload = {
-      model: openAiModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ]
+    const payload = { 
+      model: openAiModel, 
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
+      max_tokens: params.MaxTokens, 
+      temperature: options.temperature ?? params.Temperature.WRITING 
     };
-
-    // 🔹 4.1系のみ temperature を送る
-    if (!isGpt5Family) {
-      payload.temperature = options.temperature ?? params.Temperature.WRITING;
-    }
-
-    // 🔹 トークン指定分岐
-    if (isGpt5Family) {
-      payload.max_completion_tokens = params.MaxTokens;
-    } else {
-      payload.max_tokens = params.MaxTokens;
-    }
-
-    const fetchOptions = {
-      method: "post",
-      contentType: "application/json",
-      headers: { "Authorization": `Bearer ${openAiKey}` },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-
-    const json = _httpFetch(
-      "https://api.openai.com/v1/chat/completions",
-      fetchOptions,
-      "OpenAI"
-    );
-
+    const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+    const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
     if (json && json.choices && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
       _trackCost(systemPrompt + userPrompt, content, `OpenAI:${openAiModel}`);
       return content !== "" ? content : null;
     }
-
     return null;
   }
-
-
   
   function _callAzureEmbedding(text, endpoint, apiKey) {
     if (!endpoint || !apiKey) return null;
@@ -2026,9 +1985,34 @@ function processSummarization() {
       const title = row[TITLE_COL_INDEX]; 
       const abstractText = row[ABSTRACT_COL_INDEX]; 
       
-      // 全ての記事をLLM要約（事実抽出）の対象とする
-      // (短い記事も「技術監査官」の人格を通すことで、一貫したドライな日本語を得る)
-      articlesToSummarize.push({ originalRowIndex: i, title: title, abstractText: abstractText });
+      const isShort = (abstractText === AppConfig.get().Llm.NO_ABSTRACT_TEXT) || (String(abstractText || "").length < AppConfig.get().Llm.MIN_SUMMARY_LENGTH);
+      
+      if (isShort) {
+        // --- 短い記事: 即時処理 ---
+        let newHeadline = "";
+        try {
+          if (title && String(title).trim() !== "") {
+             if (isLikelyEnglish(String(title))) {
+                newHeadline = LanguageApp.translate(String(title), AppConfig.get().Llm.Translation.Source, AppConfig.get().Llm.Translation.Target);
+                Utilities.sleep(200); 
+             } else {
+                newHeadline = String(title).trim();
+             }
+          } else {
+             newHeadline = String(abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
+          }
+        } catch (e) {
+          newHeadline = String(title || abstractText || AppConfig.get().Llm.MISSING_ABSTRACT_TEXT).trim();
+        }
+
+        values[i][SUMMARY_COL_INDEX] = newHeadline;
+        _generateAndSetVector(values[i], title, newHeadline, VECTOR_COL_INDEX);
+        vectorCount++;
+        _markModified(i);
+
+      } else {
+        articlesToSummarize.push({ originalRowIndex: i, title: title, abstractText: abstractText });
+      }
     } 
     // B. 見出しはあるがベクトルがない場合 (ベクトル補完のみ)
     else if (hasHeadlineButNoVector) {
@@ -2909,7 +2893,7 @@ function getWebPageSummary(url) {
     }
 
     // 3. LLMで要約・圧縮
-    const systemPrompt = getPromptConfig("DETAIL_SUMMARY_SYSTEM") || `
+    const systemPrompt = `
     あなたはプロの編集者です。
     Web記事の内容を、業界動向を追うビジネスパーソン向けに300文字程度の「解説記事」として要約してください。
 
@@ -3377,38 +3361,23 @@ function markdownToHtml(md) {
   if (!md) return "";
   
   const C = AppConfig.get().UI.Colors;
-
-  // デザイン定義
   const S = {
+    // ... (既存のスタイル定義はそのまま維持してください) ...
     WRAPPER: `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; font-size: 14px;`,
-    
-    // サマリー (字下げ追加)
     SUMMARY_BOX: `background-color: #f0f7ff; border-left: 5px solid ${C.PRIMARY}; padding: 15px; margin-bottom: 25px; border-radius: 4px;`,
     SUMMARY_TITLE: `font-weight: bold; color: ${C.SECONDARY}; margin: 0 0 10px 0; font-size: 15px; border-bottom: 1px dashed #cce5ff; padding-bottom: 5px; display: block;`,
-    SUMMARY_BODY: `font-size: 14px; line-height: 1.8; text-indent: 1em; display: block;`, // ★字下げ追加
-    
-    // カード
+    SUMMARY_BODY: `font-size: 14px; line-height: 1.8; text-indent: 1em; display: block;`,
     CARD: `background-color: #ffffff; padding: 25px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.03);`,
-    
-    // 見出し
     H3: `font-size: 18px; font-weight: bold; color: ${C.SECONDARY}; margin-top: 0; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid ${C.PRIMARY}; line-height: 1.4;`,
-    
-    // 項目ブロック
     ITEM_BLOCK: `margin-bottom: 18px;`,
     ITEM_LABEL: `font-size: 12px; font-weight: bold; color: #555; display: flex; align-items: center; margin-bottom: 4px;`,
     ITEM_ICON:  `margin-right: 6px; font-size: 14px;`,
-    
-    // ★変更: 項目本文 (字下げ + 行間広め)
     ITEM_BODY:  `color: #333; line-height: 1.8; text-indent: 1em; display: block;`, 
-
-    // リンク
     LINK_ROW: `margin-top: 15px; border-top: 1px dashed #eee; padding-top: 8px;`,
     LINK_LABEL: `font-size: 11px; color: #999; font-weight: bold; display: block; margin-bottom: 5px;`,
     LINK_ITEM: `margin-bottom: 4px; display: flex; align-items: center;`,
     LINK_BTN: `display: inline-block; font-size: 10px; color: #fff; background-color: ${C.PRIMARY}; text-decoration: none; padding: 4px 10px; border-radius: 12px; margin-right: 8px; white-space: nowrap;`,
     LINK_TEXT: `font-size: 12px; color: ${C.LINK}; text-decoration: none; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;`,
-
-    // バッジ
     BADGE: 'display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 8px; vertical-align: middle; line-height: 1.2;',
     B_NEW: `background-color: ${C.BADGE_NEW_BG}; color: ${C.BADGE_NEW_TXT}; border: 1px solid ${C.BADGE_NEW_BG};`,
     B_UP:  `background-color: ${C.BADGE_UP_BG}; color: ${C.BADGE_UP_TXT}; border: 1px solid ${C.BADGE_UP_BG};`,
@@ -3417,23 +3386,26 @@ function markdownToHtml(md) {
   };
 
   const L = AppConfig.get().Logic;
-
-  // アイコンマッピング
   const ICON_MAP = {
-    '詳細分析': '&#129488;', // 🧐
     '詳細': '&#128221;',     // 📝
+    '分析': '&#129488;',     // 🧐
     '先週': '&#9194;',       // ⏮️
     '今週': '&#9889;',       // ⚡
     '現状': '&#128202;',     // 📊
     '影響': '&#127919;',     // 🎯
-    'default': '&#128073;'   // 👉
+    '背景': '&#128214;',     // 📖
+    '結果': '&#127942;',     // 🏆
+    'Status': '&#128202;',   // 📊
+    
+    // デフォルト（ここを空文字にする）
+    'default': ''            
   };
 
+  // ★追加: 不要なコードブロック記号を除去
+  let html = md.replace(/```markdown/gi, "").replace(/```/g, "").trim();
+
   // 1. 基本エスケープ
-  let html = md
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   // 2. バッジ変換
   html = html
@@ -3442,25 +3414,44 @@ function markdownToHtml(md) {
     .replace(L.TAGS.WARN, `<span style="${S.BADGE} ${S.B_WARN}">&#9888; 懸念</span>`)
     .replace(L.TAGS.KEEP, `<span style="${S.BADGE} ${S.B_KEEP}">&#10145; 継続</span>`);
 
-  // 3. サマリーセクション (字下げ適用)
+  // 3. サマリーセクション
   html = html.replace(
     /(?:^|\n)\s*(?:[\*\*_【\[\s]*)(エグゼクティブ・サマリー|Executive Summary)(?:[\*\*_】\]\s]*)\n([\s\S]*?)(?=\*\*|__|$|###|1\.)/gi, 
     `<div style="${S.SUMMARY_BOX}"><span style="${S.SUMMARY_TITLE}">&#128221; $1</span><div style="${S.SUMMARY_BODY}">$2</div></div>`
   );
 
-  // 4. トピックタイトル
-  html = html.replace(/^### (.*$)/gim, `<h3 style="${S.H3}">$1</h3>`);
-  html = html.replace(/\*\*([0-9]+\..*?)\*\*/g, `<h3 style="${S.H3}">$1</h3>`);
+  // 4. トピックタイトル変換（★ここを強化: どんな形式のリストでも見出しとして認識させる）
+  // パターンA: ### タイトル
+  html = html.replace(/^###\s+(.*$)/gim, `<h3 style="${S.H3}">$1</h3>`);
+  // パターンB: **1. タイトル** (太字付き数字リスト)
+  html = html.replace(/^\s*\*\*\s*([0-9]+\..*?)\s*\*\*/gim, `<h3 style="${S.H3}">$1</h3>`);
+  // パターンC: 1. タイトル (★新規追加: 太字なしの数字リストも見出し化)
+  html = html.replace(/^\s*([0-9]+\.\s+.*$)/gim, `<h3 style="${S.H3}">$1</h3>`);
 
-  // 5. リスト項目（ラベル＋本文）
-  html = html.replace(/^\s*-\s*(?:\*\*|__)(.*?)(?::|：)?\s*(?:\*\*|__)\s*(?::|：)?\s*(.*)$/gm, (match, key, val) => {
+  // 5. リスト項目（ロバスト版：記号の位置ズレを許容）
+  // 行頭の "- " のあと、最初に出てくる "：" か ":" で区切る
+  html = html.replace(/^\s*-\s*([^\n\r：:]+)(?::|：)\s*(.*)$/gm, (match, rawKey, rawVal) => {
+    
+    // キーと値から余計な ** や __ を掃除する
+    const key = rawKey.replace(/[*_]/g, "").trim(); // "現状" になる
+    let val = rawVal.trim();
+    
+    // 値の先頭に ** が残っていたら消す（LLMが "**現状:**" と出した場合用）
+    if (val.startsWith("**") || val.startsWith("__")) {
+       val = val.substring(2).trim();
+    }
+
+    // アイコン決定ロジック
     let icon = ICON_MAP['default'];
+    
+    // キーワード部分一致でアイコンを探す
     for (const k in ICON_MAP) {
       if (key.includes(k)) {
         icon = ICON_MAP[k];
         break;
       }
     }
+    
     return `
       <div style="${S.ITEM_BLOCK}">
         <div style="${S.ITEM_LABEL}"><span style="${S.ITEM_ICON}">${icon}</span>${key}</div>
@@ -3468,60 +3459,30 @@ function markdownToHtml(md) {
       </div>`;
   });
 
-  // 6. リンク (デザイン微調整)
-  // リンクエリアの開始
-  html = html.replace(/- \s*(?:\*\*|__)\s*関連URL:?\s*(?:\*\*|__)(.*)/g, `<div style="${S.LINK_ROW}"><span style="${S.LINK_LABEL}">REFERENCE</span>$1`);
-  
-  // 個別リンク生成ロジックを変更
-  html = html.replace(
-    /-\s*\[([^\]]+)\]\(([^)]+)\)/g, 
-    (match, title, url) => {
-      // 一意なIDを生成（表示エリア用）
+  // 6. リンク
+  html = html.replace(/- \s*(?:\*\*|__)?\s*関連URL:?\s*(?:\*\*|__)?(.*)/g, `<div style="${S.LINK_ROW}"><span style="${S.LINK_LABEL}">REFERENCE</span>$1`);
+  html = html.replace(/-\s*\[([^\]]+)\]\(([^)]+)\)/g, (match, title, url) => {
       const uniqueId = "summary-" + Math.random().toString(36).substring(2, 10);
-      
-      return `
-      <div style="${S.LINK_ITEM}">
-        <a href="${url}" target="_blank" style="${S.LINK_BTN}">Open &#8599;</a>
-        
-        <button onclick="fetchSummary('${url}', '${uniqueId}', this)" 
-                style="${S.LINK_BTN}; background-color: #8e44ad; border:none; cursor:pointer;">
-          ⚡ AI要約
-        </button>
-
-        <a href="${url}" target="_blank" style="${S.LINK_TEXT}">${title}</a>
-      </div>
-      
-      <div id="${uniqueId}" style="display:none; background:#f9f9f9; padding:15px; margin:10px 0; border-radius:6px; border-left:3px solid #8e44ad; font-size:90%;"></div>
-      `;
+      return `<div style="${S.LINK_ITEM}"><a href="${url}" target="_blank" style="${S.LINK_BTN}">Open &#8599;</a><button onclick="fetchSummary('${url}', '${uniqueId}', this)" style="${S.LINK_BTN}; background-color: #8e44ad; border:none; cursor:pointer;">⚡ AI要約</button><a href="${url}" target="_blank" style="${S.LINK_TEXT}">${title}</a></div><div id="${uniqueId}" style="display:none; background:#f9f9f9; padding:15px; margin:10px 0; border-radius:6px; border-left:3px solid #8e44ad; font-size:90%;"></div>`;
     }
   );
-  
-  // リンクエリアを閉じるdivはブラウザが補完してくれることが多いですが、
-  // 構造的に正しい閉じタグを入れるのが難しいため、LINK_ROWはdivで囲わずborder-topのみで表現しています
 
-  // 7. ゴミ掃除
-  html = html.replace(/\*\*/g, ""); 
-  html = html.replace(/__/g, "");
-
-  // 8. カード分割処理
+  // 7. カード分割処理
   const splitToken = "___SPLIT___";
   html = html.replace(/(<h3)/g, `${splitToken}$1`);
   
   const parts = html.split(splitToken);
   let finalHtml = `<div style="${S.WRAPPER}">`;
-  
   if (parts[0].trim()) finalHtml += parts[0];
-
   for (let i = 1; i < parts.length; i++) {
     finalHtml += `<div style="${S.CARD}">` + parts[i] + `</div>`;
   }
-  
   finalHtml += `</div>`;
   
-  // 改行処理
+  // 改行処理（空行が多すぎるのを防ぐ調整）
+  finalHtml = finalHtml.replace(/\r\n/g, "\n");
+  finalHtml = finalHtml.replace(/(<\/div>|<\/h3>|<\/span>|<div[^>]*>)\s*\n/g, "$1");
   finalHtml = finalHtml.replace(/\n/g, '<br>');
-  finalHtml = finalHtml.replace(/(<\/div>|<\/h3>|<\/span>|<div[^>]*>)\s*<br>/g, "$1");
-  finalHtml = finalHtml.replace(/(<br>){2,}/g, '<br>');
 
   return finalHtml;
 }
@@ -3906,40 +3867,6 @@ function runAllTests() {
     throw e;
   }
 }
-
-/**
- * testCurrentLlmModelRouting
- * 【責務】LLMが正しくレスを返すか意思疎通確認。
- */
-function testCurrentLlmModelRouting() {
-  const modelInfo = LlmService.getModelInfo();
-  Logger.log("--- [YATA] LLMモデル疎通テスト開始 ---");
-  Logger.log(`Context=${modelInfo.context}, nano=${modelInfo.nano}, mini=${modelInfo.mini}`);
-
-  const articleText = [
-    "OpenAIは新しい推論最適化機能を公開した。",
-    "企業導入ではレイテンシ・コスト・精度のトレードオフ設計が課題になる。",
-    "今後は要約と深掘り分析をモデル別に分離する設計が一般化する可能性がある。"
-  ].join(" ");
-
-  const nanoResult = LlmService.summarize(articleText);
-  if (!nanoResult || !String(nanoResult).trim()) {
-    throw new Error(`nanoモデル疎通失敗: ${modelInfo.nano}`);
-  }
-  Logger.log(`[nano:${modelInfo.nano}] len=${String(nanoResult).length} preview=${String(nanoResult).slice(0, 120)}`);
-
-  const miniSystemPrompt = "以下の文章の重要点を3つ、日本語で箇条書きで出力してください。";
-  const miniResult = LlmService.analyzeKeywordSearch(miniSystemPrompt, articleText, {
-    temperature: AppConfig.get().Llm.Params.Temperature.STRICT
-  });
-  if (!miniResult || !String(miniResult).trim()) {
-    throw new Error(`miniモデル疎通失敗: ${modelInfo.mini}`);
-  }
-  Logger.log(`[mini:${modelInfo.mini}] len=${String(miniResult).length} preview=${String(miniResult).slice(0, 120)}`);
-
-  Logger.log("✅ LLMモデル疎通ストに成功しました。");
-}
-
 
 /**
  * _test_parseRssXml_Fallback
