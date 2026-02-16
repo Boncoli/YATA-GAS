@@ -130,9 +130,23 @@ DBの肥大化を防ぐため、古い記事は定期的に JSON ファイルへ
         `git fetch origin && git show origin/main:lib/YATA.js > lib/YATA.js`
     *   `yata.db` や `node_modules` はコミットしない。
 
+## 6. プロセス管理 (PM2)
+
+常駐サーバー（`server.js`）は、プロセスマネージャー **PM2** によって管理されています。これにより、ラズパイの再起動時やプロセスダウン時にも自動的に復旧します。
+
+*   **サービス名**: `yata-server`
+*   **実行コマンド実体**: `run-ram.sh server.js`
+*   **主要操作**:
+    ```bash
+    pm2 status                # 稼働状況の確認
+    pm2 restart yata-server   # ロジック更新後の再起動（反映）
+    pm2 logs yata-server      # リアルタイムログの確認
+    ```
+*   **注意**: `lib/YATA.js` や `lib/gas-bridge.js` を修正した後は、必ず `pm2 restart` を行わないと、常駐サーバー側には反映されません。
+
 ---
 
-## 6. コマンドリファレンス
+## 7. コマンドリファレンス
 
 **通常タスク実行 (RAMディスク使用・推奨)**:
 ```bash
