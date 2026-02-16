@@ -81,7 +81,7 @@ const AppConfig = (function() {
             WRITING: 0.4,   // 【レポート執筆】少し表現の幅を持たせ、読み物として成立させる
             INSIGHT: 0.7    // 【予兆検知・ブレスト】あえて「飛躍」した仮説を出させる (旧 CREATIVE: 0.3)
           },
-          MaxTokens: 4096
+          MaxTokens: 20000
         },
         Translation: {
           Source: "",
@@ -283,32 +283,44 @@ const LlmService = (function() {
     } catch (e) {}
   }
 
+  // HTTP通信の共通関数（デバッグ強化版）
   function _httpFetch(url, options, serviceName) {
     try {
       const res = UrlFetchApp.fetch(url, options);
       const code = res.getResponseCode();
+      const content = res.getContentText(); // 中身を取得
+
+      // 200以外ならエラー内容を詳細にログ出力
       if (code !== 200) {
-        Logger.log(`[${serviceName}] HTTP ${code} / URL=${url}`);
+        Logger.log(`⚠️ [API Error] ${serviceName} failed.`);
+        Logger.log(`Status: ${code}`);
+        Logger.log(`Response: ${content}`); // ★ここが重要！Azureの言い分が出る
         return null;
       }
-      return cleanAndParseJSON(res.getContentText());
+      return cleanAndParseJSON(content);
+
     } catch (e) {
-      _logError(serviceName, e, "通信例外");
+      // 通信エラー（タイムアウトやDNSエラーなど）
+      Logger.log(`❌ [Network Exception] ${serviceName}: ${e.toString()}`);
+      
+      // もしAzureのコンテンツフィルターに引っかかった場合、例外メッセージに含まれることがある
+      if (e.toString().includes("content_filter")) {
+        Logger.log("💡 ヒント: Azureのコンテンツフィルターに引っかかりました（暴力・性・自傷などの判定）。");
+      }
       return null;
     }
   }
 
   // --- LLM Callers (URL自動生成版) ---
 
-  // ★変更: URLを渡すのではなく、deploymentNameを渡す
+  // 1. Azure OpenAI (詳細デバッグ版)
   function _callAzureLlm(systemPrompt, userPrompt, deploymentName, azureKey, options = {}) {
     Logger.log(`📡 [LLM Start] Service: Azure / Model: ${deploymentName}`);
     _recordUsage(`Azure(${deploymentName})`);
     
-    // ここでURLを自動生成
     const url = _buildAzureUrl(deploymentName);
     if (!url) {
-      Logger.log("Azure Base URL設定なし");
+      Logger.log("❌ Azure Base URL設定なし");
       return null;
     }
 
@@ -318,7 +330,6 @@ const LlmService = (function() {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      // 推論モデル(o1/gpt-5系)は temperature: 1 固定、max_completion_tokens 必須
       temperature: 1, 
       max_completion_tokens: params.MaxTokens
     };
@@ -331,14 +342,70 @@ const LlmService = (function() {
       muteHttpExceptions: true
     };
 
-    const json = _httpFetch(url, fetchOptions, `Azure(${deploymentName})`);
-    if (!json) return null;
-
-    if (json.choices && json.choices[0] && json.choices[0].message) {
-      const content = String(json.choices[0].message.content).trim();
-      _trackCost(systemPrompt + userPrompt, content, `Azure:${deploymentName}`);
-      return content;
+    // --- ここからデバッグ判定強化 ---
+    
+    // 1. 生のレスポンスを取得
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, fetchOptions);
+    } catch (e) {
+      Logger.log(`❌ [Network Error] Azure通信失敗: ${e.toString()}`);
+      return null;
     }
+
+    const code = response.getResponseCode();
+    const text = response.getContentText();
+
+    // 2. HTTPステータスが200以外なら即エラーログ
+    if (code !== 200) {
+      Logger.log(`⚠️ [Azure HTTP Error] Code: ${code}`);
+      Logger.log(`Response: ${text.substring(0, 500)}`); // 先頭500文字だけ表示
+      return null;
+    }
+
+    // 3. JSONパース試行
+    const json = cleanAndParseJSON(text);
+    if (!json) {
+      Logger.log(`⚠️ [Azure JSON Error] JSONパース失敗。生データ: ${text.substring(0, 200)}...`);
+      return null;
+    }
+
+    // 4. Azure固有のエラー（200 OKでもエラーが含まれる場合がある）
+    if (json.error) {
+      Logger.log(`⚠️ [Azure API Error] ${JSON.stringify(json.error)}`);
+      return null;
+    }
+
+    // 5. 中身とフィルター理由の確認
+    if (json.choices && json.choices.length > 0) {
+      const choice = json.choices[0];
+      const finishReason = choice.finish_reason;
+      
+      // ★ここが重要: 終了理由をログに出す
+      Logger.log(`ℹ️ [Azure Info] finish_reason: ${finishReason}`);
+
+      if (finishReason === 'content_filter') {
+        Logger.log(`❌ [Azure Filter] コンテンツフィルターに引っかかりました（不適切判定）。`);
+        Logger.log(`詳細: ${JSON.stringify(choice.content_filter_results || "詳細なし")}`);
+        return null;
+      }
+
+      if (choice.message && choice.message.content) {
+        const content = String(choice.message.content).trim();
+        if (content.length > 0) {
+          // 成功！
+          _trackCost(systemPrompt + userPrompt, content, `Azure:${deploymentName}`);
+          return content;
+        } else {
+          Logger.log("⚠️ [Azure Empty] 生成結果が空文字でした。");
+        }
+      } else {
+        Logger.log("⚠️ [Azure Empty] messageフィールドが存在しません。");
+      }
+    } else {
+      Logger.log(`⚠️ [Azure Format] choices配列が空、または不正です: ${text.substring(0, 200)}`);
+    }
+
     return null;
   }
 
