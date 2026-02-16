@@ -1,3 +1,42 @@
-YATA - Context-Aware Intelligence Platform (Full).pdf
+# --- Node.js ---
+node_modules/
+package-lock.json
+
+# --- Environment variables and secrets (Security) ---
+.env
+credentials.json
+server-properties.json
+
+# --- Database ---
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# --- Logs ---
+*.log
+logs/
+archive/
+npm-debug.log*
+
+# --- OS & System generated files ---
+.DS_Store
+Thumbs.db
+*.bak
+
+# --- Frontend & Local Testing ---
+public/
+local_public/
+
+# --- Python & Dashboard specific ---
+*.png
+__pycache__/
+*.py[cod]
+dashboard/fonts/
+
+# --- 資料等 ---
+"YATA - Context-Aware Intelligence Platform (Full).pdf"
 案内資料/
-lib/
+
+# lib/YATA.js は唯一の正本なので無視してはいけません
+!lib/YATA.js
