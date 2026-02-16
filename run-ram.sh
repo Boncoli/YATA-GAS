@@ -47,6 +47,7 @@ chmod 666 "$RAM_DB"-shm >/dev/null 2>&1
 
 # --- 2. DBのパスを環境変数に入れてNodeを実行 (時刻ログ付き) ---
 export DB_PATH="$RAM_DB"
+export NODE_NO_WARNINGS=1
 cd "$SCRIPT_DIR"
 
 if [ "$SYNC_ONLY" = false ]; then
