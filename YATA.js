@@ -72,7 +72,10 @@ const AppConfig = (function() {
         AzureUrlNano: props.getProperty("AZURE_ENDPOINT_URL_NANO") || null,
         AzureUrlMini: props.getProperty("AZURE_ENDPOINT_URL_MINI") || null,
         AzureKey: props.getProperty("OPENAI_API_KEY") || null,
-        OpenAiKey: props.getProperty("OPENAI_API_KEY_PERSONAL") || null,
+        OpenAiKey: (() => {
+          const k = String(props.getProperty("OPENAI_API_KEY_PERSONAL") || "").trim();
+          return (!k || k === "0" || k.toLowerCase() === "null") ? null : k;
+        })(),
         GeminiKey: props.getProperty("GEMINI_API_KEY") || null,
         // ★【追加】LLMパラメータ・翻訳設定
         Params: {
@@ -81,8 +84,25 @@ const AppConfig = (function() {
             WRITING: 0.4,   // 【レポート執筆】少し表現の幅を持たせ、読み物として成立させる
             INSIGHT: 0.7    // 【予兆検知・ブレスト】あえて「飛躍」した仮説を出させる (旧 CREATIVE: 0.3)
           },
-          MaxTokens: 20000
+          MaxTokens: 20000,
+
+          // ★【追加】GPT-5 推論/出力量コントロール（モデル種別ごとの既定値）
+          ReasoningEffort: {
+            NANO: "minimal", // 要約は最速寄り（minimal reasoning はレイテンシ最小化目的）
+            MINI: "low"      // 分析は軽く考える（低〜中でバランス）
+          },
+          Verbosity: {
+            NANO: "low",      // 要約は短く（出力量＝総時間を削る）
+            MINI: "medium"    // 分析は標準
+          },
+          // ★【追加】用途別の出力上限（GASタイムアウト回避にも効く）
+          MaxCompletionTokens: {
+            NANO: 1200,     // 見出し/短要約用途の想定（必要に応じ調整）
+            MINI: 4000     // 分析レポート用途の想定（必要に応じ調整）
+          }
+
         },
+
         Translation: {
           Source: "",
           Target: "ja"
@@ -230,6 +250,34 @@ const LlmService = (function() {
 
   // --- Helper Methods ---
   
+  // ★置換: nano/mini の既定パラメータを options にマージする（OpenAI用 max_tokens / max_completion_tokens も同期）
+  function _mergeDefaultLlmOptions(targetModelType, options = {}) {
+    const params = AppConfig.get().Llm.Params;
+    const isNano = (targetModelType === "nano");
+
+    const defaultMax =
+      (isNano ? params.MaxCompletionTokens?.NANO : params.MaxCompletionTokens?.MINI)
+      ?? params.MaxTokens;
+
+    const defaults = {
+      // 温度（ただし GPT-5系では送らない方針なので、後段で制御）
+      temperature: options.temperature ?? (isNano ? params.Temperature.STRICT : params.Temperature.WRITING),
+
+      // GPT-5系の推論/冗長性（使える場合だけ後段で送る）
+      reasoning_effort: options.reasoning_effort ?? (isNano ? params.ReasoningEffort?.NANO : params.ReasoningEffort?.MINI),
+      verbosity: options.verbosity ?? (isNano ? params.Verbosity?.NANO : params.Verbosity?.MINI),
+
+      // Azure(Chat Completions)向け
+      max_completion_tokens: options.max_completion_tokens ?? defaultMax,
+
+      // OpenAI(Chat Completions)向け（モデルにより max_completion_tokens を使う方が安全な場合がある）
+      max_tokens: options.max_tokens ?? defaultMax,
+      max_completion_tokens_openai: options.max_completion_tokens_openai ?? defaultMax
+    };
+
+    return { ...defaults, ...options };
+  }
+
   // ★追加: Python SDKのようにURLを自動組み立てする関数
   function _buildAzureUrl(deploymentName) {
     let base = llmConfig.AzureBaseUrl;
@@ -325,14 +373,27 @@ const LlmService = (function() {
     }
 
     const params = AppConfig.get().Llm.Params;
+
+    // ★変更: gpt-5系は temperature の任意値が弾かれるので、基本は送らない（=デフォルト1に任せる）
     const payload = {
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      temperature: 1, 
-      max_completion_tokens: params.MaxTokens
+      max_completion_tokens: (options.max_completion_tokens ?? params.MaxTokens)
     };
+
+    // ★temperature は「1のときだけ」送る（送らない方が安全）
+    if (options.temperature === 1) {
+      payload.temperature = 1;
+    }
+
+    // ★追加: GPT-5系の推論/冗長性（未対応なら別パラメータで400になるのでログで判別）
+    if (options.reasoning_effort) payload.reasoning_effort = options.reasoning_effort;
+    if (options.verbosity) payload.verbosity = options.verbosity;
+
+    // （任意）デバッグ：本当に nano/mini で切り替わっているか見たい場合
+    // Logger.log(`🧪 options: effort=${options.reasoning_effort}, verbosity=${options.verbosity}, maxTok=${payload.max_completion_tokens}, temp=${payload.temperature}`);
 
     const fetchOptions = {
       method: "post",
@@ -412,23 +473,59 @@ const LlmService = (function() {
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
     Logger.log(`📡 [LLM Start] Service: OpenAI / Model: ${openAiModel}`);
     _recordUsage(`OpenAI(${openAiModel})`);
+
     const params = AppConfig.get().Llm.Params;
-    const payload = { 
-      model: openAiModel, 
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
-      max_tokens: params.MaxTokens, 
-      temperature: options.temperature ?? params.Temperature.WRITING 
+
+    // ★判定: GPT-5系（必要なら o1/o3/o4 も同類として扱う）
+    const modelLower = String(openAiModel || "").toLowerCase();
+    const isReasoningFamily = /^(gpt-5|o1|o3|o4)/.test(modelLower);
+
+    const payload = {
+      model: openAiModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ]
     };
-    const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${openAiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
+
+    // ★出力上限：推論モデル系は max_completion_tokens を優先（互換性重視）
+    // それ以外は従来通り max_tokens
+    if (isReasoningFamily) {
+      payload.max_completion_tokens = (options.max_completion_tokens_openai ?? options.max_tokens ?? params.MaxTokens);
+    } else {
+      payload.max_tokens = (options.max_tokens ?? params.MaxTokens);
+    }
+
+    // ★temperature：GPT-5系は「送らない」(=デフォルトに任せる)のが安全
+    // どうしても送るなら 1 のときだけ（それ以外は送らない）
+    if (!isReasoningFamily) {
+      payload.temperature = (options.temperature ?? params.Temperature.WRITING);
+    } else if (options.temperature === 1) {
+      payload.temperature = 1;
+    }
+
+    // ★GPT-5系の推論/冗長性：設定されている場合だけ送る（未対応なら400→ログで判別）
+    // ※ GPT-5系で temperature が固定/制約されがちという報告は多数 [1](https://community.openai.com/t/gpt-5-models-temperature/1337957)[2](https://github.com/langchain-ai/langchainjs/issues/8642)
+    if (options.reasoning_effort) payload.reasoning_effort = options.reasoning_effort;
+    if (options.verbosity) payload.verbosity = options.verbosity;
+
+    const fetchOptions = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "Authorization": `Bearer ${openAiKey}` },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
     const json = _httpFetch("https://api.openai.com/v1/chat/completions", fetchOptions, "OpenAI");
-    if (json && json.choices && json.choices[0].message) {
+    if (json && json.choices && json.choices[0] && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
       _trackCost(systemPrompt + userPrompt, content, `OpenAI:${openAiModel}`);
       return content;
     }
     return null;
   }
-  
+
   function _callAzureEmbedding(text, endpoint, apiKey) {
     if (!endpoint || !apiKey) return null;
     _recordUsage("Azure(Embedding)");
@@ -469,46 +566,45 @@ const LlmService = (function() {
   // 5. Fallback Controller (コンテキスト対応版)
   function _callLlmWithFallback(systemPrompt, userPrompt, targetModelType = "nano", options = {}) {
     const llmProps = llmConfig;
-    const context = llmProps.Context; // "COMPANY" or "PERSONAL"
-    
-    // ターゲットモデル名
+    const context = llmProps.Context; // "COMPANY" or "PERSONAL" 
+
+    // ★追加: nano/mini既定値をマージ
+    const mergedOptions = _mergeDefaultLlmOptions(targetModelType, options);
+
+    // ターゲットモデル名（デプロイ名 or OpenAIモデル名として使う）
     const deploymentName = (targetModelType === "mini") ? llmProps.ModelMini : llmProps.ModelNano;
-    
-    // 実行関数定義
+
     const tryAzure = () => {
       if (llmProps.AzureBaseUrl && llmProps.AzureKey) {
-        return _callAzureLlm(systemPrompt, userPrompt, deploymentName, llmProps.AzureKey, options);
+        return _callAzureLlm(systemPrompt, userPrompt, deploymentName, llmProps.AzureKey, mergedOptions);
       }
       return null;
     };
 
     const tryOpenAi = () => {
       if (llmProps.OpenAiKey) {
-         // OpenAIの場合はデプロイ名ではなくモデル名として扱う
-         const openAiModel = deploymentName; 
-         return _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, llmProps.OpenAiKey, options);
+        const openAiModel = deploymentName;
+        return _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, llmProps.OpenAiKey, mergedOptions);
       }
       return null;
     };
 
     let result = null;
 
-    // ★コンテキストに応じた優先順位の切り替え
+    // ★コンテキストに応じた優先順位
     if (context === 'PERSONAL') {
-      // 家: OpenAI -> Azure の順
       result = tryOpenAi();
       if (!result) result = tryAzure();
     } else {
-      // 会社 (Default): Azure -> OpenAI の順
       result = tryAzure();
       if (!result) result = tryOpenAi();
     }
 
     // どちらもダメなら Gemini
     if (!result && llmProps.GeminiKey) {
-      return _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
+      return _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, mergedOptions);
     }
-    
+
     return result || "いずれのLLMでも生成できませんでした。";
   }
 
@@ -4331,7 +4427,7 @@ function testAllRssFeeds() {
 
 
       // パース（Atom/RSS/RDF対応済み）
-      const items = parseRssXml(body, url); // ←既存ロジックを利用 [1](https://cordis.europa.eu/projects)
+      const items = parseRssXml(body, url);
 
       if (items && items.length > 0) {
         success++;
