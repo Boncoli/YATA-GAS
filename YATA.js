@@ -65,8 +65,10 @@ const AppConfig = (function() {
         SHORT_JA_SKIP_TEXT: "記事が短く、日本語のため見出し生成をスキップしました。",
         // --- Dynamic settings from Script Properties ---
         Context: props.getProperty("EXECUTION_CONTEXT") || "COMPANY",
-        ModelNano: props.getProperty("OPENAI_MODEL_NANO") || "gpt-4.1-nano",
-        ModelMini: props.getProperty("OPENAI_MODEL_MINI") || "gpt-4.1-mini",
+        ModelNano: props.getProperty("OPENAI_MODEL_NANO") || "gpt-5-nano",
+        ModelMini: props.getProperty("OPENAI_MODEL_MINI") || "gpt-5-mini",
+        AzureBaseUrl: props.getProperty("AZURE_ENDPOINT_BASE") || "https://pubmed-summary.openai.azure.com/",
+        AzureApiVersion: "2024-12-01-preview", // ここでバージョンを一括管理
         AzureUrlNano: props.getProperty("AZURE_ENDPOINT_URL_NANO") || null,
         AzureUrlMini: props.getProperty("AZURE_ENDPOINT_URL_MINI") || null,
         AzureKey: props.getProperty("OPENAI_API_KEY") || null,
@@ -227,6 +229,18 @@ const LlmService = (function() {
   let _executionStats = {};
 
   // --- Helper Methods ---
+  
+  // ★追加: Python SDKのようにURLを自動組み立てする関数
+  function _buildAzureUrl(deploymentName) {
+    let base = llmConfig.AzureBaseUrl;
+    if (!base) return null;
+    
+    // 末尾のスラッシュを除去して正規化
+    if (base.endsWith("/")) base = base.slice(0, -1);
+    
+    // 組み立て: https://{base}/openai/deployments/{deployment}/chat/completions?api-version={ver}
+    return `${base}/openai/deployments/${deploymentName}/chat/completions?api-version=${llmConfig.AzureApiVersion}`;
+  }
 
   function _recordUsage(label) {
     if (!_executionStats[label]) _executionStats[label] = 0;
@@ -244,29 +258,19 @@ const LlmService = (function() {
         props.setProperty(budgetConfig.LAST_RESET_KEY, currentMonth);
       }
 
-      let priceInput = 0;
-      let priceOutput = 0;
+      let priceInput = 0, priceOutput = 0;
       const sName = String(serviceName).toLowerCase();
 
-      if (sName.includes("embedding")) {
-        priceInput = 0.000000008; priceOutput = 0; 
-      } else if (sName.includes("gemini")) {
-        priceInput = 0.00000003; priceOutput = 0.00000012;
-      } else if (sName.includes("nano")) {
-        priceInput = 0.00000006; priceOutput = 0.00000024;
-      } else {
-        priceInput = 0.00000016; priceOutput = 0.00000064;
-      }
+      // 簡易コスト計算ロジック
+      if (sName.includes("embedding")) { priceInput = 0.000000008; } 
+      else if (sName.includes("gemini")) { priceInput = 0.00000003; priceOutput = 0.00000012; } 
+      else if (sName.includes("nano")) { priceInput = 0.00000006; priceOutput = 0.00000024; } 
+      else { priceInput = 0.00000016; priceOutput = 0.00000064; }
       
-      const inputLen = inputStr ? String(inputStr).length : 0;
-      const outputLen = outputStr ? String(outputStr).length : 0;
-      const cost = (inputLen * priceInput) + (outputLen * priceOutput);
-      
+      const cost = ((inputStr?.length||0) * priceInput) + ((outputStr?.length||0) * priceOutput);
       _sessionCostTotal += cost;
       
-    } catch (e) {
-      Logger.log(`[CostTracker Error] ${e.toString()}`);
-    }
+    } catch (e) { Logger.log(`[CostTracker Error] ${e.toString()}`); }
   }
 
   function saveSessionCost() {
@@ -276,15 +280,17 @@ const LlmService = (function() {
       const currentTotal = parseFloat(props.getProperty(budgetConfig.CURRENT_COST_KEY) || "0");
       props.setProperty(budgetConfig.CURRENT_COST_KEY, String(currentTotal + _sessionCostTotal));
       _sessionCostTotal = 0;
-    } catch (e) {
-      Logger.log(`[CostSave Error] ${e.toString()}`);
-    }
+    } catch (e) {}
   }
 
   function _httpFetch(url, options, serviceName) {
     try {
       const res = UrlFetchApp.fetch(url, options);
-      if (res.getResponseCode() !== 200) return null;
+      const code = res.getResponseCode();
+      if (code !== 200) {
+        Logger.log(`[${serviceName}] HTTP ${code} / URL=${url}`);
+        return null;
+      }
       return cleanAndParseJSON(res.getContentText());
     } catch (e) {
       _logError(serviceName, e, "通信例外");
@@ -292,27 +298,52 @@ const LlmService = (function() {
     }
   }
 
-  // --- LLM Callers (温度デフォルト: WRITING=0.4) ---
+  // --- LLM Callers (URL自動生成版) ---
 
-  function _callAzureLlm(systemPrompt, userPrompt, azureUrl, azureKey, options = {}, modelTag = "default") {
-    _recordUsage(`Azure(${modelTag})`);
+  // ★変更: URLを渡すのではなく、deploymentNameを渡す
+  function _callAzureLlm(systemPrompt, userPrompt, deploymentName, azureKey, options = {}) {
+    Logger.log(`📡 [LLM Start] Service: Azure / Model: ${deploymentName}`);
+    _recordUsage(`Azure(${deploymentName})`);
+    
+    // ここでURLを自動生成
+    const url = _buildAzureUrl(deploymentName);
+    if (!url) {
+      Logger.log("Azure Base URL設定なし");
+      return null;
+    }
+
     const params = AppConfig.get().Llm.Params;
-    const payload = { 
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], 
-      temperature: options.temperature ?? params.Temperature.WRITING, 
-      max_completion_tokens: params.MaxTokens 
+    const payload = {
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      // 推論モデル(o1/gpt-5系)は temperature: 1 固定、max_completion_tokens 必須
+      temperature: 1, 
+      max_completion_tokens: params.MaxTokens
     };
-    const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": azureKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
-    const json = _httpFetch(azureUrl, fetchOptions, "Azure OpenAI");
-    if (json && json.choices && json.choices[0].message) {
+
+    const fetchOptions = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "api-key": azureKey },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const json = _httpFetch(url, fetchOptions, `Azure(${deploymentName})`);
+    if (!json) return null;
+
+    if (json.choices && json.choices[0] && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
-      _trackCost(systemPrompt + userPrompt, content, `Azure:${modelTag}`);
+      _trackCost(systemPrompt + userPrompt, content, `Azure:${deploymentName}`);
       return content;
     }
     return null;
   }
 
   function _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, openAiKey, options = {}) {
+    Logger.log(`📡 [LLM Start] Service: OpenAI / Model: ${openAiModel}`);
     _recordUsage(`OpenAI(${openAiModel})`);
     const params = AppConfig.get().Llm.Params;
     const payload = { 
@@ -326,7 +357,7 @@ const LlmService = (function() {
     if (json && json.choices && json.choices[0].message) {
       const content = String(json.choices[0].message.content).trim();
       _trackCost(systemPrompt + userPrompt, content, `OpenAI:${openAiModel}`);
-      return content !== "" ? content : null;
+      return content;
     }
     return null;
   }
@@ -337,11 +368,7 @@ const LlmService = (function() {
     const payload = { input: text };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "api-key": apiKey }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     const json = _httpFetch(endpoint, fetchOptions, "Azure Embedding");
-    if (json && json.data && json.data[0].embedding) {
-      _trackCost(text, "", "Azure Embedding");
-      return json.data[0].embedding;
-    }
-    return null;
+    return (json && json.data && json.data[0].embedding) ? json.data[0].embedding : null;
   }
 
   function _callOpenAiEmbedding(text, model, apiKey) {
@@ -350,24 +377,18 @@ const LlmService = (function() {
     const payload = { model: model, input: text };
     const fetchOptions = { method: "post", contentType: "application/json", headers: { "Authorization": `Bearer ${apiKey}` }, payload: JSON.stringify(payload), muteHttpExceptions: true };
     const json = _httpFetch("https://api.openai.com/v1/embeddings", fetchOptions, "OpenAI Embedding");
-    if (json && json.data && json.data[0].embedding) {
-      _trackCost(text, "", "OpenAI Embedding");
-      return json.data[0].embedding;
-    }
-    return null;
+    return (json && json.data && json.data[0].embedding) ? json.data[0].embedding : null;
   }
 
   function _callGeminiLlm(systemPrompt, userPrompt, geminiApiKey, options = {}) {
+    Logger.log(`📡 [LLM Start] Service: Gemini / Model: ${llmConfig.MODEL_NAME}`);
     _recordUsage("Gemini");
     const params = AppConfig.get().Llm.Params;
     const API_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/" + llmConfig.MODEL_NAME + ":generateContent?key=" + geminiApiKey;
     const PROMPT = (systemPrompt || "") + "\n\n" + (userPrompt || "");
     const payload = { 
       contents: [{ parts: [{ text: PROMPT }] }], 
-      generationConfig: { 
-        temperature: options.temperature ?? params.Temperature.WRITING, 
-        maxOutputTokens: params.MaxTokens 
-      } 
+      generationConfig: { temperature: options.temperature ?? params.Temperature.WRITING, maxOutputTokens: params.MaxTokens } 
     };
     const fetchOptions = { method: "post", contentType: "application/json", payload: JSON.stringify(payload), muteHttpExceptions: true };
     const json = _httpFetch(API_ENDPOINT, fetchOptions, "Gemini");
@@ -378,30 +399,50 @@ const LlmService = (function() {
     return text ? String(text).trim() : AppConfig.get().Messages.NO_SUMMARY;
   }
 
-  function _callLlmWithFallback(systemPrompt, userPrompt, openAiModel, azureUrlOverride = null, options = {}) {
-    const llmProps = llmConfig; 
-    let model = openAiModel;
-    if (openAiModel === "nano" || openAiModel === "mini") model = openAiModel === "mini" ? llmProps.ModelMini : llmProps.ModelNano;
+  // 5. Fallback Controller (コンテキスト対応版)
+  function _callLlmWithFallback(systemPrompt, userPrompt, targetModelType = "nano", options = {}) {
+    const llmProps = llmConfig;
+    const context = llmProps.Context; // "COMPANY" or "PERSONAL"
     
-    const isMini = (model && model.includes("mini")); 
-    const azureUrl = azureUrlOverride || (isMini ? llmProps.AzureUrlMini : llmProps.AzureUrlNano);
-    const modelTag = (isMini || azureUrlOverride) ? "mini" : "nano"; 
-    const context = llmProps.Context;
+    // ターゲットモデル名
+    const deploymentName = (targetModelType === "mini") ? llmProps.ModelMini : llmProps.ModelNano;
+    
+    // 実行関数定義
+    const tryAzure = () => {
+      if (llmProps.AzureBaseUrl && llmProps.AzureKey) {
+        return _callAzureLlm(systemPrompt, userPrompt, deploymentName, llmProps.AzureKey, options);
+      }
+      return null;
+    };
+
+    const tryOpenAi = () => {
+      if (llmProps.OpenAiKey) {
+         // OpenAIの場合はデプロイ名ではなくモデル名として扱う
+         const openAiModel = deploymentName; 
+         return _callOpenAiLlm(systemPrompt, userPrompt, openAiModel, llmProps.OpenAiKey, options);
+      }
+      return null;
+    };
+
     let result = null;
 
-    const tryOpenAI = () => llmProps.OpenAiKey ? _callOpenAiLlm(systemPrompt, userPrompt, model, llmProps.OpenAiKey, options) : null;
-    const tryAzure = () => (azureUrl && llmProps.AzureKey) ? _callAzureLlm(systemPrompt, userPrompt, azureUrl, llmProps.AzureKey, options, modelTag) : null;
-
+    // ★コンテキストに応じた優先順位の切り替え
     if (context === 'PERSONAL') {
-      result = tryOpenAI();
+      // 家: OpenAI -> Azure の順
+      result = tryOpenAi();
       if (!result) result = tryAzure();
     } else {
+      // 会社 (Default): Azure -> OpenAI の順
       result = tryAzure();
-      if (!result) result = tryOpenAI();
+      if (!result) result = tryOpenAi();
     }
 
-    if (!result && llmProps.GeminiKey) result = _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
-    return result || "いずれのLLMでも見出しを生成できませんでした。";
+    // どちらもダメなら Gemini
+    if (!result && llmProps.GeminiKey) {
+      return _callGeminiLlm(systemPrompt, userPrompt, llmProps.GeminiKey, options);
+    }
+    
+    return result || "いずれのLLMでも生成できませんでした。";
   }
 
   // --- Public Methods ---
@@ -409,30 +450,21 @@ const LlmService = (function() {
     getModelInfo: function() {
       return { context: llmConfig.Context, nano: llmConfig.ModelNano, mini: llmConfig.ModelMini };
     },
-
-    // ★【指定】要約は STRICT (0.0)
+    // ★変更: 呼び出し側は "nano" か "mini" を指定するだけでOK
     summarize: function(articleText) {
       return _callLlmWithFallback(
         getPromptConfig("BATCH_SYSTEM"), 
         getPromptConfig("BATCH_USER_TEMPLATE") + ["", "記事: ---", articleText, "---"].join("\n"), 
-        "nano",
-        null,
-        { temperature: AppConfig.get().Llm.Params.Temperature.STRICT }
+        "nano"
       );
     },
-
-    // ★【指定】トレンドレポートは WRITING (0.4)
     generateTrendSections: function(articlesGroupedByKeyword, linksPerTrend, hitKeywords, previousSummary = null, options = {}) {
-      const model = "mini"; 
-      const azureWeeklyUrl = llmConfig.AzureUrlMini;
       let SYSTEM = options.promptKeys?.system ? getPromptConfig(options.promptKeys.system) : getPromptConfig("TREND_SYSTEM");
       let USER_TEMPLATE = options.promptKeys?.user ? getPromptConfig(options.promptKeys.user) : getPromptConfig(previousSummary ? "TREND_USER_TEMPLATE_WITH_HISTORY" : "TREND_USER_TEMPLATE");
       if (!SYSTEM || !USER_TEMPLATE) return "プロンプト設定エラー";
       
       const allTrends = [];
-      const execOptions = {
-        temperature: options.temperature ?? AppConfig.get().Llm.Params.Temperature.WRITING
-      };
+      const execOptions = { temperature: options.temperature ?? AppConfig.get().Llm.Params.Temperature.WRITING };
 
       for (const keyword of hitKeywords) {
         const articles = articlesGroupedByKeyword[keyword];
@@ -442,7 +474,8 @@ const LlmService = (function() {
         if (previousSummary) userPrompt = userPrompt.replace('{previous_summary}', previousSummary);
         userPrompt = userPrompt.includes('{article_list}') ? userPrompt.replace('{article_list}', articleListForLlm) : userPrompt + '\n' + articleListForLlm;
         
-        const txt = _callLlmWithFallback(SYSTEM, userPrompt, model, azureWeeklyUrl, execOptions);
+        // ★変更: "mini" を指定
+        const txt = _callLlmWithFallback(SYSTEM, userPrompt, "mini", execOptions);
         if (txt && txt.trim()) allTrends.push(txt.trim());
       }
       return allTrends.join("\n\n---\n\n");
@@ -451,15 +484,16 @@ const LlmService = (function() {
       return _callLlmWithFallback(systemPrompt, reportText, "nano");
     },
     generateDailyDigest: function(systemPrompt, userPrompt) {
-        return _callLlmWithFallback(systemPrompt, userPrompt, "mini", llmConfig.AzureUrlMini);
+        return _callLlmWithFallback(systemPrompt, userPrompt, "mini");
     },
     analyzeKeywordSearch: function(systemPrompt, contextText, options) {
-        return _callLlmWithFallback(systemPrompt, contextText, "mini", llmConfig.AzureUrlMini, options);
+        return _callLlmWithFallback(systemPrompt, contextText, "mini", options);
     },
     generateVector: function(text) {
       const context = llmConfig.Context;
       const embConfig = llmConfig.Embedding;
       let vector = null;
+      // Embeddingはロジック変更なし（そのまま）
       if (context === 'PERSONAL') {
         if (llmConfig.OpenAiKey) vector = _callOpenAiEmbedding(text, embConfig.OpenAiModel, llmConfig.OpenAiKey);
         if (!vector && embConfig.AzureEndpoint && llmConfig.AzureKey) vector = _callAzureEmbedding(text, embConfig.AzureEndpoint, llmConfig.AzureKey);
@@ -471,7 +505,6 @@ const LlmService = (function() {
     },
     getSessionCost: function() { return _sessionCostTotal; },
     saveSessionCost: saveSessionCost,
-    
     logSessionTotal: function() {
       const statsParts = [];
       for (const [key, count] of Object.entries(_executionStats)) statsParts.push(`${key}: ${count}回`);
@@ -4742,6 +4775,211 @@ function diagnoseRssLatency() {
   Logger.log("🟨 3000ms以上: 注意 (GASだと足を引っ張ります)");
   Logger.log("🟥 10000ms以上: 危険 (即削除推奨)");
   Logger.log("💀 ERROR: タイムアウトまたは接続拒否");
+}
+
+/**
+ * Azure OpenAI 接続診断 (Nanoモデル用)
+ * スクリプトプロパティ: AZURE_ENDPOINT_URL_NANO を使用
+ */
+function testAzure_Nano() {
+  _runAzureTest("AZURE_ENDPOINT_URL_NANO", "Nanoモデル");
+}
+
+/**
+ * Azure OpenAI 接続診断 (Miniモデル用)
+ * スクリプトプロパティ: AZURE_ENDPOINT_URL_MINI を使用
+ */
+function testAzure_Mini() {
+  _runAzureTest("AZURE_ENDPOINT_URL_MINI", "Miniモデル");
+}
+
+/**
+ * 共通テストロジック
+ */
+function _runAzureTest(urlPropertyKey, label) {
+  const props = PropertiesService.getScriptProperties();
+  const azureUrl = props.getProperty(urlPropertyKey);
+  const apiKey = props.getProperty("OPENAI_API_KEY"); // キーは共通想定
+
+  Logger.log(`--- [${label}] 接続テスト開始 ---`);
+  Logger.log(`参照キー: ${urlPropertyKey}`);
+  Logger.log(`URL: ${azureUrl ? azureUrl.substring(0, 60) + "..." : "❌ 未設定"}`);
+
+  if (!azureUrl || !apiKey) {
+    Logger.log("❌ エラー: URLまたはAPIキーが設定されていません。");
+    return;
+  }
+
+  // ★ mini=Responses / nano=ChatCompletions をURLで判定
+  const isResponses = azureUrl.includes("/responses");
+  const isChat = azureUrl.includes("/chat/completions");
+
+  // URL形式チェック（miniは /responses を許容）
+  if (isResponses) {
+    if (!azureUrl.includes("/responses")) {
+      Logger.log("⚠️ 警告: URLが '/responses' になっていません。");
+      Logger.log("正しい形式: .../openai/responses?api-version=...");
+    }
+  } else {
+    if (!isChat) {
+      Logger.log("⚠️ 警告: URLの末尾が '/chat/completions' になっていません。");
+      Logger.log("正しい形式: .../deployments/{デプロイ名}/chat/completions?api-version=...");
+    }
+  }
+
+  // payloadを分岐（★ここが今回の核心：Responsesは messages ではなく input）
+  let payload;
+
+  if (isResponses) {
+    // Responses API: model(=デプロイ名) + input
+    const deploymentName = props.getProperty("OPENAI_MODEL_MINI") || "gpt-5-mini";
+    payload = {
+      model: deploymentName,
+      input: `Test connection for ${label}. Reply only with OK.`
+      // まずは最小構成推奨（GPT-5系はパラメータ制約が出やすい）
+      // max_output_tokens: 50
+    };
+  } else {
+    // Chat Completions API: messages
+    payload = {
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: `Test connection for ${label}. Reply only with OK.` }
+      ],
+      temperature: 1,
+      max_completion_tokens: 50
+    };
+  }
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "api-key": apiKey },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(azureUrl, options);
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+
+    Logger.log(`レスポンスコード: ${code}`);
+
+    if (code !== 200) {
+      Logger.log("❌ 接続失敗");
+      Logger.log("エラー内容: " + body);
+      return;
+    }
+
+    // 成功時：返却の取り出し（ResponsesとChatで違う）
+    let okText = "";
+    try {
+      const json = JSON.parse(body);
+
+      if (isResponses) {
+        // Responses: output[].content[].text を拾う（揺れに備えて output_text も見る）
+        if (json.output_text) {
+          okText = String(json.output_text).trim();
+        } else if (Array.isArray(json.output)) {
+          for (const item of json.output) {
+            if (item && item.type === "message" && Array.isArray(item.content)) {
+              const texts = item.content
+                .map(c => (c && c.text) ? String(c.text) : "")
+                .filter(Boolean);
+              if (texts.length) {
+                okText = texts.join("").trim();
+                break;
+              }
+            }
+          }
+        }
+      } else {
+        // Chat Completions: choices[0].message.content
+        okText = json.choices?.[0]?.message?.content
+          ? String(json.choices[0].message.content).trim()
+          : "";
+      }
+    } catch (e) {
+      okText = ""; // JSON解釈できなくても、接続自体はOKなので黙って通す
+    }
+
+    Logger.log("✅ 接続成功");
+    if (okText) Logger.log("応答: " + okText);
+
+  } catch (e) {
+    Logger.log("❌ 例外発生: " + e.toString());
+  } finally {
+    Logger.log("--- テスト終了 ---");
+  }
+}
+
+/**
+ * NanoとMiniのLLM接続をシンプルに確認する関数
+ */
+function debugLlmConnection() {
+  Logger.log("=== LLM接続テスト開始 ===");
+
+  // -----------------------------------------------
+  // 1. Nano モデルのテスト (Summarize機能)
+  // -----------------------------------------------
+  Logger.log("📡 1. Nanoモデル (要約) テスト中...");
+  try {
+    // ★修正: AIが「要約しがいがある」と感じる長めのダミー記事にする
+    const dummyText = `
+      OpenAI has announced a new series of AI models designed to spend more time thinking before they respond. 
+      They can reason through complex tasks and solve harder problems than previous models in science, coding, and math. 
+      This new series is named o1. We are releasing the first of this series in ChatGPT and our API today.
+    `.trim();
+
+    const resultNano = LlmService.summarize(dummyText);
+    
+    // JSON文字列として返ってくる場合と、パース済みの場合を考慮
+    let content = resultNano;
+    if (typeof resultNano === 'object') {
+        content = resultNano.tldr || JSON.stringify(resultNano);
+    } else if (resultNano.includes("{")) {
+        // 文字列の中にJSONがある場合
+        try {
+            const parsed = JSON.parse(resultNano);
+            content = parsed.tldr || resultNano;
+        } catch(e) {}
+    }
+
+    if (content && content.length > 0 && content !== '""') {
+      Logger.log("✅ Nano成功！");
+      Logger.log("応答: " + content);
+    } else {
+      Logger.log("⚠️ Nano応答あり（空）");
+      Logger.log("元データ: " + resultNano);
+      Logger.log("※接続は成功しています。モデルが「要約不要」と判断した可能性があります。");
+    }
+  } catch (e) {
+    Logger.log("❌ Nano例外: " + e.toString());
+  }
+
+  // -----------------------------------------------
+  // 2. Mini モデルのテスト (DailyDigest機能)
+  // -----------------------------------------------
+  Logger.log("📡 2. Miniモデル (チャット) テスト中...");
+  try {
+    const resultMini = LlmService.generateDailyDigest(
+      "You are a helpful assistant.", 
+      "Test connection. Just say 'OK'."
+    );
+
+    if (resultMini && resultMini.length > 0 && !resultMini.includes("失敗")) {
+      Logger.log("✅ Mini成功！");
+      Logger.log("応答: " + resultMini);
+    } else {
+      Logger.log("❌ Mini失敗 (空またはエラー)");
+      Logger.log("応答内容: " + resultMini);
+    }
+  } catch (e) {
+    Logger.log("❌ Mini例外: " + e.toString());
+  }
+
+  Logger.log("\n=== テスト終了 ===");
 }
 
 // #endregion
