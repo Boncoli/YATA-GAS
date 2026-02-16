@@ -7,8 +7,7 @@ package-lock.json
 credentials.json
 server-properties.json
 
-# --- Database (Data is backed up separately) ---
-yata.db
+# --- Database ---
 *.db
 *.db-shm
 *.db-wal
@@ -26,20 +25,18 @@ Thumbs.db
 *.bak
 
 # --- Frontend & Local Testing ---
-# もしこれらの中身をGitに保存したい場合は行の頭に # をつけてください
 public/
 local_public/
 
 # --- Python & Dashboard specific ---
-# 自動生成される画像 (履歴管理不要)
 *.png
-
-# Pythonのキャッシュ
 __pycache__/
 *.py[cod]
-
-# --- Fonts (Optional) ---
-# リポジトリを軽量に保ちたい場合は、以下の # を外してください
-*.ttf
-*.otf
 dashboard/fonts/
+
+# --- 資料等 ---
+"YATA - Context-Aware Intelligence Platform (Full).pdf"
+案内資料/
+
+# lib/YATA.js は唯一の正本なので無視してはいけません
+!lib/YATA.js
