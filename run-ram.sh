@@ -7,9 +7,14 @@ SCRIPT_DIR="/home/boncoli/yata-local"
 
 # 引数解析
 SYNC_BACK=true
+SYNC_ONLY=false
 if [[ "$1" == "--no-sync" ]]; then
     SYNC_BACK=false
     echo "[Wrapper] 🚀 Lazy Commit Mode: Sync back to SD will be skipped."
+    shift
+elif [[ "$1" == "--sync-only" ]]; then
+    SYNC_ONLY=true
+    echo "[Wrapper] 💾 Sync-Only Mode: Cleaning up and saving RAM DB to SD..."
     shift
 fi
 
@@ -23,7 +28,7 @@ if [[ "$NODE_SCRIPT" == *"dashboard"* ]]; then
     SYNC_BACK=false
 fi
 
-# --- 1. RAMにDBがなければ、SDからコピーする ---
+# --- 1. RAMにDBがなければ, SDからコピーする ---
 if [ ! -f "$RAM_DB" ]; then
     echo "[Wrapper] Copying DB to RAM..."
     if [ -f "$REAL_DB" ]; then
@@ -41,49 +46,51 @@ chmod 666 "$RAM_DB"-wal >/dev/null 2>&1
 chmod 666 "$RAM_DB"-shm >/dev/null 2>&1
 
 # --- 2. DBのパスを環境変数に入れてNodeを実行 (時刻ログ付き) ---
-echo "[Wrapper] Running $NODE_SCRIPT on RAM DB..."
 export DB_PATH="$RAM_DB"
-
 cd "$SCRIPT_DIR"
 
-# スクリプトのパス解決 (ルートになければ tasks/ を探す)
-if [ -f "$NODE_SCRIPT" ]; then
-  SCRIPT_PATH="$NODE_SCRIPT"
-elif [ -f "tasks/$NODE_SCRIPT" ]; then
-  SCRIPT_PATH="tasks/$NODE_SCRIPT"
-else
-  SCRIPT_PATH="$NODE_SCRIPT" # フォールバック
-fi
+if [ "$SYNC_ONLY" = false ]; then
+    echo "[Wrapper] Running $NODE_SCRIPT on RAM DB..."
 
-# ログファイルの決定 (logs/ フォルダ配下にする)
-LOG_FILE=""
-if [[ "$NODE_SCRIPT" == *"do-collect"* ]]; then
-  LOG_FILE="logs/collect.log"
-elif [[ "$NODE_SCRIPT" == *"do-summarize"* ]]; then
-  LOG_FILE="logs/summarize.log"
-elif [[ "$NODE_SCRIPT" == *"yata-task"* ]]; then
-  LOG_FILE="logs/yata.log"
-fi
+    # スクリプトのパス解決 (ルートになければ tasks/ を探す)
+    if [ -f "$NODE_SCRIPT" ]; then
+      SCRIPT_PATH="$NODE_SCRIPT"
+    elif [ -f "tasks/$NODE_SCRIPT" ]; then
+      SCRIPT_PATH="tasks/$NODE_SCRIPT"
+    else
+      SCRIPT_PATH="$NODE_SCRIPT" # フォールバック
+    fi
 
-# 実行コマンドの判定
-if [[ "$NODE_SCRIPT" == *.py ]]; then
-    # 末尾に "$@" を追加（クォーテーションで囲むのがコツ）
-    CMD="python3 -u \"$SCRIPT_PATH\" \"\$@\""
-else
-    # 末尾に "$@" を追加
-    CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\" \"\$@\""
-fi
+    # ログファイルの決定 (logs/ フォルダ配下にする)
+    LOG_FILE=""
+    if [[ "$NODE_SCRIPT" == *"do-collect"* ]]; then
+      LOG_FILE="logs/collect.log"
+    elif [[ "$NODE_SCRIPT" == *"do-summarize"* ]]; then
+      LOG_FILE="logs/summarize.log"
+    elif [[ "$NODE_SCRIPT" == *"yata-task"* ]]; then
+      LOG_FILE="logs/yata.log"
+    fi
 
-if [ -n "$LOG_FILE" ]; then
-    # ログありの処理（さきほどのスニペット通り）
-    eval "$CMD" | while read line; do
-        echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
-    done | tee -a "$LOG_FILE"
-else
-    # ログなしの処理（ここも eval "$CMD" を使う）
-    eval "$CMD" | while read line; do
-        echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
-    done
+    # 実行コマンドの判定
+    if [[ "$NODE_SCRIPT" == *.py ]]; then
+        # 末尾に "$@" を追加（クォーテーションで囲むのがコツ）
+        CMD="python3 -u \"$SCRIPT_PATH\" \"\$@\""
+    else
+        # 末尾に "$@" を追加
+        CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\" \"\$@\""
+    fi
+
+    if [ -n "$LOG_FILE" ]; then
+        # ログありの処理
+        eval "$CMD" | while read line; do
+            echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
+        done | tee -a "$LOG_FILE"
+    else
+        # ログなしの処理
+        eval "$CMD" | while read line; do
+            echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
+        done
+    fi
 fi
 
 # --- 2.5 重複データの削除 (お掃除機能) ---

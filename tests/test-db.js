@@ -1,4 +1,4 @@
-require('./YATA.js');
+require('../lib/yata-loader.js');
 
 console.log("=== SQLite 書き込みテスト ===");
 

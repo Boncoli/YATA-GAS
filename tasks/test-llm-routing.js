@@ -11,11 +11,11 @@ async function runTest() {
   
   try {
     // lib/YATA.js 内に定義された関数を呼び出す
-    if (typeof testCurrentLlmModelRouting === 'function') {
-      testCurrentLlmModelRouting();
+    if (typeof debugLlmConnection === 'function') {
+      debugLlmConnection();
       console.log("=== Test Finished Successfully ===");
     } else {
-      console.error("Error: testCurrentLlmModelRouting function not found in YATA.js");
+      console.error("Error: debugLlmConnection function not found in YATA.js");
     }
   } catch (e) {
     console.error("Test Failed:");

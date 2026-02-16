@@ -1,0 +1,13 @@
+[Unit]
+Description=YATA RAM DB Sync on Shutdown
+Before=halt.target reboot.target shutdown.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+ExecStop=/home/boncoli/yata-local/run-ram.sh --sync-only
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

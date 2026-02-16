@@ -1,4 +1,4 @@
-require('./YATA.js');
+require('../lib/yata-loader.js');
 
 console.log("=== AI要約疎通テスト ===");
 try {

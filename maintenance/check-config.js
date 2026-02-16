@@ -1,4 +1,4 @@
-require('./YATA.js');
+require('../lib/yata-loader.js');
 console.log("=== OpenAI 設定確認 ===");
 const config = AppConfig.get().Llm; // Llmセクションを取得
 
