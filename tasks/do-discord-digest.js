@@ -6,10 +6,58 @@ const fs = require('fs');
 require('../lib/gas-bridge.js');
 require('../lib/yata-loader.js');
 
+/**
+ * ユーザーのクリック履歴から興味関心プロファイル(interests.json)を更新する
+ */
+async function updateInterestProfile() {
+  const dbPath = process.env.DB_PATH || './yata.db';
+  const Database = require('better-sqlite3');
+  const db = new Database(dbPath);
+  
+  const articles = db.prepare("SELECT title, summary FROM collect WHERE clicks > 0").all();
+  if (articles.length === 0) return null;
+
+  const articleText = articles.map(a => "Title: " + a.title + "\nSummary: " + a.summary).join("\n\n---\n\n");
+  const prompt = "あなたはプロのパーソナル・アナリストです。ユーザーが詳細解析（クリック）した以下の記事リストを分析し、ユーザーの「深層的な関心事」を抽出して構造化されたJSON形式で出力してください。\n\n" +
+    "【分析対象の記事リスト】\n" + articleText + "\n\n" +
+    "【出力形式】\n" +
+    "{\n" +
+    "  \"last_updated\": \"" + new Date().toISOString() + "\",\n" +
+    "  \"interests\": [{ \"topic\": \"トピック名\", \"weight\": 0.9, \"keywords\": [\"キーワード1\"], \"reason\": \"理由\" }],\n" +
+    "  \"persona\": \"ユーザー像の要約\"\n" +
+    "}";
+
+  console.log(`[Interests] Analyzing ${articles.length} clicked articles via GPT-5 Mini...`);
+  const apiKey = process.env.OPENAI_API_KEY_PERSONAL;
+  
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" }
+      })
+    });
+    const json = await response.json();
+    const result = json.choices[0].message.content;
+    fs.writeFileSync(path.join(__dirname, '../interests.json'), result);
+    console.log("✅ Interest profile updated.");
+    return JSON.parse(result);
+  } catch (e) {
+    console.error("❌ Interest update failed:", e.message);
+    return null;
+  }
+}
+
 async function main() {
   console.log("--- Discord Daily Digest Start ---");
 
-  // 1. 昨日の日付範囲を計算 (0:00:00 - 23:59:59)
+  // 1. 関心プロファイルを更新
+  const interestsData = await updateInterestProfile();
+
+  // 2. 昨日の日付範囲を計算 (0:00:00 - 23:59:59)
   const now = new Date();
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
@@ -45,12 +93,18 @@ async function main() {
 
   console.log(`Found ${yesterdayArticles.length} articles.`);
 
+  // --- ユーザーの興味プロファイルをプロンプトに追加 ---
+  let interestProfile = "";
+  if (interestsData) {
+    interestProfile = `\n\n【ユーザーの興味関心プロファイル】\n${JSON.stringify(interestsData, null, 2)}\n\n上記プロファイルを考慮し、ユーザーが特に関心を持ちそうなニュースを優先的にピックアップし、その理由も織り交ぜて解説してください。`;
+  }
+
   // 3. LLMでDiscord用サマリーを生成
   // BATCH_SYSTEMなどのプロンプトは gas-bridge 経由で prompts.json から読み込まれる
   const promptList = yesterdayArticles.map(a => `- ${a.title} (${a.url})\n  要約: ${a.summary || a.abstract}`).join("\n\n");
   
   const systemPrompt = getPromptConfig("DISCORD_DIGEST_SYSTEM");
-  const userPrompt = getPromptConfig("DISCORD_DIGEST_USER").replace("{article_list}", promptList);
+  const userPrompt = getPromptConfig("DISCORD_DIGEST_USER").replace("{article_list}", promptList) + interestProfile;
 
   if (!systemPrompt || !userPrompt) {
     console.error("Discord prompts not found in prompts.json");
