@@ -200,7 +200,50 @@ app.post('/api/carplay-log', (req, res) => {
 
 // 0.2 燃費ログ API
 app.post('/api/fuel-log', (req, res) => {
-    // ... (既存の登録処理)
+    try {
+        const { odometer, amount, price, location, note, timestamp } = req.body;
+        const finalTs = timestamp ? timestamp.replace(/-/g, '/') : new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '/');
+
+        // --- 1. 前回の走行距離を取得して燃費を計算 ---
+        const lastLog = db.prepare("SELECT odometer FROM fuel_logs ORDER BY odometer DESC LIMIT 1").get();
+        let fuelEconomy = null;
+        let distance = null;
+        if (lastLog && odometer > lastLog.odometer) {
+            distance = odometer - lastLog.odometer;
+            fuelEconomy = (distance / amount).toFixed(2);
+        }
+
+        // --- 2. DBへ保存 ---
+        const insert = db.prepare("INSERT INTO fuel_logs (timestamp, odometer, amount, price, location, note) VALUES (?, ?, ?, ?, ?, ?)");
+        insert.run(finalTs, odometer, amount, price, location, note);
+
+        // --- 3. Discordへ通知 ---
+        const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+        if (webhookUrl) {
+            let message = `⛽ **給油完了報告 (CX-80)**\n`;
+            message += `📍 場所: ${location || '未設定'}\n`;
+            message += `🛣️ 総走行距離: ${odometer.toLocaleString()} km\n`;
+            if (distance) message += `🏁 今回の走行: ${distance.toLocaleString()} km\n`;
+            message += `💧 給油量: ${amount} L (¥${price}/L)\n`;
+            if (fuelEconomy) {
+                message += `✨ **今回の燃費: ${fuelEconomy} km/L**\n`;
+                if (fuelEconomy > 15) message += `🎊 かなりの低燃費です！ナイスドライブ！`;
+            }
+            
+            global.UrlFetchApp.fetch(webhookUrl, {
+                method: "post",
+                contentType: "application/json",
+                payload: JSON.stringify({ content: message })
+            });
+        }
+
+        console.log(`[IoT] Fuel Log Added: ${fuelEconomy ? fuelEconomy + ' km/L' : 'First log'}`);
+        res.json({ status: "success", fuel_economy: fuelEconomy });
+
+    } catch (e) {
+        console.error(`[IoT] Fuel Log Error: ${e.message}`);
+        res.status(500).json({ status: "error", message: e.message });
+    }
 });
 
 // 0.2.1 燃費統計取得 API
