@@ -303,6 +303,69 @@ app.get('/api/viz-data', (req, res) => {
     }
 });
 
+// 4. TODO 管理 API
+app.get('/api/todo', (req, res) => {
+    try {
+        const todoPath = path.join(__dirname, 'TODO.md');
+        const content = fs.readFileSync(todoPath, 'utf8');
+        res.send(content);
+    } catch (e) {
+        res.status(500).send("TODO.md の読み込みに失敗しました。");
+    }
+});
+
+app.post('/api/todo', (req, res) => {
+    try {
+        const { content } = req.body;
+        const todoPath = path.join(__dirname, 'TODO.md');
+        fs.writeFileSync(todoPath, content, 'utf8');
+        console.log(`[Web] ✅ TODO.md updated!`);
+        res.json({ status: "success" });
+    } catch (e) {
+        console.error(`[Web] ❌ TODO update error: ${e.message}`);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 5. システムステータス API
+const { execSync } = require('child_process');
+app.get('/api/system-status', (req, res) => {
+    try {
+        const status = {};
+        
+        // CPU温度
+        try {
+            const temp = execSync('vcgencmd measure_temp').toString().replace('temp=', '').replace("'C\n", "");
+            status.cpuTemp = temp;
+        } catch(e) { status.cpuTemp = "N/A"; }
+
+        // メモリ使用率 (free -m)
+        try {
+            const mem = execSync('free -m').toString().split('\n')[1].split(/\s+/);
+            status.memUsed = mem[2];
+            status.memTotal = mem[1];
+        } catch(e) { status.memUsed = "N/A"; }
+
+        // ディスク使用率 (df -h)
+        try {
+            const disk = execSync('df -h /').toString().split('\n')[1].split(/\s+/);
+            status.diskUsed = disk[2];
+            status.diskTotal = disk[1];
+            status.diskPercent = disk[4];
+        } catch(e) { status.diskPercent = "N/A"; }
+
+        // NAS空き容量
+        try {
+            const nas = execSync('df -h /mnt/nas').toString().split('\n')[1].split(/\s+/);
+            status.nasAvail = nas[3];
+        } catch(e) { status.nasAvail = "N/A"; }
+
+        res.json(status);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // サーバー起動
 app.listen(PORT, () => {
     console.log(`=========================================`);

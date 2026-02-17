@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA - TODO Editor</title>
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --header-bg: #1e1e1e;
+            --border-color: #333;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header {
+            background-color: var(--header-bg);
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+        h1 { margin: 0; font-size: 1.2rem; color: var(--accent-color); }
+        .controls { display: flex; gap: 15px; align-items: center; }
+        button {
+            background-color: var(--accent-color);
+            color: black;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #00c853; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #status { font-size: 0.8rem; color: #888; }
+
+        main {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        .pane {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .pane-header {
+            background-color: #252525;
+            padding: 5px 15px;
+            font-size: 0.8rem;
+            color: #aaa;
+            border-bottom: 1px solid var(--border-color);
+        }
+        textarea {
+            flex: 1;
+            background-color: #1e1e1e;
+            color: #fff;
+            border: none;
+            padding: 20px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 1rem;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+            border-right: 1px solid var(--border-color);
+        }
+        #preview {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background-color: #121212;
+            line-height: 1.6;
+        }
+
+        /* Markdown Styles */
+        #preview h1, #preview h2, #preview h3 { color: var(--accent-color); border-bottom: 1px solid #333; padding-bottom: 5px; }
+        #preview code { background-color: #252525; padding: 2px 4px; border-radius: 4px; font-family: monospace; }
+        #preview pre { background-color: #252525; padding: 15px; border-radius: 8px; overflow-x: auto; }
+        #preview blockquote { border-left: 4px solid var(--accent-color); margin: 0; padding-left: 15px; color: #aaa; }
+        #preview ul, #preview ol { padding-left: 25px; }
+        #preview table { border-collapse: collapse; width: 100%; }
+        #preview th, #preview td { border: 1px solid #333; padding: 8px; }
+        #preview img { max-width: 100%; }
+
+        @media (max-width: 768px) {
+            main { flex-direction: column; }
+            textarea { border-right: none; border-bottom: 1px solid var(--border-color); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>📝 YATA TODO Editor</h1>
+        <div class="controls">
+            <span id="status">Ready</span>
+            <button id="saveBtn">保存 (Ctrl+S)</button>
+        </div>
+    </header>
+    <main>
+        <div class="pane">
+            <div class="pane-header">EDITOR (Markdown)</div>
+            <textarea id="todoContent" placeholder="TODOを入力してください..."></textarea>
+        </div>
+        <div class="pane">
+            <div class="pane-header">PREVIEW</div>
+            <div id="preview" class="markdown-body"></div>
+        </div>
+    </main>
+
+    <script>
+        const textarea = document.getElementById('todoContent');
+        const preview = document.getElementById('preview');
+        const saveBtn = document.getElementById('saveBtn');
+        const status = document.getElementById('status');
+
+        // プレビューの更新
+        function updatePreview() {
+            preview.innerHTML = marked.parse(textarea.value);
+        }
+
+        textarea.addEventListener('input', updatePreview);
+
+        // TODO.md を読み込む
+        async function loadTodo() {
+            try {
+                const res = await fetch('/api/todo');
+                if (res.ok) {
+                    textarea.value = await res.text();
+                    updatePreview();
+                    status.textContent = 'Loaded';
+                } else {
+                    status.textContent = 'Load Failed';
+                }
+            } catch (e) {
+                status.textContent = 'Error';
+            }
+        }
+
+        // TODO.md を保存する
+        async function saveTodo() {
+            saveBtn.disabled = true;
+            status.textContent = 'Saving...';
+            try {
+                const res = await fetch('/api/todo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: textarea.value })
+                });
+                if (res.ok) {
+                    status.textContent = 'Saved at ' + new Date().toLocaleTimeString();
+                } else {
+                    status.textContent = 'Save Failed';
+                }
+            } catch (e) {
+                status.textContent = 'Network Error';
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+
+        saveBtn.addEventListener('click', saveTodo);
+
+        // ショートカットキー (Ctrl + S)
+        window.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                saveTodo();
+            }
+        });
+
+        // 起動時に読み込み
+        loadTodo();
+    </script>
+</body>
+</html>

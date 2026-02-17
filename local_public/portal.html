@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA Portal</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --hover-color: #00c853;
+        }
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            padding: 20px;
+            text-align: center;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 30px;
+            color: var(--accent-color);
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(0, 230, 118, 0.3);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background-color: var(--card-bg);
+            padding: 30px 20px;
+            border-radius: 12px;
+            text-decoration: none;
+            color: var(--text-color);
+            transition: transform 0.2s, background-color 0.2s, box-shadow 0.2s;
+            border: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            background-color: #252525;
+            border-color: var(--accent-color);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        }
+        .icon {
+            font-size: 3rem;
+        }
+        .label {
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        footer {
+            margin-top: 40px;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .status-bar {
+            background-color: #1e1e1e;
+            padding: 10px 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-around;
+            font-size: 0.9rem;
+            border: 1px solid #333;
+        }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-value { color: var(--accent-color); font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>YATA PORTAL</h1>
+        
+        <div class="status-bar" id="statusBar">
+            <div class="status-item">🌡️ CPU: <span id="cpuTemp" class="status-value">--</span>°C</div>
+            <div class="status-item">🧠 Mem: <span id="memUsed" class="status-value">--</span> / <span id="memTotal">--</span>MB</div>
+            <div class="status-item">💾 SD: <span id="diskPercent" class="status-value">--</span></div>
+            <div class="status-item">📦 NAS: <span id="nasAvail" class="status-value">--</span> free</div>
+        </div>
+
+        <div class="grid">
+            <a href="map.html" class="card">
+                <span class="icon">🗺️</span>
+                <span class="label">Life Map</span>
+            </a>
+            <a href="todo.html" class="card">
+                <span class="icon">📝</span>
+                <span class="label">TODO / Ideas</span>
+            </a>
+            <a href="news.html" class="card">
+                <span class="icon">📰</span>
+                <span class="label">News Reader</span>
+            </a>
+            <a href="fuel.html" class="card">
+                <span class="icon">⛽</span>
+                <span class="label">Fuel Logs</span>
+            </a>
+            <a href="viz.html" class="card">
+                <span class="icon">📊</span>
+                <span class="label">3D Viz</span>
+            </a>
+            <a href="http://192.168.1.151:3000" target="_blank" class="card">
+                <span class="icon">📈</span>
+                <span class="label">Grafana</span>
+            </a>
+        </div>
+        <footer>
+            &copy; 2026 YATA Project - Personal Intelligence Environment
+        </footer>
+    </div>
+
+    <script>
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/system-status');
+                const data = await res.json();
+                document.getElementById('cpuTemp').textContent = data.cpuTemp;
+                document.getElementById('memUsed').textContent = data.memUsed;
+                document.getElementById('memTotal').textContent = data.memTotal;
+                document.getElementById('diskPercent').textContent = data.diskPercent;
+                document.getElementById('nasAvail').textContent = data.nasAvail;
+            } catch (e) {
+                console.error("Status update failed");
+            }
+        }
+        updateStatus();
+        setInterval(updateStatus, 30000); // 30秒ごとに更新
+    </script>
+</body>
+</html>
