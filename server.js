@@ -139,10 +139,10 @@ app.post('/api/import-gpx', upload.single('gpx_file'), (req, res) => {
 // 0. CarPlay ログ API
 app.post('/api/carplay-log', (req, res) => {
     try {
-        const { action, timestamp, latitude, longitude, altitude, address, note, battery } = req.body;
+        let { action, timestamp, latitude, longitude, altitude, address, note, battery } = req.body;
         
         // --- 強化されたチャタリング防止ロジック ---
-        const lastLog = db.prepare("SELECT id, action, timestamp FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+        const lastLog = db.prepare("SELECT * FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
         if (lastLog) {
             const parseDate = (ts) => {
                 if (!ts) return new Date();
@@ -175,9 +175,59 @@ app.post('/api/carplay-log', (req, res) => {
                 return res.json({ status: "ignored", message: "Pass-by detected, logs removed" });
             }
 
-            // 4. アクションが切り替わる場合は、時間に関わらず受け入れる (特にCarPlay)
-            if (action !== lastLog.action) {
-                // パスして保存へ
+            // 4. InCar の位置情報継承ロジック (New!)
+            // 車に乗った時、前回の降車位置から100m以内なら、前回の位置情報を引き継ぐ
+            if (action === "InCar" && lastLog.latitude && lastLog.longitude) {
+                const dist = getDistance(latitude, longitude, lastLog.latitude, lastLog.longitude);
+                if (dist < 100) {
+                    console.log(`[IoT] 📍 Location Inherited: InCar is close to last log (${dist.toFixed(1)}m). Using previous coordinates.`);
+                    latitude = lastLog.latitude;
+                    longitude = lastLog.longitude;
+                    altitude = lastLog.altitude;
+                    address = lastLog.address;
+                    note = (note ? note + " " : "") + `[Inherited from ${lastLog.action}]`;
+                }
+            }
+        }
+
+        // --- 走行距離計算 & Discord通知 (OutCar時のみ) ---
+        if (action === "OutCar" && lastLog) {
+            // 直近の InCar を探す (24時間以内)
+            const lastInCar = db.prepare("SELECT * FROM drive_logs WHERE action = 'InCar' AND timestamp > datetime('now', '-24 hours', 'localtime') ORDER BY timestamp DESC LIMIT 1").get();
+            
+            if (lastInCar && lastInCar.latitude && latitude) {
+                try {
+                    console.log(`[IoT] 🏎️ Calculating distance from ${lastInCar.address || 'Start'} to ${address || 'End'}...`);
+                    // OSRM API (Demo Server) - lon,lat;lon,lat の順
+                    const osrmUrl = `http://router.project-osrm.org/route/v1/driving/${lastInCar.longitude},${lastInCar.latitude};${longitude},${latitude}?overview=false`;
+                    const res = global.UrlFetchApp.fetch(osrmUrl);
+                    if (res.getResponseCode() === 200) {
+                        const data = JSON.parse(res.getContentText());
+                        if (data.routes && data.routes[0]) {
+                            const distanceKm = (data.routes[0].distance / 1000).toFixed(1);
+                            note = (note ? note + " " : "") + `[Distance: ${distanceKm}km]`;
+                            
+                            // Discord通知
+                            const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+                            if (webhookUrl) {
+                                const message = `🚗 **ドライブ完了報告 (CX-80)**\n` +
+                                                `📍 出発: ${lastInCar.address || '不明な地点'}\n` +
+                                                `🏁 到着: ${address || '不明な地点'}\n` +
+                                                `🛣️ 推定走行距離: **${distanceKm} km**\n` +
+                                                `🔋 バッテリー: ${battery || '不明'}%\n` +
+                                                `✨ お疲れ様でした！`;
+                                
+                                global.UrlFetchApp.fetch(webhookUrl, {
+                                    method: "post",
+                                    contentType: "application/json",
+                                    payload: JSON.stringify({ content: message })
+                                });
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error(`[IoT] ❌ Distance calculation failed: ${err.message}`);
+                }
             }
         }
 
