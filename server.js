@@ -422,23 +422,23 @@ app.post('/api/todo', (req, res) => {
 
 // 5. システムステータス API
 const { execSync } = require('child_process');
+function getSystemStatus() {
+    const status = {};
+    try {
+        status.cpuTemp = execSync('vcgencmd measure_temp').toString().replace('temp=', '').replace("'C\n", "");
+    } catch(e) { status.cpuTemp = "N/A"; }
+    try {
+        const mem = execSync('free -m').toString().split('\n')[1].split(/\s+/);
+        status.memUsed = mem[2];
+        status.memTotal = mem[1];
+    } catch(e) { status.memUsed = "N/A"; }
+    return status;
+}
+
 app.get('/api/system-status', (req, res) => {
     try {
-        const status = {};
+        const status = getSystemStatus();
         
-        // CPU温度
-        try {
-            const temp = execSync('vcgencmd measure_temp').toString().replace('temp=', '').replace("'C\n", "");
-            status.cpuTemp = temp;
-        } catch(e) { status.cpuTemp = "N/A"; }
-
-        // メモリ使用率 (free -m)
-        try {
-            const mem = execSync('free -m').toString().split('\n')[1].split(/\s+/);
-            status.memUsed = mem[2];
-            status.memTotal = mem[1];
-        } catch(e) { status.memUsed = "N/A"; }
-
         // ディスク使用率 (df -h)
         try {
             const disk = execSync('df -h /').toString().split('\n')[1].split(/\s+/);
@@ -455,6 +455,64 @@ app.get('/api/system-status', (req, res) => {
 
         res.json(status);
     } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 6. Gemini AI チャット API
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message, history } = req.body;
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) return res.status(500).json({ error: "Gemini API Key not found" });
+
+        const sysStatus = getSystemStatus();
+        const systemPrompt = `あなたは YATA (Yet Another Trend Analyzer) のパーソナル・アシスタントです。
+ユーザーは BON 様です。あなたは BON 様のラズパイ (boncoli) 上で稼働しています。
+現在のシステム状態: CPU温度 ${sysStatus.cpuTemp}°C, メモリ使用 ${sysStatus.memUsed}/${sysStatus.memTotal}MB。
+回答は簡潔かつ知的で、親しみやすい日本語で行ってください。`;
+
+        const modelName = "gemini-3-flash-preview";
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+        
+        const contents = [];
+        // システムプロンプトを先頭に追加 (Gemini 1.5 の場合、system_instruction が使えるが、簡易的に messages に含める)
+        // 実際には 1.5-flash は system_instruction をサポートしている
+        
+        const payload = {
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [
+                ...(history || []).map(h => ({
+                    role: h.role === 'user' ? 'user' : 'model',
+                    parts: [{ text: h.content }]
+                })),
+                {
+                    role: "user",
+                    parts: [{ text: message }]
+                }
+            ],
+            generationConfig: {
+                maxOutputTokens: 1000,
+                temperature: 0.7
+            }
+        };
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+            const aiResponse = data.candidates[0].content.parts[0].text;
+            res.json({ response: aiResponse });
+        } else {
+            console.error("[Gemini] Invalid response:", data);
+            res.status(500).json({ error: "AIからの応答が不正です。" });
+        }
+    } catch (e) {
+        console.error("[Gemini] Error:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
