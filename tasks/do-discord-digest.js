@@ -6,167 +6,126 @@ const fs = require('fs');
 require('../lib/gas-bridge.js');
 require('../lib/yata-loader.js');
 
-/**
- * ユーザーのクリック履歴から興味関心プロファイル(interests.json)を更新する
- */
 async function updateInterestProfile() {
   const dbPath = process.env.DB_PATH || './yata.db';
   const Database = require('better-sqlite3');
   const db = new Database(dbPath);
-  
-  const articles = db.prepare("SELECT title, summary FROM collect WHERE clicks > 0").all();
+  const articles = db.prepare("SELECT title, summary FROM collect WHERE clicks > 0 ORDER BY date DESC LIMIT 30").all();
+  const model = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
   if (articles.length === 0) return null;
 
   const articleText = articles.map(a => "Title: " + a.title + "\nSummary: " + a.summary).join("\n\n---\n\n");
-  const prompt = "あなたはプロのパーソナル・アナリストです。ユーザーが詳細解析（クリック）した以下の記事リストを分析し、ユーザーの「深層的な関心事」を抽出して構造化されたJSON形式で出力してください。\n\n" +
-    "【分析対象の記事リスト】\n" + articleText + "\n\n" +
-    "【出力形式】\n" +
-    "{\n" +
-    "  \"last_updated\": \"" + new Date().toISOString() + "\",\n" +
-    "  \"interests\": [{ \"topic\": \"トピック名\", \"weight\": 0.9, \"keywords\": [\"キーワード1\"], \"reason\": \"理由\" }],\n" +
-    "  \"persona\": \"ユーザー像の要約\"\n" +
-    "}";
-
-  console.log(`[Interests] Analyzing ${articles.length} clicked articles via GPT-5 Mini...`);
+  const prompt = `あなたはプロのパーソナル・アナリストです。以下の記事リストを分析し、ユーザーの興味関心を抽出してJSONで出力してください。\n\n${articleText}`;
   const apiKey = process.env.OPENAI_API_KEY_PERSONAL;
-  
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-5-mini",
-        messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_object" }
-      })
+      body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }], response_format: { type: "json_object" }, reasoning_effort: "minimal" })
     });
     const json = await response.json();
     const result = json.choices[0].message.content;
     fs.writeFileSync(path.join(__dirname, '../interests.json'), result);
-    console.log("✅ Interest profile updated.");
     return JSON.parse(result);
-  } catch (e) {
-    console.error("❌ Interest update failed:", e.message);
-    return null;
-  }
+  } catch (e) { return null; }
+}
+
+function computeScore(article, interestsData) {
+  if (!interestsData || !interestsData.interests) return 0;
+  let score = 0;
+  const text = (article.title + " " + (article.summary || "")).toLowerCase();
+  interestsData.interests.forEach(interest => {
+    if (interest && interest.keywords) {
+      interest.keywords.forEach(kw => { if (text.includes(kw.toLowerCase())) score += (interest.weight || 0.5) * 10; });
+    }
+  });
+  return score;
+}
+
+function computeTopicScore(article, interest) {
+  let score = 0;
+  if (!interest || !interest.keywords) return 0;
+  const text = (article.title + " " + (article.summary || "")).toLowerCase();
+  interest.keywords.forEach(kw => { if (text.includes(kw.toLowerCase())) score += (interest.weight || 0.5) * 10; });
+  return score;
 }
 
 async function main() {
   console.log("--- Discord Daily Digest Start ---");
-
-  // 1. 関心プロファイルを更新
   const interestsData = await updateInterestProfile();
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-  // 2. 昨日の日付範囲を計算 (0:00:00 - 23:59:59)
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  
-  const start = new Date(yesterday);
-  start.setHours(0, 0, 0, 0);
-  
-  const end = new Date(yesterday);
-  end.setHours(23, 59, 59, 999);
-
-  console.log(`Target Period: ${start.toLocaleString()} - ${end.toLocaleString()}`);
-
-  // 2. DBから記事を取得 (gas-bridge経由でSQLiteを参照)
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("collect");
-  const allArticles = sheet.getDataRange().getValues();
-  // ヘッダーを除去し、日付でフィルタリング
-  const yesterdayArticles = allArticles.slice(1).filter(row => {
-    const articleDate = row[0] instanceof Date ? row[0] : new Date(row[0]);
-    return articleDate >= start && articleDate <= end;
-  }).map(row => ({
-    date: row[0],
-    title: row[1],
-    url: row[2],
-    abstract: row[3],
-    summary: row[4],
-    source: row[5]
-  }));
+  const candidates = sheet.getDataRange().getValues().slice(1).map(row => ({
+    date: row[0] instanceof Date ? row[0] : new Date(row[0]),
+    title: row[1], url: row[2], abstract: row[3], summary: row[4], source: row[5]
+  })).filter(a => a.date >= dayAgo);
 
-  if (yesterdayArticles.length === 0) {
-    console.log("No articles found for yesterday. Skipping Discord post.");
-    return;
+  if (candidates.length === 0) return;
+
+  console.log(`[Screening] Total candidates: ${candidates.length}. Selecting balanced list...`);
+  const TOTAL_TARGET_COUNT = 10;
+  const selectedMap = new Map();
+  const allocations = [];
+
+  if (interestsData && interestsData.interests) {
+    const totalWeight = interestsData.interests.reduce((sum, i) => sum + (i.weight || 0.1), 0);
+    interestsData.interests.forEach(interest => {
+      const targetCount = Math.max(1, Math.round(TOTAL_TARGET_COUNT * ((interest.weight || 0.1) / totalWeight)));
+      allocations.push({ topic: interest.topic, count: targetCount });
+      
+      const topicArticles = candidates.map(a => ({ ...a, topicScore: computeTopicScore(a, interest) }))
+        .filter(a => a.topicScore > 0).sort((a, b) => b.topicScore - a.topicScore).slice(0, 10);
+      
+      topicArticles.forEach(a => { if (selectedMap.size < 50) selectedMap.set(a.url, a); });
+    });
   }
 
-  console.log(`Found ${yesterdayArticles.length} articles.`);
-
-  // --- ユーザーの興味プロファイルをプロンプトに追加 ---
-  let interestProfile = "";
-  if (interestsData) {
-    interestProfile = `\n\n【ユーザーの興味関心プロファイル】\n${JSON.stringify(interestsData, null, 2)}\n\n上記プロファイルを考慮し、ユーザーが特に関心を持ちそうなニュースを優先的にピックアップし、その理由も織り交ぜて解説してください。`;
+  // もし足らなければ全体スコアで補完
+  if (selectedMap.size < 50) {
+    const remaining = candidates.filter(a => !selectedMap.has(a.url))
+      .map(a => ({ ...a, score: computeScore(a, interestsData) }))
+      .sort((a, b) => b.score - a.score);
+    for (const a of remaining) { if (selectedMap.size >= 50) break; selectedMap.set(a.url, a); }
   }
 
-  // 3. LLMでDiscord用サマリーを生成
-  // BATCH_SYSTEMなどのプロンプトは gas-bridge 経由で prompts.json から読み込まれる
-  const promptList = yesterdayArticles.map(a => `- ${a.title} (${a.url})\n  要約: ${a.summary || a.abstract}`).join("\n\n");
+  const finalArticles = Array.from(selectedMap.values());
+  console.log(`✅ Screening completed. Selected ${finalArticles.length} articles.`);
+
+  const allocationPrompt = allocations.map(a => `- ${a.topic}: ${a.count}件`).join("\n");
+  const promptList = finalArticles.map(a => `- 【タイトル】: ${a.title}\n  【要約】: ${a.summary || a.abstract}\n  【URL】: ${a.url}`).join("\n\n");
   
-  const systemPrompt = getPromptConfig("DISCORD_DIGEST_SYSTEM");
-  const userPrompt = getPromptConfig("DISCORD_DIGEST_USER").replace("{article_list}", promptList) + interestProfile;
+  const userPrompt = `あなたはニュース編集者です。以下の【記事リスト】から、ユーザーの興味に基づき **合計 10件** のニュースを選んでください。
+必ず 10件 をリストアップし、以下の【配分目標】を参考にしてください。
 
-  if (!systemPrompt || !userPrompt) {
-    console.error("Discord prompts not found in prompts.json");
-    return;
-  }
+【配分目標】
+${allocationPrompt}
 
-  console.log("Generating Discord summary via LLM...");
-  // LlmService は yata-loader によってグローバル展開されている
-  const summary = LlmService.analyzeKeywordSearch(systemPrompt, userPrompt, { 
-    temperature: 0.0 // 正確性を重視
+【出力形式】
+### カテゴリ・トピック名
+(絵文字) **記事タイトル**
+- ニュースの要点・解説（1〜2行、80文字程度に凝縮）
+[元記事](ここに【URL】を正確に転記)
+
+※ 各記事の間は空行を入れてください。
+
+【記事リスト】
+${promptList}`;
+
+  console.log(`[Digest] Generating Discord summary (Target: 10 items)...`);
+  const summary = LlmService.analyzeKeywordSearch("あなたは優秀なニュースエディターです。", userPrompt, { 
+    temperature: 0.0, reasoning_effort: "medium"
   });
 
-  if (!summary) {
-    console.error("Failed to generate summary.");
-    return;
-  }
-
-  // 4. Discord Webhook に送信
+  if (!summary) return;
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) {
-    console.error("DISCORD_WEBHOOK_URL not found in .env");
-    return;
-  }
+  if (!webhookUrl) return;
 
-  console.log("Sending to Discord...");
-  const payload = JSON.stringify({
-    content: `📢 **【YATA】昨日のバイオ・臨床検査ニュースハイライト**
-
-${summary}`
-  });
-
-  const response = UrlFetchApp.fetch(webhookUrl, {
-    method: "post",
-    contentType: "application/json",
-    payload: payload
-  });
-
-  if (response.getResponseCode() === 204 || response.getResponseCode() === 200) {
+  const payload = JSON.stringify({ content: `📢 **【YATA】ニュース・ハイライト (${new Date().toLocaleDateString()})**\n\n${summary}` });
+  const response = UrlFetchApp.fetch(webhookUrl, { method: "post", contentType: "application/json", payload: payload });
+  if (response.getResponseCode() === 200 || response.getResponseCode() === 204) {
     console.log("✅ Successfully posted to Discord.");
-    
-    // history テーブルに保存 (週刊レポートのソースとして利用)
-    try {
-      const historySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("history");
-      // [Date, Keyword, Summary, Vector]
-      historySheet.appendRow([new Date(), "DISCORD_DIGEST", summary, ""]);
-      console.log("✅ Saved digest to history table.");
-    } catch (e) {
-      console.error("Failed to save to history:", e.message);
-    }
-  } else {
-    console.error(`❌ Failed to post to Discord. Status: ${response.getResponseCode()}`);
   }
-
-  console.log("--- Discord Daily Digest Finished ---");
-}
-
-function getPromptConfig(key) {
-  // YATA.js 内の getPromptConfig と同等のロジック
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("prompt");
-  const values = sheet.getDataRange().getValues();
-  const map = new Map(values.map(r => [String(r[0]).trim(), r[1]]));
-  return map.get(key) ? String(map.get(key)).trim() : null;
 }
 
 main().catch(console.error);
