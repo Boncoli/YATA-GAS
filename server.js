@@ -486,6 +486,27 @@ app.get('/api/system-status', (req, res) => {
             status.nasAvail = nas[3];
         } catch(e) { status.nasAvail = "N/A"; }
 
+        // --- 追加: 記事数、スポット、天気 ---
+        try {
+            const total = db.prepare("SELECT COUNT(*) as count FROM collect").get();
+            const today = db.prepare("SELECT COUNT(*) as count FROM collect WHERE date >= date('now', 'localtime')").get();
+            status.totalArticles = total.count;
+            status.todayArticles = today.count;
+
+            const lastLog = db.prepare("SELECT action, timestamp, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+            if (lastLog) {
+                const time = lastLog.timestamp.split(' ')[1].substring(0, 5); // "18:34"
+                status.lastLog = `${time} ${lastLog.action}${lastLog.note ? ' (' + lastLog.note + ')' : ''}`;
+            }
+
+            const weather = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
+            if (weather) {
+                status.weather = `${weather.main_weather} ${Math.round(weather.temp)}°C`;
+            }
+        } catch (dbErr) {
+            console.error("[API] DB Status Error:", dbErr.message);
+        }
+
         res.json(status);
     } catch (e) {
         res.status(500).json({ error: e.message });

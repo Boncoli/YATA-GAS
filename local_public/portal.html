@@ -179,6 +179,9 @@
                 <span>🧠<span id="memUsed" class="status-val">--</span>MB</span>
                 <span>💾<span id="diskPercent" class="status-val">--</span></span>
                 <span>📦<span id="nasAvail" class="status-val">--</span></span>
+                <span>📰 <span id="articleCount" class="status-val">--</span></span>
+                <span>📍 <span id="lastSpot" class="status-val" style="color:#aaa; font-weight:normal;">--</span></span>
+                <span>☁️ <span id="weather" class="status-val">--</span></span>
             </div>
         </div>
         <div style="font-size: 0.8rem; font-weight: bold; color: #555;">YATA</div>
@@ -263,6 +266,16 @@
                 document.getElementById('memUsed').textContent = data.memUsed;
                 document.getElementById('diskPercent').textContent = data.diskPercent;
                 document.getElementById('nasAvail').textContent = data.nasAvail;
+                
+                if (data.totalArticles) {
+                    document.getElementById('articleCount').textContent = `${data.totalArticles} + ${data.todayArticles || 0}`;
+                }
+                if (data.lastLog) {
+                    document.getElementById('lastSpot').textContent = data.lastLog;
+                }
+                if (data.weather) {
+                    document.getElementById('weather').textContent = data.weather;
+                }
             } catch (e) {}
         }
         updateStatus();
