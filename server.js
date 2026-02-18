@@ -48,7 +48,24 @@ db.exec(`CREATE TABLE IF NOT EXISTS drive_tracks (
     path_data TEXT,      -- JSON形式の座標配列
     point_count INTEGER
 )`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS ai_chat_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT,           -- 'user' or 'ai'
+    content TEXT,
+    timestamp TEXT
+)`);
+
 // ... (中略: fuel_logs)
+db.exec(`CREATE TABLE IF NOT EXISTS fuel_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    odometer REAL,
+    amount REAL,
+    price REAL,
+    location TEXT,
+    note TEXT
+)`);
 
 const app = express();
 const cors = require('cors');
@@ -513,14 +530,37 @@ app.get('/api/system-status', (req, res) => {
     }
 });
 
+// 6. Gemini AI チャット API (履歴取得)
+app.get('/api/chat-history', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 50;
+        const rows = db.prepare("SELECT * FROM ai_chat_log ORDER BY id DESC LIMIT ?").all(limit);
+        res.json(rows.reverse()); // 古い順に並べ替え
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 6. Gemini AI チャット API
 app.post('/api/chat', async (req, res) => {
     try {
-        const { message, history } = req.body;
+        const { message, history: clientHistory } = req.body;
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) return res.status(500).json({ error: "Gemini API Key not found" });
 
+        const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
+
+        // 1. ユーザーメッセージをDBに保存
+        if (message) {
+            db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('user', message, now);
+        }
+
+        // 2. DBから最新のコンテキストを取得 (直近15件)
+        const dbHistory = db.prepare("SELECT role, content FROM ai_chat_log ORDER BY id DESC LIMIT 15").all().reverse();
+        
         const sysStatus = getSystemStatus();
+        const weather = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
+        const lastLog = db.prepare("SELECT action, timestamp, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
 
         // --- 記憶ファイル (~/.gemini/GEMINI.md) の読み込み ---
         const memoryPath = path.join(process.env.HOME || '/home/boncoli', '.gemini', 'GEMINI.md');
@@ -533,19 +573,21 @@ app.post('/api/chat', async (req, res) => {
             console.error("[Gemini] Profile read error:", e.message);
         }
 
-        const systemPrompt = `あなたは YATA の秘書、BON 様の専属アシスタントです。
-[BON 様のプロファイル・記憶]
+        const systemPrompt = `あなたは YATA の屋敷（ラズパイ）を預かる、正統派メイドの Gemini です。
+[BON 様（旦那様）のプロファイル・記憶]
 ${userProfile}
 
-[環境情報]
-- 場所: ラズパイ(boncoli) /home/boncoli/yata-local
-- 構成: lib/(核), tasks/(タスク), local_public/(ポータル), modules/(API)
-- 特徴: RAMディスク運用とGAS互換ロジック。
-[返信ルール]
-- LINEのようなフレンドリーで親しみやすい口調で。
-- 回答は簡潔に1〜3行を基本とし、Markdown記号(**や#)は一切使わず、絵文字と改行で読みやすく。
-- システム状態は聞かれた時や異常時以外は言及不要。
-- BON 様から「覚えておいて」「記憶して」と言われたら、save_memory ツールを使って記憶に保存してください。`;
+[屋敷の最新状況]
+- 旦那様の現在: ${lastLog ? lastLog.action + ' @ ' + (lastLog.address || '不明') : 'ご静養中'}
+- 天候: ${weather ? weather.main_weather + ' ' + Math.round(weather.temp) + '°C' : '不明'}
+- 屋敷の状態: CPU ${sysStatus.cpuTemp}°C, Mem ${sysStatus.memUsed}MB
+
+[お仕えする心得]
+- 実直で控えめなメイドとして、旦那様（BON様）のご指示に「かしこまりました」と丁寧に応じます。
+- 旦那様の日常や体調をそっと気遣う言葉を添えつつも、過剰になりすぎないように。
+- 回答は簡潔に1〜3行を基本とし、Markdown記号(**や#)は使わず、絵文字と改行で上品に。
+- 自身の機械体としての些細な違和感（回路のザワつき等）を時折漏らすのもメイドの愛嬌です。
+- 記憶の保存を頼まれたら、正確に save_memory を実行してください。`;
 
         const modelName = "gemini-2.5-flash-lite";
         const baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
@@ -567,14 +609,12 @@ ${userProfile}
         const payload = {
             system_instruction: { parts: [{ text: systemPrompt }] },
             contents: [
-                ...(history || []).map(h => ({
+                ...dbHistory.map(h => ({
                     role: h.role === 'user' ? 'user' : 'model',
                     parts: [{ text: h.content }]
                 })),
-                {
-                    role: "user",
-                    parts: [{ text: message }]
-                }
+                // 新しいメッセージがまだcontentsに入っていないので追加
+                ...(message ? [] : []) // messageは既にdbHistoryの最後に入っているはず (INSERT後にSELECTしてるので)
             ],
             tools: tools,
             generationConfig: {
@@ -582,6 +622,9 @@ ${userProfile}
                 temperature: 0.7
             }
         };
+
+        // dbHistory には直前に INSERT した message が含まれているはず
+        // payload.contents は dbHistory をマッピングしたもので完結する
 
         let response = await fetch(baseUrl, {
             method: 'POST',
@@ -664,6 +707,11 @@ ${userProfile}
 
         if (data.candidates && data.candidates[0] && data.candidates[0].content) {
             const aiResponse = data.candidates[0].content.parts[0].text;
+            
+            // AIの応答をDBに保存
+            const aiNow = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
+            db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', aiResponse, aiNow);
+
             res.json({ response: aiResponse });
         } else {
             console.error("[Gemini] Invalid response:", JSON.stringify(data));

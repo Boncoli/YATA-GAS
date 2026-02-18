@@ -85,6 +85,19 @@ async function main() {
     await runPing();
   } catch (e) { errors.push(`Ping: ${e.message}`); }
 
+  // --- 8. Geminiの独り言 (New!) ---
+  try {
+    console.log("\n[*] Gemini is muttering something...");
+    // 外部スクリプトとして実行 (メモリDBのロック競合を避けるため、同期的に実行したいが、
+    // ここは単純に require で呼び出すか、別プロセスにするか検討)
+    // 今回は最も確実な execSync (run-ram.sh経由) で実行する
+    const { execSync } = require('child_process');
+    // --no-sync を付けて実行することで、このタスク自体の sync と干渉しないようにする
+    execSync('bash run-ram.sh --no-sync tasks/do-ai-mutter.js', { stdio: 'inherit' });
+  } catch (e) {
+    console.error("Muttering Error:", e.message);
+  }
+
   const endTime = new Date();
   const duration = ((endTime - startTime) / 1000).toFixed(1);
   const timeStr = endTime.toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' });

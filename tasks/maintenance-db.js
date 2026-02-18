@@ -54,7 +54,8 @@ const targets = [
     { table: 'network_log', dateCol: 'date', label: 'ネットワークPingログ' },
     { table: 'trend_log', dateCol: 'date', label: 'トレンドログ' },
     { table: 'log', dateCol: 'timestamp', label: 'システムログ' },
-    { table: 'history', dateCol: 'date', label: '検索履歴' } 
+    { table: 'history', dateCol: 'date', label: '検索履歴' },
+    { table: 'ai_chat_log', dateCol: 'timestamp', label: 'AIチャット履歴' }
 ];
 
 let totalDeleted = 0;

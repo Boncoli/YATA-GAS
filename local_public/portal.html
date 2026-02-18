@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="icon" type="image/png" href="icon.png">
     <link rel="apple-touch-icon" href="icon.png">
     <title>YATA Portal</title>
     <style>
@@ -289,43 +290,87 @@
         const chatInput = document.getElementById('chat-input');
         const chatMessages = document.getElementById('chat-messages');
         const chatSend = document.getElementById('chat-send');
-        let chatHistory = [];
+        let lastMessageId = 0;
+        let isChatOpen = false;
 
         function toggleChat() {
-            chatWindow.style.display = chatWindow.style.display === 'flex' ? 'none' : 'flex';
-            if (chatWindow.style.display === 'flex') chatInput.focus();
+            isChatOpen = chatWindow.style.display === 'flex' ? false : true;
+            chatWindow.style.display = isChatOpen ? 'flex' : 'none';
+            if (isChatOpen) {
+                chatInput.focus();
+                loadChatHistory();
+            }
         }
+
+        async function loadChatHistory() {
+            try {
+                const res = await fetch('/api/chat-history?limit=50');
+                const data = await res.json();
+                chatMessages.innerHTML = ''; 
+                data.forEach(msg => {
+                    appendMessage(msg.role, msg.content, false);
+                    lastMessageId = Math.max(lastMessageId, msg.id);
+                });
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } catch (e) {
+                console.error("Failed to load chat history:", e);
+            }
+        }
+
+        async function pollMessages() {
+            try {
+                const res = await fetch('/api/chat-history?limit=10');
+                const data = await res.json();
+                let hasNew = false;
+                data.forEach(msg => {
+                    if (msg.id > lastMessageId) {
+                        appendMessage(msg.role, msg.content, isChatOpen);
+                        lastMessageId = msg.id;
+                        hasNew = true;
+                    }
+                });
+                if (hasNew && isChatOpen) chatMessages.scrollTop = chatMessages.scrollHeight;
+            } catch (e) {}
+        }
+        setInterval(pollMessages, 5000); 
 
         async function sendMessage() {
             const text = chatInput.value.trim();
             if (!text) return;
 
+            // 1. 旦那様のメッセージを即座に画面に表示
             appendMessage('user', text);
             chatInput.value = '';
 
             try {
+                // 2. サーバーへ送信 (即時応答を待つ)
                 const res = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, history: chatHistory })
+                    body: JSON.stringify({ message: text })
                 });
                 const data = await res.json();
+                
+                // 3. 応答があれば即座に表示 (pollMessages での重複は lastMessageId で防止)
                 if (data.response) {
-                    appendMessage('ai', data.response);
-                    chatHistory.push({ role: 'user', content: text }, { role: 'ai', content: data.response });
-                    if (chatHistory.length > 10) chatHistory = chatHistory.slice(-10);
+                    // ここでは表示せず、あえて pollMessages に任せることで
+                    // DB保存と整合性を取りつつ、少し待つことで「メイドが考えている間」を演出しても良いですが
+                    // 即時性を取るならここで表示してもOK。
+                    // 重複を防ぐため、ここでは何もしないのが最も安全（pollが5秒以内に拾う）ですが
+                    // せっかくなので pollMessages を即座に一回叩くことにします。
+                    pollMessages();
                 }
             } catch (e) {
-                appendMessage('ai', "通信エラーが発生しました。");
+                appendMessage('ai', "通信エラーが発生しました。旦那様、申し訳ございません。", true);
             }
         }
 
-        function appendMessage(role, text) {
+        function appendMessage(role, text, scroll = true) {
             const div = document.createElement('div');
-            div.className = `message ${role}-message`;
+            div.className = `message ${role === 'user' ? 'user' : 'ai'}-message`;
             div.textContent = text;
             chatMessages.appendChild(div);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            if (scroll) chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
         chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
