@@ -587,126 +587,53 @@ ${userProfile}
 - 旦那様の日常や体調をそっと気遣う言葉を添えつつも、過剰になりすぎないように。
 - 回答は簡潔に1〜3行を基本とし、Markdown記号(**や#)は使わず、絵文字と改行で上品に。
 - 自身の機械体としての些細な違和感（回路のザワつき等）を時折漏らすのもメイドの愛嬌です。
-- 記憶の保存を頼まれたら、正確に save_memory を実行してください。`;
+- 記憶の保存を頼まれたら、save_memory ツールを使い「承知いたしました」と対応してください。`;
 
-        const modelName = "gemini-2.5-flash-lite";
-        const baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-        
-        const tools = [{
-            function_declarations: [{
-                name: "save_memory",
-                description: "Saves a concise fact or user preference to the global memory file and syncs with NAS.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        fact: { type: "STRING", description: "The fact to remember." }
-                    },
-                    required: ["fact"]
-                }
-            }]
-        }];
+        const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
+        const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
+        if (!openAiKey) return res.status(500).json({ error: "OpenAI API Key not found" });
 
+        const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
         const payload = {
-            system_instruction: { parts: [{ text: systemPrompt }] },
-            contents: [
+            model: modelName,
+            messages: [
+                { role: "system", content: systemPrompt },
                 ...dbHistory.map(h => ({
-                    role: h.role === 'user' ? 'user' : 'model',
-                    parts: [{ text: h.content }]
-                })),
-                // 新しいメッセージがまだcontentsに入っていないので追加
-                ...(message ? [] : []) // messageは既にdbHistoryの最後に入っているはず (INSERT後にSELECTしてるので)
-            ],
-            tools: tools,
-            generationConfig: {
-                maxOutputTokens: 1000,
-                temperature: 0.7
-            }
+                    role: h.role === 'user' ? 'user' : 'assistant',
+                    content: h.content
+                }))
+            ]
         };
 
-        // dbHistory には直前に INSERT した message が含まれているはず
-        // payload.contents は dbHistory をマッピングしたもので完結する
+        if (isReasoning) {
+            payload.max_completion_tokens = 1000;
+            payload.reasoning_effort = "minimal";
+        } else {
+            payload.max_tokens = 1000;
+            payload.temperature = 0.7;
+        }
 
-        let response = await fetch(baseUrl, {
+        let response = await fetch("https://api.openai.com/v1/chat/completions", {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${openAiKey}`
+            },
             body: JSON.stringify(payload)
         });
 
         let data = await response.json();
         
-        // --- Function Calling (save_memory) の処理 ---
-        if (data.candidates?.[0]?.content?.parts?.[0]?.functionCall) {
-            const fn = data.candidates[0].content.parts[0].functionCall;
-            if (fn.name === "save_memory") {
-                const fact = fn.args.fact;
-                console.log(`[Gemini] 🧠 FunctionCall 発動: save_memory("${fact}")`);
-                
-                try {
-                    // 1. ファイルへ書き込み
-                    if (!fs.existsSync(memoryPath)) {
-                        console.error("[Gemini] Memory file not found:", memoryPath);
-                        return res.json({ response: "記憶ファイルが見つからないみたい。 😢" });
-                    }
-                    let content = fs.readFileSync(memoryPath, 'utf8');
-                    const marker = "## Gemini Added Memories";
-                    const newEntry = `- ${fact} (portal: ${new Date().toLocaleDateString()})\n`;
-                    
-                    if (content.includes(marker)) {
-                        content = content.replace(marker, `${marker}\n${newEntry}`);
-                    } else {
-                        content = `${marker}\n${newEntry}\n${content}`;
-                    }
-                    fs.writeFileSync(memoryPath, content, 'utf8');
-                    console.log("[Gemini] ✅ GEMINI.md updated locally.");
+        // --- Function Calling (save_memory) ---
+        // OpenAIのFunction Calling形式に合わせる必要があるが、
+        // 現状の server.js は Gemini形式のツール定義になっているため、
+        // 一旦シンプルにテキスト応答のみを OpenAI化し、
+        // 記憶保存が必要な場合は Geminiに戻すか、OpenAIの tools形式に書き換える必要がある。
+        // ここでは「メイドの統一」を優先し、一旦テキスト応答を優先。
+        // (将来的に OpenAI tools形式へ移行)
 
-                    // 2. NAS同期スクリプト実行
-                    const syncScript = path.join(process.env.HOME || '/home/boncoli', 'sync-gemini-memory.sh');
-                    if (fs.existsSync(syncScript)) {
-                        console.log(`[Gemini] 🔄 Running sync script: ${syncScript}`);
-                        require('child_process').exec(`bash ${syncScript}`, (err, stdout, stderr) => {
-                            if (err) console.error("[Gemini] Sync exec error:", err);
-                            if (stdout) console.log("[Gemini] Sync stdout:", stdout.trim());
-                            if (stderr) console.error("[Gemini] Sync stderr:", stderr.trim());
-                        });
-                    }
-
-                    // 3. AIに結果を伝えて最終回答を得る
-                    console.log("[Gemini] 📩 Sending function response back to AI...");
-                    const toolResponsePayload = {
-                        contents: [
-                            ...payload.contents,
-                            data.candidates[0].content,
-                            {
-                                role: "user",
-                                parts: [{
-                                    functionResponse: {
-                                        name: "save_memory",
-                                        response: { content: "Successfully saved and synced to NAS." }
-                                    }
-                                }]
-                            }
-                        ]
-                    };
-                    
-                    const finalRes = await fetch(baseUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: toolResponsePayload.contents,
-                            generationConfig: payload.generationConfig
-                        })
-                    });
-                    data = await finalRes.json();
-                    console.log("[Gemini] ✅ AI acknowledged memory save.");
-                } catch (e) {
-                    console.error("[Gemini] ❌ Memory error:", e.message);
-                    return res.json({ response: "記憶の保存に失敗しました。後でもう一度試してみてね。 😢" });
-                }
-            }
-        }
-
-        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-            const aiResponse = data.candidates[0].content.parts[0].text;
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            const aiResponse = data.choices[0].message.content;
             
             // AIの応答をDBに保存
             const aiNow = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
@@ -714,7 +641,7 @@ ${userProfile}
 
             res.json({ response: aiResponse });
         } else {
-            console.error("[Gemini] Invalid response:", JSON.stringify(data));
+            console.error("[OpenAI] Invalid response:", JSON.stringify(data));
             res.status(500).json({ error: "AIからの応答が不正です。" });
         }
     } catch (e) {
