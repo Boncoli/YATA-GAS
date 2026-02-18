@@ -40,3 +40,7 @@ dashboard/fonts/
 
 # lib/YATA.js は唯一の正本なので無視してはいけません
 !lib/YATA.js
+
+# --- Dynamic Data ---
+interests.json
+interests_test.json
