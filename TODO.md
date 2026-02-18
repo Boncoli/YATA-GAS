@@ -3,6 +3,9 @@
 YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・パートナー」へと昇華させるためのロードマップ。
 
 ## 📊 次なるライフログ・パーソナライズ (Next Evolution)
+- [ ] **YATA アプリアイコンの生成と設定**:
+    - AIに以下のコマンドを実行させ、生成された画像を `local_public/icon.png` として保存する。
+    - コマンド案: `/icon background="black" prompt="A modern, minimal app icon for a personal AI platform called YATA. The design features a stylish abstract logo that seamlessly combines a smooth road curve with the letter 'Y'. The logo is in a vibrant emerald green (accent color #00e676) set against a deep black background. The overall aesthetic is sleek and tech-focused, representing data flow and driving intelligence (inspired by the Mazda CX-80)." sizes=[1024] style="modern" type="app-icon"`
 - [ ] **デジタル・ツイン (分身) の構築と深化**:
     - 「独り言キャッチャー」で得た生の思考プロセスを Gemini で分析し、BON 様の価値観や判断基準をプロファイリング。
     - ニュースや事象に対し「BON 様ならどう考え、どう反応するか」をシミュレート・代弁できるレベルまで精度を上げる。
