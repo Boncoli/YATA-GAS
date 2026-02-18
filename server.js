@@ -467,18 +467,49 @@ app.post('/api/chat', async (req, res) => {
         if (!apiKey) return res.status(500).json({ error: "Gemini API Key not found" });
 
         const sysStatus = getSystemStatus();
-        const systemPrompt = `あなたは YATA (Yet Another Trend Analyzer) のパーソナル・アシスタントです。
-ユーザーは BON 様です。あなたは BON 様のラズパイ (boncoli) 上で稼働しています。
-現在のシステム状態: CPU温度 ${sysStatus.cpuTemp}°C, メモリ使用 ${sysStatus.memUsed}/${sysStatus.memTotal}MB。
-回答は簡潔かつ知的で、親しみやすい日本語で行ってください。`;
 
-        const modelName = "gemini-3-flash-preview";
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+        // --- 記憶ファイル (~/.gemini/GEMINI.md) の読み込み ---
+        const memoryPath = path.join(process.env.HOME || '/home/boncoli', '.gemini', 'GEMINI.md');
+        let userProfile = "";
+        try {
+            if (fs.existsSync(memoryPath)) {
+                userProfile = fs.readFileSync(memoryPath, 'utf8').substring(0, 5000); // 最大5000文字
+            }
+        } catch (e) {
+            console.error("[Gemini] Profile read error:", e.message);
+        }
+
+        const systemPrompt = `あなたは YATA の秘書、BON 様の専属アシスタントです。
+[BON 様のプロファイル・記憶]
+${userProfile}
+
+[環境情報]
+- 場所: ラズパイ(boncoli) /home/boncoli/yata-local
+- 構成: lib/(核), tasks/(タスク), local_public/(ポータル), modules/(API)
+- 特徴: RAMディスク運用とGAS互換ロジック。
+[返信ルール]
+- LINEのようなフレンドリーで親しみやすい口調で。
+- 回答は簡潔に1〜3行を基本とし、Markdown記号(**や#)は一切使わず、絵文字と改行で読みやすく。
+- システム状態は聞かれた時や異常時以外は言及不要。
+- BON 様から「覚えておいて」「記憶して」と言われたら、save_memory ツールを使って記憶に保存してください。`;
+
+        const modelName = "gemini-2.5-flash-lite";
+        const baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
         
-        const contents = [];
-        // システムプロンプトを先頭に追加 (Gemini 1.5 の場合、system_instruction が使えるが、簡易的に messages に含める)
-        // 実際には 1.5-flash は system_instruction をサポートしている
-        
+        const tools = [{
+            function_declarations: [{
+                name: "save_memory",
+                description: "Saves a concise fact or user preference to the global memory file and syncs with NAS.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        fact: { type: "STRING", description: "The fact to remember." }
+                    },
+                    required: ["fact"]
+                }
+            }]
+        }];
+
         const payload = {
             system_instruction: { parts: [{ text: systemPrompt }] },
             contents: [
@@ -491,24 +522,97 @@ app.post('/api/chat', async (req, res) => {
                     parts: [{ text: message }]
                 }
             ],
+            tools: tools,
             generationConfig: {
                 maxOutputTokens: 1000,
                 temperature: 0.7
             }
         };
 
-        const response = await fetch(url, {
+        let response = await fetch(baseUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
 
-        const data = await response.json();
+        let data = await response.json();
+        
+        // --- Function Calling (save_memory) の処理 ---
+        if (data.candidates?.[0]?.content?.parts?.[0]?.functionCall) {
+            const fn = data.candidates[0].content.parts[0].functionCall;
+            if (fn.name === "save_memory") {
+                const fact = fn.args.fact;
+                console.log(`[Gemini] 🧠 FunctionCall 発動: save_memory("${fact}")`);
+                
+                try {
+                    // 1. ファイルへ書き込み
+                    if (!fs.existsSync(memoryPath)) {
+                        console.error("[Gemini] Memory file not found:", memoryPath);
+                        return res.json({ response: "記憶ファイルが見つからないみたい。 😢" });
+                    }
+                    let content = fs.readFileSync(memoryPath, 'utf8');
+                    const marker = "## Gemini Added Memories";
+                    const newEntry = `- ${fact} (portal: ${new Date().toLocaleDateString()})\n`;
+                    
+                    if (content.includes(marker)) {
+                        content = content.replace(marker, `${marker}\n${newEntry}`);
+                    } else {
+                        content = `${marker}\n${newEntry}\n${content}`;
+                    }
+                    fs.writeFileSync(memoryPath, content, 'utf8');
+                    console.log("[Gemini] ✅ GEMINI.md updated locally.");
+
+                    // 2. NAS同期スクリプト実行
+                    const syncScript = path.join(process.env.HOME || '/home/boncoli', 'sync-gemini-memory.sh');
+                    if (fs.existsSync(syncScript)) {
+                        console.log(`[Gemini] 🔄 Running sync script: ${syncScript}`);
+                        require('child_process').exec(`bash ${syncScript}`, (err, stdout, stderr) => {
+                            if (err) console.error("[Gemini] Sync exec error:", err);
+                            if (stdout) console.log("[Gemini] Sync stdout:", stdout.trim());
+                            if (stderr) console.error("[Gemini] Sync stderr:", stderr.trim());
+                        });
+                    }
+
+                    // 3. AIに結果を伝えて最終回答を得る
+                    console.log("[Gemini] 📩 Sending function response back to AI...");
+                    const toolResponsePayload = {
+                        contents: [
+                            ...payload.contents,
+                            data.candidates[0].content,
+                            {
+                                role: "user",
+                                parts: [{
+                                    functionResponse: {
+                                        name: "save_memory",
+                                        response: { content: "Successfully saved and synced to NAS." }
+                                    }
+                                }]
+                            }
+                        ]
+                    };
+                    
+                    const finalRes = await fetch(baseUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: toolResponsePayload.contents,
+                            generationConfig: payload.generationConfig
+                        })
+                    });
+                    data = await finalRes.json();
+                    console.log("[Gemini] ✅ AI acknowledged memory save.");
+                } catch (e) {
+                    console.error("[Gemini] ❌ Memory error:", e.message);
+                    return res.json({ response: "記憶の保存に失敗しました。後でもう一度試してみてね。 😢" });
+                }
+            }
+        }
+
         if (data.candidates && data.candidates[0] && data.candidates[0].content) {
             const aiResponse = data.candidates[0].content.parts[0].text;
             res.json({ response: aiResponse });
         } else {
-            console.error("[Gemini] Invalid response:", data);
+            console.error("[Gemini] Invalid response:", JSON.stringify(data));
             res.status(500).json({ error: "AIからの応答が不正です。" });
         }
     } catch (e) {

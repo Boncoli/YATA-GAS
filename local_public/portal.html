@@ -19,30 +19,32 @@
             margin: 0;
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
             min-height: 100vh;
+            padding-top: 20px;
         }
         .container {
             max-width: 800px;
             width: 100%;
-            padding: 20px;
+            padding: 15px;
             text-align: center;
+            box-sizing: border-box;
         }
         h1 {
-            font-size: 2.5rem;
-            margin-bottom: 30px;
+            font-size: 2.2rem;
+            margin-bottom: 20px;
             color: var(--accent-color);
             letter-spacing: 2px;
             text-shadow: 0 0 10px rgba(0, 230, 118, 0.3);
         }
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
         }
         .card {
             background-color: var(--card-bg);
-            padding: 30px 20px;
+            padding: 20px 15px;
             border-radius: 12px;
             text-decoration: none;
             color: var(--text-color);
@@ -51,37 +53,40 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 15px;
+            gap: 10px;
         }
         .card:hover {
-            transform: translateY(-5px);
+            transform: translateY(-3px);
             background-color: #252525;
             border-color: var(--accent-color);
             box-shadow: 0 5px 15px rgba(0,0,0,0.5);
         }
         .icon {
-            font-size: 3rem;
+            font-size: 2.5rem;
         }
         .label {
             font-weight: bold;
-            font-size: 1.1rem;
+            font-size: 1rem;
         }
         footer {
             margin-top: 40px;
+            padding-bottom: 40px;
             font-size: 0.8rem;
             color: #666;
         }
         .status-bar {
             background-color: #1e1e1e;
-            padding: 10px 20px;
+            padding: 12px;
             border-radius: 8px;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             display: flex;
-            justify-content: space-around;
-            font-size: 0.9rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px 20px;
+            font-size: 0.85rem;
             border: 1px solid #333;
         }
-        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-item { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
         .status-value { color: var(--accent-color); font-weight: bold; }
 
         /* Chat UI Styles */
@@ -92,39 +97,44 @@
             z-index: 1000;
         }
         #chat-button {
-            width: 60px;
-            height: 60px;
+            width: 56px;
+            height: 56px;
             border-radius: 50%;
             background-color: var(--accent-color);
             color: #121212;
             border: none;
-            font-size: 1.8rem;
+            font-size: 1.6rem;
             cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
             transition: transform 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        #chat-button:hover { transform: scale(1.1); }
         #chat-window {
-            position: absolute;
-            bottom: 80px;
-            right: 0;
-            width: 350px;
-            height: 450px;
+            position: fixed;
+            bottom: 85px;
+            right: 20px;
+            width: 360px;
+            height: 500px;
+            max-width: calc(100vw - 40px);
+            max-height: calc(100vh - 120px);
             background-color: var(--card-bg);
             border: 1px solid #333;
             border-radius: 12px;
             display: none;
             flex-direction: column;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
             overflow: hidden;
         }
         #chat-header {
-            padding: 15px;
+            padding: 12px 15px;
             background-color: #252525;
             border-bottom: 1px solid #333;
             font-weight: bold;
             display: flex;
             justify-content: space-between;
+            align-items: center;
         }
         #chat-messages {
             flex: 1;
@@ -132,47 +142,70 @@
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 10px;
-            font-size: 0.9rem;
+            gap: 12px;
+            font-size: 0.95rem;
+            background-color: #161616;
         }
         .message {
             max-width: 85%;
-            padding: 8px 12px;
+            padding: 10px 14px;
             border-radius: 12px;
-            line-height: 1.4;
+            line-height: 1.5;
+            word-wrap: break-word;
         }
         .user-message {
             align-self: flex-end;
             background-color: var(--accent-color);
             color: #121212;
+            border-bottom-right-radius: 2px;
         }
         .ai-message {
             align-self: flex-start;
-            background-color: #333;
+            background-color: #2a2a2a;
             color: var(--text-color);
+            border-bottom-left-radius: 2px;
+            border: 1px solid #333;
         }
         #chat-input-area {
-            padding: 10px;
+            padding: 12px;
+            background-color: #1e1e1e;
             border-top: 1px solid #333;
             display: flex;
-            gap: 8px;
+            gap: 10px;
         }
         #chat-input {
             flex: 1;
             background-color: #121212;
-            border: 1px solid #333;
+            border: 1px solid #444;
             color: var(--text-color);
-            padding: 8px;
-            border-radius: 4px;
+            padding: 12px;
+            border-radius: 8px;
             outline: none;
+            font-size: 1rem; /* スマホでズームされないように16px相当以上に */
         }
         #chat-send {
             background-color: var(--accent-color);
             border: none;
-            padding: 0 15px;
-            border-radius: 4px;
+            padding: 0 18px;
+            border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
+            color: #121212;
+        }
+
+        /* Mobile specific adjustments */
+        @media (max-width: 480px) {
+            h1 { font-size: 1.8rem; }
+            .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .card { padding: 15px 10px; }
+            .icon { font-size: 2rem; }
+            .label { font-size: 0.9rem; }
+            #chat-window {
+                width: calc(100vw - 20px);
+                height: 70vh;
+                right: 10px;
+                bottom: 80px;
+            }
         }
     </style>
 </head>
@@ -269,11 +302,13 @@
 
         async function sendMessage() {
             const text = chatInput.value.trim();
-            if (!text) return;
+            if (!text || chatSend.disabled) return;
 
             // User Message
             appendMessage('user', text);
             chatInput.value = '';
+            chatSend.disabled = true;
+            chatSend.textContent = '...';
 
             try {
                 const res = await fetch('/api/chat', {
@@ -292,6 +327,9 @@
                 }
             } catch (e) {
                 appendMessage('ai', "エラー: サーバーとの通信に失敗しました。");
+            } finally {
+                chatSend.disabled = false;
+                chatSend.textContent = '送信';
             }
         }
 
