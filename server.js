@@ -420,6 +420,31 @@ app.post('/api/todo', (req, res) => {
     }
 });
 
+// 4.1 RSSフィード管理 API
+const FEEDS_FILE = path.join(__dirname, 'rss-list.json');
+app.get('/api/feeds', (req, res) => {
+    try {
+        if (!fs.existsSync(FEEDS_FILE)) return res.json([]);
+        const feeds = JSON.parse(fs.readFileSync(FEEDS_FILE, 'utf8'));
+        res.json(feeds);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/feeds', (req, res) => {
+    try {
+        const { feeds } = req.body;
+        if (!feeds) return res.status(400).json({ error: "Missing feeds data" });
+        fs.writeFileSync(FEEDS_FILE, JSON.stringify(feeds, null, 2), 'utf8');
+        console.log(`[Web] ✅ rss-list.json updated!`);
+        res.json({ status: "success" });
+    } catch (e) {
+        console.error(`[Web] ❌ Feed update error: ${e.message}`);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 5. システムステータス API
 const { execSync } = require('child_process');
 function getSystemStatus() {

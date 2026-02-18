@@ -190,5 +190,23 @@
     "url": "https://news.google.com/rss/search?q=%E5%8C%BB%E7%99%82%E6%A9%9F%E5%99%A8+%E3%83%88%E3%83%AC%E3%83%B3%E3%83%89+OR+%E6%96%B0%E8%A3%BD%E5%93%81&hl=ja&gl=JP&ceid=JP:ja",
     "category": "General",
     "active": true
+  },
+  {
+    "label": "Zenn (Geminiタグ)",
+    "url": "https://zenn.dev/topics/gemini/feed",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Moter1.com",
+    "url": "https://www.motor1.com/rss/articles/all/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ライフハッカージャパン",
+    "url": "https://www.lifehacker.jp/feed/index.xml",
+    "category": "General",
+    "active": true
   }
 ]
