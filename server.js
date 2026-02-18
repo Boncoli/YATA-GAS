@@ -338,7 +338,15 @@ app.get('/api/drive-history', (req, res) => {
 // 0.3 ニュース取得 API
 app.get('/api/news', (req, res) => {
     try {
-        const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 100").all();
+        // 直近200件を取得し、配列をランダムにシャッフルして返す (埋もれた記事を拾いやすくするため)
+        const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 200").all();
+        
+        // Fisher-Yates シャッフル
+        for (let i = rows.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rows[i], rows[j]] = [rows[j], rows[i]];
+        }
+        
         res.json(rows);
     } catch (e) {
         res.status(500).json({ error: e.message });
