@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>YATA Portal</title>
     <style>
         :root {
@@ -10,7 +10,8 @@
             --card-bg: #1e1e1e;
             --text-color: #e0e0e0;
             --accent-color: #00e676;
-            --hover-color: #00c853;
+            --header-bg: #1a1a1a;
+            --border-color: #333;
         }
         body {
             font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -18,24 +19,75 @@
             color: var(--text-color);
             margin: 0;
             display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            min-height: 100vh;
-            padding-top: 20px;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
         }
-        .container {
-            max-width: 800px;
-            width: 100%;
-            padding: 15px;
-            text-align: center;
+
+        /* --- Fixed Header --- */
+        header {
+            background-color: var(--header-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 8px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 2000;
+            flex-shrink: 0;
+            height: 44px;
             box-sizing: border-box;
         }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        .header-left::-webkit-scrollbar { display: none; }
+        
+        .status-mini {
+            display: flex;
+            gap: 12px;
+            font-size: 0.75rem;
+            color: #888;
+            white-space: nowrap;
+        }
+        .status-val { color: var(--accent-color); font-weight: bold; }
+
+        .home-btn {
+            background: none;
+            border: none;
+            color: var(--text-color);
+            font-size: 1.4rem;
+            cursor: pointer;
+            padding: 0 5px;
+            display: flex;
+            align-items: center;
+            transition: transform 0.2s;
+        }
+        .home-btn:active { transform: scale(0.9); }
+
+        /* --- Main Content --- */
+        main {
+            flex: 1;
+            position: relative;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        #view-grid {
+            padding: 20px 15px;
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
         h1 {
-            font-size: 2.2rem;
+            font-size: 1.8rem;
             margin-bottom: 20px;
             color: var(--accent-color);
             letter-spacing: 2px;
-            text-shadow: 0 0 10px rgba(0, 230, 118, 0.3);
         }
         .grid {
             display: grid;
@@ -48,77 +100,52 @@
             border-radius: 12px;
             text-decoration: none;
             color: var(--text-color);
-            transition: transform 0.2s, background-color 0.2s, box-shadow 0.2s;
+            transition: transform 0.2s, background-color 0.2s;
             border: 1px solid #333;
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 10px;
+            cursor: pointer;
         }
-        .card:hover {
-            transform: translateY(-3px);
-            background-color: #252525;
-            border-color: var(--accent-color);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-        }
-        .icon {
-            font-size: 2.5rem;
-        }
-        .label {
-            font-weight: bold;
-            font-size: 1rem;
-        }
-        footer {
-            margin-top: 40px;
-            padding-bottom: 40px;
-            font-size: 0.8rem;
-            color: #666;
-        }
-        .status-bar {
-            background-color: #1e1e1e;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 10px 20px;
-            font-size: 0.85rem;
-            border: 1px solid #333;
-        }
-        .status-item { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-        .status-value { color: var(--accent-color); font-weight: bold; }
+        .card:active { transform: translateY(2px); background-color: #252525; }
+        .icon { font-size: 2.2rem; }
+        .label { font-weight: bold; font-size: 0.9rem; }
 
-        /* Chat UI Styles */
+        /* --- Iframe View --- */
+        #view-frame {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            border: none;
+            display: none;
+            background-color: var(--bg-color);
+        }
+
+        /* --- Chat UI --- */
         #chat-widget {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            z-index: 1000;
+            z-index: 3000;
         }
         #chat-button {
-            width: 56px;
-            height: 56px;
+            width: 50px; height: 50px;
             border-radius: 50%;
             background-color: var(--accent-color);
             color: #121212;
             border: none;
-            font-size: 1.6rem;
+            font-size: 1.4rem;
             cursor: pointer;
             box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-            transition: transform 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
         }
         #chat-window {
             position: fixed;
-            bottom: 85px;
-            right: 20px;
-            width: 360px;
-            height: 500px;
+            bottom: 80px; right: 20px;
+            width: 350px; height: 500px;
             max-width: calc(100vw - 40px);
-            max-height: calc(100vh - 120px);
+            max-height: calc(100vh - 140px);
             background-color: var(--card-bg);
             border: 1px solid #333;
             border-radius: 12px;
@@ -127,168 +154,119 @@
             box-shadow: 0 8px 32px rgba(0,0,0,0.6);
             overflow: hidden;
         }
-        #chat-header {
-            padding: 12px 15px;
-            background-color: #252525;
-            border-bottom: 1px solid #333;
-            font-weight: bold;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        #chat-messages {
-            flex: 1;
-            padding: 15px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            font-size: 0.95rem;
-            background-color: #161616;
-        }
-        .message {
-            max-width: 85%;
-            padding: 10px 14px;
-            border-radius: 12px;
-            line-height: 1.5;
-            word-wrap: break-word;
-        }
-        .user-message {
-            align-self: flex-end;
-            background-color: var(--accent-color);
-            color: #121212;
-            border-bottom-right-radius: 2px;
-        }
-        .ai-message {
-            align-self: flex-start;
-            background-color: #2a2a2a;
-            color: var(--text-color);
-            border-bottom-left-radius: 2px;
-            border: 1px solid #333;
-        }
-        #chat-input-area {
-            padding: 12px;
-            background-color: #1e1e1e;
-            border-top: 1px solid #333;
-            display: flex;
-            gap: 10px;
-        }
-        #chat-input {
-            flex: 1;
-            background-color: #121212;
-            border: 1px solid #444;
-            color: var(--text-color);
-            padding: 12px;
-            border-radius: 8px;
-            outline: none;
-            font-size: 1rem; /* スマホでズームされないように16px相当以上に */
-        }
-        #chat-send {
-            background-color: var(--accent-color);
-            border: none;
-            padding: 0 18px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-            color: #121212;
-        }
+        #chat-header { padding: 10px 15px; background: #252525; border-bottom: 1px solid #333; font-weight: bold; display: flex; justify-content: space-between; }
+        #chat-messages { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; font-size: 0.9rem; background: #161616; }
+        .message { max-width: 85%; padding: 8px 12px; border-radius: 10px; line-height: 1.4; }
+        .user-message { align-self: flex-end; background: var(--accent-color); color: #121212; }
+        .ai-message { align-self: flex-start; background: #2a2a2a; border: 1px solid #333; }
+        #chat-input-area { padding: 10px; display: flex; gap: 8px; border-top: 1px solid #333; }
+        #chat-input { flex: 1; background: #121212; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 6px; outline: none; }
+        #chat-send { background: var(--accent-color); border: none; padding: 0 15px; border-radius: 6px; font-weight: bold; }
 
-        /* Mobile specific adjustments */
         @media (max-width: 480px) {
-            h1 { font-size: 1.8rem; }
             .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-            .card { padding: 15px 10px; }
-            .icon { font-size: 2rem; }
-            .label { font-size: 0.9rem; }
-            #chat-window {
-                width: calc(100vw - 20px);
-                height: 70vh;
-                right: 10px;
-                bottom: 80px;
-            }
+            .status-mini { gap: 8px; font-size: 0.7rem; }
+            header { padding: 5px 10px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>YATA PORTAL</h1>
-        
-        <div class="status-bar" id="statusBar">
-            <div class="status-item">🌡️ CPU: <span id="cpuTemp" class="status-value">--</span>°C</div>
-            <div class="status-item">🧠 Mem: <span id="memUsed" class="status-value">--</span> / <span id="memTotal">--</span>MB</div>
-            <div class="status-item">💾 SD: <span id="diskPercent" class="status-value">--</span></div>
-            <div class="status-item">📦 NAS: <span id="nasAvail" class="status-value">--</span> free</div>
+    <header>
+        <div class="header-left">
+            <button class="home-btn" onclick="showHome()">🏠</button>
+            <div class="status-mini">
+                <span>🌡️<span id="cpuTemp" class="status-val">--</span>°C</span>
+                <span>🧠<span id="memUsed" class="status-val">--</span>MB</span>
+                <span>💾<span id="diskPercent" class="status-val">--</span></span>
+                <span>📦<span id="nasAvail" class="status-val">--</span></span>
+            </div>
         </div>
+        <div style="font-size: 0.8rem; font-weight: bold; color: #555;">YATA</div>
+    </header>
 
-        <div class="grid">
-            <a href="map.html" class="card">
-                <span class="icon">🗺️</span>
-                <span class="label">Life Map</span>
-            </a>
-            <a href="todo.html" class="card">
-                <span class="icon">📝</span>
-                <span class="label">TODO / Ideas</span>
-            </a>
-            <a href="news.html" class="card">
-                <span class="icon">📰</span>
-                <span class="label">News Reader</span>
-            </a>
-            <a href="feeds.html" class="card">
-                <span class="icon">📡</span>
-                <span class="label">RSS Feeds</span>
-            </a>
-            <a href="fuel.html" class="card">
-                <span class="icon">⛽</span>
-                <span class="label">Fuel Logs</span>
-            </a>
-            <a href="viz.html" class="card">
-                <span class="icon">📊</span>
-                <span class="label">3D Viz</span>
-            </a>
-            <a href="http://192.168.1.151:3000" target="_blank" class="card">
-                <span class="icon">📈</span>
-                <span class="label">Grafana</span>
-            </a>
+    <main>
+        <div id="view-grid">
+            <h1>YATA PORTAL</h1>
+            <div class="grid">
+                <div onclick="openPage('map.html')" class="card">
+                    <span class="icon">🗺️</span>
+                    <span class="label">Life Map</span>
+                </div>
+                <div onclick="openPage('todo.html')" class="card">
+                    <span class="icon">📝</span>
+                    <span class="label">TODO / Ideas</span>
+                </div>
+                <div onclick="openPage('news.html')" class="card">
+                    <span class="icon">📰</span>
+                    <span class="label">News Reader</span>
+                </div>
+                <div onclick="openPage('feeds.html')" class="card">
+                    <span class="icon">📡</span>
+                    <span class="label">RSS Feeds</span>
+                </div>
+                <div onclick="openPage('fuel.html')" class="card">
+                    <span class="icon">⛽</span>
+                    <span class="label">Fuel Logs</span>
+                </div>
+                <div onclick="openPage('viz.html')" class="card">
+                    <span class="icon">📊</span>
+                    <span class="label">3D Viz</span>
+                </div>
+                <div onclick="openPage('index.html')" class="card">
+                    <span class="icon">🔍</span>
+                    <span class="label">Search/Analyze</span>
+                </div>
+            </div>
         </div>
-        <footer>
-            &copy; 2026 YATA Project - Personal Intelligence Environment
-        </footer>
-    </div>
+        <iframe id="view-frame"></iframe>
+    </main>
 
     <!-- Chat Widget -->
     <div id="chat-widget">
-        <button id="chat-button">💬</button>
+        <button id="chat-button" onclick="toggleChat()">💬</button>
         <div id="chat-window">
             <div id="chat-header">
                 <span>YATA Assistant</span>
                 <button onclick="toggleChat()" style="background:none;border:none;color:#666;cursor:pointer;">✕</button>
             </div>
             <div id="chat-messages">
-                <div class="message ai-message">こんにちは、BON様。何かお手伝いしましょうか？</div>
+                <div class="message ai-message">こんにちは、BON様。</div>
             </div>
             <div id="chat-input-area">
-                <input type="text" id="chat-input" placeholder="メッセージを入力...">
-                <button id="chat-send">送信</button>
+                <input type="text" id="chat-input" placeholder="入力...">
+                <button id="chat-send" onclick="sendMessage()">送信</button>
             </div>
         </div>
     </div>
 
     <script>
+        const gridView = document.getElementById('view-grid');
+        const frameView = document.getElementById('view-frame');
+
+        function openPage(url) {
+            frameView.src = url;
+            gridView.style.display = 'none';
+            frameView.style.display = 'block';
+        }
+
+        function showHome() {
+            frameView.style.display = 'none';
+            gridView.style.display = 'block';
+            frameView.src = 'about:blank';
+        }
+
         async function updateStatus() {
             try {
                 const res = await fetch('/api/system-status');
                 const data = await res.json();
                 document.getElementById('cpuTemp').textContent = data.cpuTemp;
                 document.getElementById('memUsed').textContent = data.memUsed;
-                document.getElementById('memTotal').textContent = data.memTotal;
                 document.getElementById('diskPercent').textContent = data.diskPercent;
                 document.getElementById('nasAvail').textContent = data.nasAvail;
-            } catch (e) {
-                console.error("Status update failed");
-            }
+            } catch (e) {}
         }
         updateStatus();
-        setInterval(updateStatus, 30000); // 30秒ごとに更新
+        setInterval(updateStatus, 30000);
 
         // Chat Logic
         const chatWindow = document.getElementById('chat-window');
@@ -302,17 +280,12 @@
             if (chatWindow.style.display === 'flex') chatInput.focus();
         }
 
-        document.getElementById('chat-button').onclick = toggleChat;
-
         async function sendMessage() {
             const text = chatInput.value.trim();
-            if (!text || chatSend.disabled) return;
+            if (!text) return;
 
-            // User Message
             appendMessage('user', text);
             chatInput.value = '';
-            chatSend.disabled = true;
-            chatSend.textContent = '...';
 
             try {
                 const res = await fetch('/api/chat', {
@@ -323,17 +296,11 @@
                 const data = await res.json();
                 if (data.response) {
                     appendMessage('ai', data.response);
-                    chatHistory.push({ role: 'user', content: text });
-                    chatHistory.push({ role: 'ai', content: data.response });
+                    chatHistory.push({ role: 'user', content: text }, { role: 'ai', content: data.response });
                     if (chatHistory.length > 10) chatHistory = chatHistory.slice(-10);
-                } else {
-                    appendMessage('ai', "エラー: 応答を取得できませんでした。");
                 }
             } catch (e) {
-                appendMessage('ai', "エラー: サーバーとの通信に失敗しました。");
-            } finally {
-                chatSend.disabled = false;
-                chatSend.textContent = '送信';
+                appendMessage('ai', "通信エラーが発生しました。");
             }
         }
 
@@ -345,7 +312,6 @@
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
-        chatSend.onclick = sendMessage;
         chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
     </script>
 </body>
