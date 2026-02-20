@@ -3,7 +3,7 @@
 YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・パートナー」へと昇華させるためのロードマップ。
 
 ## 📊 次なるライフログ・パーソナライズ (Next Evolution)
-- [ ] **YATA アプリアイコンの生成と設定**:
+- [x] **YATA アプリアイコンの生成と設定**:
     - AIに以下のコマンドを実行させ、生成された画像を `local_public/icon.png` として保存する。
     - コマンド案: `/icon background="black" prompt="A modern, minimal app icon for a personal AI platform called YATA. The design features a stylish abstract logo that seamlessly combines a smooth road curve with the letter 'Y'. The logo is in a vibrant emerald green (accent color #00e676) set against a deep black background. The overall aesthetic is sleek and tech-focused, representing data flow and driving intelligence (inspired by the Mazda CX-80)." sizes=[1024] style="modern" type="app-icon"`
 - [ ] **デジタル・ツイン (分身) の構築と深化**:
@@ -21,6 +21,8 @@ YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・
 ## 🧠 AI・インテリジェンスの深化
 - [ ] **ローカル音声合成 (TTS)**:
     - 朝のDiscord要約を、ラズパイが自室や車内で読み上げ。
+- [ ] **異常検知時のDiscord自動アラートの実装**:
+    - 健康診断スクリプト (`do-health-check.js`) を拡張または定期実行し、Critical Error やプロセスダウン検知時に即座に Discord へ警告を飛ばす。
 
 ## 🗺️ 地図の進化 (Map Evolution)
 - [ ] **タイムライン・フィルタリングの高度化**:
@@ -29,6 +31,10 @@ YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・
     - よく通る道（CX-80の活動圏内）を視覚的に強調。
 
 ## ✅ 完了した実績 (Achievements)
+- [x] **システム健康診断（一括チェック）ツールの導入 (2026/02/20)**:
+    - `tasks/do-health-check.js` を新規作成。
+    - サーバー、ダッシュボード、RAMディスク、CPU温度、DB更新状況、ログの直近エラーをコマンド一つで俯瞰できる環境を構築。
+    - `PROJECT_GUIDE.md` に運用手順を追記。
 - [x] **正統派メイド・AI同居人モードの実装 (2026/02/18)**:
     - 5分おきの自律的な「独り言（muttering）」システム (`tasks/do-ai-mutter.js`) を構築。
     - メイド人格（旦那様への献身、屋敷の管理、擬人的なボヤキ）をGeminiに宿らせ、ポータルに常駐。
