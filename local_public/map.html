@@ -60,6 +60,10 @@
         .news-btn:hover, .fuel-btn:hover {
             transform: scale(1.1);
         }
+        /* 右上のコントロールをボタンと重ならないよう下げる */
+        .leaflet-top.leaflet-right {
+            top: 70px !important;
+        }
     </style>
 </head>
 <body>
@@ -120,7 +124,7 @@
             "📌 その他 (Other)": otherLayer,
             "〰️ 接続線 (Path)": pathLayer
         };
-        L.control.layers(null, overlayMaps, { position: 'bottomright', collapsed: true }).addTo(map);
+        L.control.layers(null, overlayMaps, { position: 'topright', collapsed: true }).addTo(map);
 
         carLayer.addTo(map); homeLayer.addTo(map); photoLayer.addTo(map);
         otherLayer.addTo(map);
@@ -185,7 +189,8 @@
                 let targetLayer = otherLayer;
 
                 if (log.action === "InCar") {
-                    markerColor = "#2ecc71"; iconEmoji = "🚗"; targetLayer = carLayer;
+                    // InCar は OutCar と被るため、アイコンは表示しない (軌跡用座標のみ保持)
+                    return; 
                 } else if (log.action === "OutCar") {
                     markerColor = "#e74c3c"; iconEmoji = "🅿️"; targetLayer = carLayer;
                 } else if (log.action === "InHome" || log.action === "OutHome") {
@@ -196,7 +201,7 @@
                     markerColor = "#1abc9c"; iconEmoji = "📌"; targetLayer = otherLayer;
                 }
 
-                const marker = (log.action === "InHome" || log.action === "OutHome" || log.action === "InCar" || log.action === "OutCar" || log.action === "photo") 
+                const marker = (log.action === "InHome" || log.action === "OutHome" || log.action === "OutCar" || log.action === "photo") 
                     ? L.marker(pos, { icon: createEmojiIcon(iconEmoji), zIndexOffset: 1000 })
                     : L.circleMarker(pos, { radius: 8, fillColor: markerColor, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9 });
 
