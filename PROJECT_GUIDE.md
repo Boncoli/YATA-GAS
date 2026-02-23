@@ -310,19 +310,16 @@ cd dashboard && python3 dashboard.py
     ### 視覚化 (Visualization)
 
     *   **地図**: `http://[RasPi_IP]:3001/map.html` (走行軌跡、写真地点)
-
+    *   **履歴**: `http://[RasPi_IP]:3001/history.html` (時系列イベントリスト、ミニマップ付)
     *   **グラフ**: `http://[RasPi_IP]:3000` (Grafana)
-
         - 2026/02/11 再構築。SQLite プラグイン (`frser-sqlite-datasource`) を使用して `yata.db` を直接可視化。
-
         - 燃費推移、ガソリン代、走行距離の統計を表示。
-
-    
 
     ---
 
-    
+    ### メンテナンス記録
+    - **2026/02/23**: 記事数カウントの乖離修正（24時間集計へ統一）。Timeline（時系列リスト）機能の追加。
 
-    *Last Updated: 2026-02-11 by Gemini Agent*
+    *Last Updated: 2026-02-23 by Gemini Agent*
 
     
