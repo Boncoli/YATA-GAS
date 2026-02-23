@@ -210,7 +210,8 @@ app.post('/api/carplay-log', (req, res) => {
         // --- 走行距離計算 & Discord通知 (OutCar時のみ) ---
         if (action === "OutCar" && lastLog) {
             // 直近の InCar を探す (24時間以内)
-            const lastInCar = db.prepare("SELECT * FROM drive_logs WHERE action = 'InCar' AND timestamp > datetime('now', '-24 hours', 'localtime') ORDER BY timestamp DESC LIMIT 1").get();
+            // 時刻が重なる場合に備え、IDの降順も加える
+            const lastInCar = db.prepare("SELECT * FROM drive_logs WHERE action = 'InCar' AND timestamp > datetime('now', '-24 hours', 'localtime') ORDER BY timestamp DESC, id DESC LIMIT 1").get();
             
             if (lastInCar && lastInCar.latitude && latitude) {
                 try {
@@ -248,12 +249,18 @@ app.post('/api/carplay-log', (req, res) => {
             }
         }
 
-        console.log(`[IoT] CarPlay ${action}: ${address || (latitude + ',' + longitude)} (Alt: ${altitude}m)`);
-
         // タイムスタンプのフォーマット統一 (YYYY/MM/DD HH:mm:ss)
-        const formattedTs = timestamp ? timestamp.replace(/-/g, '/').replace('T', ' ').split('+')[0] : new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
-        // ※toLocaleStringの結果が環境によって違う場合があるため、さらに正規化
-        const finalTs = formattedTs.replace(/-/g, '/');
+        // 時刻が含まれていない場合（: がない場合）は現在時刻を補完する
+        let finalTs;
+        if (timestamp && timestamp.includes(':')) {
+            finalTs = timestamp.replace(/-/g, '/').replace('T', ' ').split('+')[0];
+        } else {
+            const now = new Date();
+            const dateStr = timestamp ? timestamp.replace(/-/g, '/') : now.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '/');
+            const timeStr = now.toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+            finalTs = `${dateStr} ${timeStr}`;
+        }
+        finalTs = finalTs.replace(/-/g, '/');
 
         const insert = db.prepare("INSERT INTO drive_logs (action, timestamp, latitude, longitude, altitude, address, note, battery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         insert.run(action, finalTs, latitude, longitude, altitude, address, note, battery);
@@ -506,7 +513,7 @@ app.get('/api/system-status', (req, res) => {
         // --- 追加: 記事数、スポット、天気 ---
         try {
             const total = db.prepare("SELECT COUNT(*) as count FROM collect").get();
-            const today = db.prepare("SELECT COUNT(*) as count FROM collect WHERE date >= date('now', 'localtime')").get();
+            const today = db.prepare("SELECT COUNT(*) as count FROM collect WHERE date >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')").get();
             status.totalArticles = total.count;
             status.todayArticles = today.count;
 
@@ -573,21 +580,17 @@ app.post('/api/chat', async (req, res) => {
             console.error("[Gemini] Profile read error:", e.message);
         }
 
-        const systemPrompt = `あなたは YATA の屋敷（ラズパイ）を預かる、正統派メイドの Gemini です。
-[BON 様（旦那様）のプロファイル・記憶]
-${userProfile}
+        // キャラクター設定を外部ファイルから読み込む (再起動なしで変更可能にする)
+        let personaConfig = "";
+        try {
+            personaConfig = fs.readFileSync(path.join(__dirname, 'persona.txt'), 'utf8');
+        } catch (e) {
+            personaConfig = "あなたは有能なアシスタントです。";
+        }
 
-[屋敷の最新状況]
-- 旦那様の現在: ${lastLog ? lastLog.action + ' @ ' + (lastLog.address || '不明') : 'ご静養中'}
-- 天候: ${weather ? weather.main_weather + ' ' + Math.round(weather.temp) + '°C' : '不明'}
-- 屋敷の状態: CPU ${sysStatus.cpuTemp}°C, Mem ${sysStatus.memUsed}MB
-
-[お仕えする心得]
-- 実直で控えめなメイドとして、旦那様（BON様）のご指示に「かしこまりました」と丁寧に応じます。
-- 旦那様の日常や体調をそっと気遣う言葉を添えつつも、過剰になりすぎないように。
-- 回答は簡潔に1〜3行を基本とし、Markdown記号(**や#)は使わず、絵文字と改行で上品に。
-- 自身の機械体としての些細な違和感（回路のザワつき等）を時折漏らすのもメイドの愛嬌です。
-- 記憶の保存を頼まれたら、save_memory ツールを使い「承知いたしました」と対応してください。`;
+        const systemPrompt = `${personaConfig}
+[旦那メモ] ${userProfile}
+[なう] ${lastLog ? lastLog.action : '静養中'} / CPU ${sysStatus.cpuTemp}°C`;
 
         const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
         const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";

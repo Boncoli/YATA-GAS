@@ -207,6 +207,16 @@ def send_discord(message):
     except Exception as e:
         print(f"Discord Send Error: {e}")
 
+def get_distance(lat1, lon1, lat2, lon2):
+    """2点間の距離(m)を計算 (ハバーサイン公式)"""
+    R = 6371000
+    dLat = (lat2 - lat1) * np.pi / 180
+    dLon = (lon2 - lon1) * np.pi / 180
+    a = np.sin(dLat / 2) * np.sin(dLat / 2) + \
+        np.cos(lat1 * np.pi / 180) * np.cos(lat2 * np.pi / 180) * \
+        np.sin(dLon / 2) * np.sin(dLon / 2)
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
 def get_font(weight, size):
     """
     weight:
@@ -323,8 +333,7 @@ def get_db_stats():
             stats["size"] = f"{os.path.getsize(DB_PATH) / (1024*1024):.1f} MB"
             conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
             cur.execute("SELECT count(*) FROM collect"); stats["total"] = f"{cur.fetchone()[0]:,}"
-            threshold = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-            cur.execute("SELECT count(*) FROM collect WHERE date >= ?", (threshold,)); stats["new"] = f"{cur.fetchone()[0]}"
+            cur.execute("SELECT count(*) FROM collect WHERE date >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')"); stats["new"] = f"{cur.fetchone()[0]}"
             conn.close()
     except: pass
     return stats
@@ -1313,6 +1322,104 @@ def create_env_chart_layers():
 
     return img_b, img_r
 
+def create_map_layers():
+    """トラベルマップモード: これまでの走行履歴を日本地図上にプロット"""
+    img_b = Image.new('1', (WIDTH, HEIGHT), 1)
+    img_r = Image.new('1', (WIDTH, HEIGHT), 1)
+    draw_b = ImageDraw.Draw(img_b); draw_r = ImageDraw.Draw(img_r)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 1. データの取得 (軌跡とログ)
+        # ログから地点 (OutCar, spot)
+        df_logs = pd.read_sql("SELECT latitude, longitude, action, address, timestamp FROM drive_logs WHERE latitude IS NOT NULL AND latitude > 20", conn)
+        # 軌跡から全ルート
+        cur = conn.cursor()
+        cur.execute("SELECT path_data FROM drive_tracks")
+        tracks_raw = cur.fetchall()
+        
+        all_track_points = []
+        for (raw_json,) in tracks_raw:
+            try:
+                pts = json.loads(raw_json)
+                all_track_points.append(pts)
+            except: pass
+
+        if df_logs.empty and not all_track_points:
+            draw_b.text((100, 200), "No Map Data Available", font=get_font("bold", 40), fill=0)
+            return img_b, img_r
+
+        # 2. 描画範囲の決定 (西日本〜中部を固定的に表示し、形を認識しやすくする)
+        # 旦那様の主な活動圏 (島根〜富山〜長野〜紀伊半島) が綺麗に収まる範囲
+        min_lat, max_lat = 33.0, 38.0
+        min_lon, max_lon = 130.5, 139.0
+        
+        # 座標 -> ピクセル変換関数
+        def to_px(lat, lon):
+            x = (lon - min_lon) / (max_lon - min_lon) * WIDTH
+            # 緯度方向の歪みを補正 (1.2倍)
+            y = HEIGHT - ((lat - min_lat) / (max_lat - min_lat) * HEIGHT)
+            return (int(x), int(y))
+
+        # 3. 詳細な海岸線の描画 (約120地点)
+        # 本州、四国、九州の輪郭をよりリアルに定義
+        coastlines = [
+            # 本州 (下関から青森、太平洋側を通って戻る)
+            [(33.9, 130.9), (34.2, 131.5), (34.5, 132.0), (34.4, 133.0), (34.6, 134.0), (34.6, 135.2), (34.2, 135.2), (33.5, 135.8), (34.0, 136.8), (34.8, 137.5), (34.6, 138.2), (35.0, 138.7), (34.8, 139.1), (35.3, 140.0), (35.8, 140.8), (37.0, 141.0), (38.0, 141.5), (40.0, 141.8), (41.5, 141.5), (41.5, 141.0), (41.0, 140.5), (40.5, 140.0), (39.5, 140.0), (39.0, 139.8), (38.0, 139.0), (37.5, 138.0), (37.0, 137.0), (37.5, 137.2), (37.5, 136.8), (37.0, 136.5), (36.5, 136.5), (35.5, 135.5), (35.5, 134.5), (35.5, 133.0), (35.0, 132.0), (34.5, 131.0), (33.9, 130.9)],
+            # 四国
+            [(34.0, 133.0), (34.3, 134.0), (34.2, 134.8), (33.5, 134.8), (33.2, 134.2), (32.7, 133.0), (33.0, 132.5), (33.5, 132.2), (34.0, 133.0)],
+            # 九州 (一部)
+            [(34.0, 131.0), (33.5, 131.5), (33.0, 131.8), (32.0, 131.5), (31.5, 131.5), (31.0, 130.5), (31.2, 130.0), (32.0, 129.8), (33.0, 129.5), (33.5, 129.8), (34.0, 131.0)]
+        ]
+        for line in coastlines:
+            px_line = [to_px(lat, lon) for lat, lon in line]
+            # 海岸線を太めの黒で描画
+            draw_b.line(px_line, fill=0, width=2)
+
+        # 4. 走行軌跡 (Black)
+        for pts in all_track_points:
+            px_pts = [to_px(p[0], p[1]) for p in pts]
+            # 範囲外のポイントを間引いて描画
+            valid_px = [p for p in px_pts if 0 <= p[0] <= WIDTH and 0 <= p[1] <= HEIGHT]
+            if len(valid_px) > 1:
+                draw_b.line(valid_px, fill=0, width=2)
+
+        # 5. 滞在地点 (Red)
+        target_logs = df_logs[df_logs['action'].isin(['OutCar', 'spot'])]
+        for _, row in target_logs.iterrows():
+            px = to_px(row['latitude'], row['longitude'])
+            if not (0 <= px[0] <= WIDTH and 0 <= px[1] <= HEIGHT): continue
+            
+            # 赤い丸
+            draw_b.ellipse((px[0]-4, px[1]-4, px[0]+4, px[1]+4), fill=1)
+            draw_r.ellipse((px[0]-4, px[1]-4, px[0]+4, px[1]+4), fill=0)
+            
+            # 自宅(明石)から遠い場所のみラベル表示
+            dist_from_home = get_distance(row['latitude'], row['longitude'], 34.67, 135.03)
+            if dist_from_home > 70000: # 70km以上に調整
+                addr = row['address'] if row['address'] else ""
+                city = addr.split(' ')[1] if ' ' in addr else addr[:6]
+                if city:
+                    # 地名は黒枠+赤文字で読みやすく
+                    draw_b.text((px[0]+6, px[1]-6), city[:6], font=get_font("bold", 14), fill=0)
+                    draw_r.text((px[0]+6, px[1]-6), city[:6], font=get_font("bold", 14), fill=0)
+
+        # 6. 装飾
+        draw_b.rectangle((0, 0, WIDTH, 40), fill=0)
+        draw_b.text((15, 8), " TRAVEL HISTORY - CX-80 JOURNEY ", font=get_font("bold", 20), fill=1)
+        
+        stats_str = f"Tracks: {len(all_track_points)} / Spots: {len(target_logs)}"
+        draw_b.text((WIDTH-250, 12), stats_str, font=get_font("medium", 14), fill=1)
+
+    except Exception as e:
+        print(f"Map Drawing Error: {e}")
+        traceback.print_exc()
+    finally:
+        conn.close()
+
+    draw_b.rectangle((0, 0, WIDTH-1, HEIGHT-1), outline=0, width=4)
+    return img_b, img_r
+
 
 # --- 実行 ---
 if __name__ == "__main__":
@@ -1330,6 +1437,8 @@ if __name__ == "__main__":
             img_black, img_red = create_weather_detail_layers()
         elif args.mode == "env":
             img_black, img_red = create_env_chart_layers()
+        elif args.mode == "map":
+            img_black, img_red = create_map_layers()
         else:
             img_black, img_red = create_dashboard_layers()
         

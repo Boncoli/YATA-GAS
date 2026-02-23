@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA - Drive & Activity Timeline</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --border-color: #333;
+            --muted-text: #888;
+        }
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+        header {
+            background-color: #1a1a1a;
+            border-bottom: 1px solid var(--border-color);
+            padding: 15px;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .back-btn {
+            background: none;
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 5px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+        h1 { margin: 0; font-size: 1.1rem; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        .date-jump {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: #252525;
+            padding: 2px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+        #date-picker {
+            background: transparent;
+            border: none;
+            color: var(--text-color);
+            font-family: inherit;
+            font-size: 0.85rem;
+            outline: none;
+            cursor: pointer;
+        }
+        /* Style for date picker icon on some browsers */
+        #date-picker::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px 15px;
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 20px;
+            border-left: 2px solid var(--border-color);
+        }
+
+        .date-header {
+            margin: 30px 0 15px -22px;
+            background: var(--bg-color);
+            padding: 5px 10px;
+            display: inline-block;
+            font-weight: bold;
+            color: var(--accent-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .event-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            position: relative;
+        }
+        .event-card::before {
+            display: none;
+        }
+        .event-icon {
+            position: absolute;
+            left: -36px;
+            top: 15px;
+            width: 30px;
+            height: 30px;
+            background: #252525;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            border: 2px solid var(--border-color);
+            z-index: 5;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .event-icon.action-incar { border-color: #3498db; }
+        .event-icon.action-outcar { border-color: #e74c3c; }
+        .event-icon.action-home { border-color: #f39c12; }
+        .event-icon.action-track { border-color: #9b59b6; }
+        .event-icon.action-spot { border-color: var(--accent-color); }
+        .event-icon.action-photo { border-color: #e91e63; }
+
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+        .event-time {
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: #fff;
+        }
+        .event-action {
+            font-size: 0.8rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #333;
+            color: #aaa;
+            font-weight: bold;
+        }
+        .action-incar { color: #3498db; }
+        .action-outcar { color: #e74c3c; }
+        .action-home { color: #f39c12; }
+        .action-track { color: #9b59b6; }
+
+        .event-body {
+            font-size: 0.95rem;
+        }
+        .event-location {
+            color: #fff;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: flex-start;
+            gap: 5px;
+        }
+        .event-note {
+            font-size: 0.85rem;
+            color: var(--muted-text);
+            font-style: italic;
+        }
+        .event-meta {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #2a2a2a;
+            display: flex;
+            gap: 15px;
+            font-size: 0.8rem;
+            color: #666;
+            align-items: center;
+        }
+
+        .map-btn {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            color: #aaa;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: auto;
+        }
+        .map-btn:hover { background: #333; color: var(--accent-color); border-color: var(--accent-color); }
+
+        .mini-map-container {
+            display: none;
+            margin-top: 10px;
+            height: 200px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            overflow: hidden;
+            background: #000;
+        }
+        .mini-map { height: 100%; width: 100%; }
+
+        #loading {
+            text-align: center;
+            padding: 50px;
+            color: var(--muted-text);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 100px 20px;
+            color: var(--muted-text);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <a href="/portal.html" class="back-btn"><i class="bi bi-chevron-left"></i> 戻る</a>
+        <h1>足取り履歴</h1>
+        <div class="date-jump">
+            <i class="bi bi-calendar3" style="font-size: 0.9rem; color: var(--accent-color);"></i>
+            <input type="date" id="date-picker" onchange="jumpToDate(this.value)">
+        </div>
+        <a href="/map.html" class="back-btn"><i class="bi bi-map"></i> マップ</a>
+    </header>
+
+    <div class="container">
+        <div id="loading">
+            <div class="spinner-border text-success" role="status"></div>
+            <p>データを同期中...</p>
+        </div>
+        <div id="timeline-container" class="timeline" style="display: none;"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const ACTION_MAP = {
+            'InCar': { label: '乗車', icon: '🚗', class: 'action-incar' },
+            'OutCar': { label: '降車', icon: '🅿️', class: 'action-outcar' },
+            'InHome': { label: '帰宅', icon: '🏠', class: 'action-home' },
+            'OutHome': { label: '外出', icon: '🏃', class: 'action-home' },
+            'spot': { label: 'スポット', icon: '📍', class: 'action-spot' },
+            'photo': { label: '写真', icon: '📸', class: 'action-photo' },
+            'iphone-path': { label: '移動', icon: '📱', class: 'action-track' }
+        };
+
+        const maps = {}; // Store Leaflet instances
+
+        function toggleMiniMap(id, lat, lon) {
+            const container = document.getElementById(`map-container-${id}`);
+            const btn = document.getElementById(`map-btn-${id}`);
+            
+            if (container.style.display === 'block') {
+                container.style.display = 'none';
+                btn.innerHTML = '<i class="bi bi-map"></i> 地図を表示';
+                return;
+            }
+
+            container.style.display = 'block';
+            btn.innerHTML = '<i class="bi bi-map-fill"></i> 地図を閉じる';
+
+            // Initialize map if not already done
+            if (!maps[id]) {
+                const mapId = `map-${id}`;
+                const map = L.map(mapId, { zoomControl: false }).setView([lat, lon], 15);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OSM'
+                }).addTo(map);
+                
+                L.marker([lat, lon]).addTo(map);
+                maps[id] = map;
+                
+                // Leaflet needs to know when the container size changes
+                setTimeout(() => map.invalidateSize(), 100);
+            }
+        }
+
+        function formatDate(ts) {
+            if (!ts) return { date: '不明', time: '??:??' };
+            // YYYY/MM/DD HH:mm:ss -> { date: "YYYY/MM/DD", time: "HH:mm" }
+            const parts = ts.split(' ');
+            if (parts.length < 2) return { date: parts[0], time: '??:??' };
+            return {
+                date: parts[0].replace(/-/g, '/'),
+                time: parts[1].substring(0, 5)
+            };
+        }
+
+        function jumpToDate(val) {
+            if (!val) return;
+            // val is YYYY-MM-DD
+            const targetDate = val.replace(/-/g, '/');
+            const targetId = `date-${targetDate}`;
+            const el = document.getElementById(targetId);
+            
+            if (el) {
+                const headerHeight = document.querySelector('header').offsetHeight;
+                window.scrollTo({
+                    top: el.offsetTop - headerHeight - 10,
+                    behavior: 'smooth'
+                });
+            } else {
+                alert(`${targetDate} の記録は見つかりませんでした。`);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch('/api/drive-history');
+                const data = await res.json();
+                
+                const timeline = document.getElementById('timeline-container');
+                const loading = document.getElementById('loading');
+
+                // Merge logs and tracks
+                const events = [
+                    ...(data.logs || []).map(l => ({ ...l, type: 'log' })),
+                    ...(data.tracks || []).map(t => ({ ...t, type: 'track' }))
+                ];
+
+                // Sort by timestamp descending
+                events.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+                if (events.length === 0) {
+                    loading.innerHTML = '<div class="empty-state">ログが見つかりませんでした。</div>';
+                    return;
+                }
+
+                let lastDate = '';
+                let html = '';
+
+                events.forEach((ev, idx) => {
+                    const { date, time } = formatDate(ev.timestamp);
+                    const config = ACTION_MAP[ev.action] || { label: ev.action, icon: '❓', class: '' };
+                    const eventId = `ev-${idx}`;
+
+                    if (date !== lastDate) {
+                        html += `<div class="date-header" id="date-${date}">${date}</div>`;
+                        lastDate = date;
+                    }
+
+                    let locationText = ev.address || '';
+                    if (!locationText && ev.type === 'track') {
+                        locationText = `${ev.point_count}地点の足取り`;
+                    }
+
+                    // Get coordinates for the map
+                    let lat = ev.latitude;
+                    let lon = ev.longitude;
+                    
+                    // Tracks usually have an array of points in path_data
+                    if (ev.type === 'track' && ev.path_data && ev.path_data.length > 0) {
+                        lat = ev.path_data[0][0];
+                        lon = ev.path_data[0][1];
+                    }
+
+                    const hasLocation = lat && lon;
+
+                    html += `
+                        <div class="event-card">
+                            <div class="event-icon ${config.class}">${config.icon}</div>
+                            <div class="event-header">
+                                <div class="event-time">${time}</div>
+                                <div class="event-action ${config.class}">${config.label}</div>
+                            </div>
+                            <div class="event-body">
+                                ${locationText ? `
+                                    <div class="event-location">
+                                        <i class="bi bi-geo-alt-fill" style="color: #666; font-size: 0.8rem;"></i>
+                                        <span>${locationText}</span>
+                                    </div>
+                                ` : ''}
+                                ${ev.note ? `<div class="event-note">${ev.note}</div>` : ''}
+                            </div>
+                            <div class="event-meta">
+                                ${ev.battery ? `<span><i class="bi bi-battery-half"></i> ${ev.battery}%</span>` : ''}
+                                ${ev.altitude ? `<span><i class="bi bi-arrow-up-right"></i> ${Math.round(ev.altitude)}m</span>` : ''}
+                                ${hasLocation ? `
+                                    <button class="map-btn" id="map-btn-${eventId}" onclick="toggleMiniMap('${eventId}', ${lat}, ${lon})">
+                                        <i class="bi bi-map"></i> 地図を表示
+                                    </button>
+                                ` : ''}
+                            </div>
+                            <div id="map-container-${eventId}" class="mini-map-container">
+                                <div id="map-${eventId}" class="mini-map"></div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                timeline.innerHTML = html;
+                loading.style.display = 'none';
+                timeline.style.display = 'block';
+
+            } catch (e) {
+                console.error(e);
+                document.getElementById('loading').innerHTML = '<p style="color: #e74c3c;">データの読み込みに失敗しました。</p>';
+            }
+        }
+
+        loadHistory();
+    </script>
+</body>
+</html>

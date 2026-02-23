@@ -57,7 +57,24 @@
             text-decoration: none;
             transition: all 0.3s;
         }
-        .news-btn:hover, .fuel-btn:hover {
+        .history-btn {
+            position: absolute;
+            top: 15px;
+            right: 125px; /* 給油ボタンの左隣 */
+            width: 45px;
+            height: 45px;
+            background: #f39c12; /* オレンジ色 (履歴アイコン) */
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1001;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        .news-btn:hover, .fuel-btn:hover, .history-btn:hover {
             transform: scale(1.1);
         }
         /* 右上のコントロールをボタンと重ならないよう下げる */
@@ -80,6 +97,9 @@
         </div>
     </div>
 
+    <a href="/history.html" class="history-btn" title="Timeline">
+        <i class="bi bi-clock-history" style="font-size: 22px;"></i>
+    </a>
     <a href="/fuel.html" class="fuel-btn" title="Fuel Stats">
         <i class="bi bi-fuel-pump-fill" style="font-size: 22px;"></i>
     </a>
