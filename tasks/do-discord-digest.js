@@ -95,8 +95,13 @@ async function main() {
   const allocationPrompt = allocations.map(a => `- ${a.topic}: ${a.count}件`).join("\n");
   const promptList = finalArticles.map(a => `- 【タイトル】: ${a.title}\n  【要約】: ${a.summary || a.abstract}\n  【URL】: ${a.url}`).join("\n\n");
   
-  const userPrompt = `あなたはニュース編集者です。以下の【記事リスト】から、ユーザーの興味に基づき **合計 10件** のニュースを選んでください。
-必ず 10件 をリストアップし、以下の【配分目標】を参考にしてください。
+  const userPrompt = `あなたは技術監査官、および専門ニュースエディターです。
+提供された記事リストから重要なトピックを抽出し、新聞記事のような淡白で客観的な日本語で報告書を作成してください。
+
+【編集方針】
+1. 感情的な形容詞、主観的な推測、および過度な装飾は一切排除してください。
+2. 専門用語は正確に維持し、事実関係を簡潔に記述すること。
+3. 語尾は「だ・である」調、または体言止めとし、情報の密度を最大化してください。
 
 【配分目標】
 ${allocationPrompt}
@@ -104,28 +109,55 @@ ${allocationPrompt}
 【出力形式】
 ### カテゴリ・トピック名
 (絵文字) **記事タイトル**
-- ニュースの要点・解説（1〜2行、80文字程度に凝縮）
-[元記事](ここに【URL】を正確に転記)
+- 事実に基づいた要旨（客観的事実、数値、具体的な成果を中心に2行程度で記述）
+[元記事]({URL})
 
-※ 各記事の間は空行を入れてください。
+※ 各記事の間は空行を入れ、視認性を確保してください。
 
 【記事リスト】
 ${promptList}`;
 
   console.log(`[Digest] Generating Discord summary (Target: 10 items)...`);
-  const summary = LlmService.analyzeKeywordSearch("あなたは優秀なニュースエディターです。", userPrompt, { 
+  // モデル名が gpt-5-mini 等の誤表記の場合に備え、環境変数をチェック
+  const model = (process.env.OPENAI_MODEL_NANO === 'gpt-5-mini') ? 'gpt-4o-mini' : (process.env.OPENAI_MODEL_NANO || 'gpt-4o-mini');
+  
+  const summary = LlmService.analyzeKeywordSearch("あなたは客観的なニュースエディターです。", userPrompt, { 
     temperature: 0.0, reasoning_effort: "medium"
   });
 
-  if (!summary) return;
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) return;
-
-  const payload = JSON.stringify({ content: `📢 **【YATA】ニュース・ハイライト (${new Date().toLocaleDateString()})**\n\n${summary}` });
-  const response = UrlFetchApp.fetch(webhookUrl, { method: "post", contentType: "application/json", payload: payload });
-  if (response.getResponseCode() === 200 || response.getResponseCode() === 204) {
-    console.log("✅ Successfully posted to Discord.");
+  if (!summary) {
+    console.error("❌ Failed to generate summary: LlmService returned empty.");
+    return;
   }
+  
+  console.log(`[Digest] Summary generated (${summary.length} chars). Posting to Discord...`);
+
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.error("❌ DISCORD_WEBHOOK_URL is not set.");
+    return;
+  }
+
+  // Discordの2000文字制限に対応
+  const MAX_LENGTH = 1900; // 余裕を持って
+  const chunks = [];
+  let currentPos = 0;
+  while (currentPos < summary.length) {
+    chunks.push(summary.substring(currentPos, currentPos + MAX_LENGTH));
+    currentPos += MAX_LENGTH;
+  }
+
+  chunks.forEach((chunk, index) => {
+    const prefix = index === 0 ? `📢 **【YATA】ニュース・ハイライト (${new Date().toLocaleDateString()})**\n\n` : `(続き - ${index + 1})\n\n`;
+    const payload = JSON.stringify({ content: prefix + chunk });
+    const response = UrlFetchApp.fetch(webhookUrl, { method: "post", contentType: "application/json", payload: payload });
+    
+    if (response.getResponseCode() === 200 || response.getResponseCode() === 204) {
+      console.log(`✅ Successfully posted chunk ${index + 1}/${chunks.length} to Discord.`);
+    } else {
+      console.error(`❌ Failed to post chunk ${index + 1}. Status: ${response.getResponseCode()}, Response: ${response.getContentText()}`);
+    }
+  });
 }
 
 main().catch(console.error);

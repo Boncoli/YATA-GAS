@@ -208,5 +208,41 @@
     "url": "https://www.lifehacker.jp/feed/index.xml",
     "category": "General",
     "active": true
+  },
+  {
+    "label": "Apple公式",
+    "url": "https://www.apple.com/jp/newsroom/rss-feed.rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Apple developer NEWS",
+    "url": "https://developer.apple.com/news/rss/news.rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Ars Technica",
+    "url": "http://feeds.arstechnica.com/arstechnica/index",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "TechCrunch",
+    "url": "https://feeds.feedburner.com/TechCrunch/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "The Verge",
+    "url": "https://www.theverge.com/rss/index.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "MacRumors",
+    "url": "https://www.macrumors.com/macrumors.xml",
+    "category": "General",
+    "active": true
   }
 ]
