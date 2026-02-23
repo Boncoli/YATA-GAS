@@ -121,7 +121,13 @@ app.post('/api/import-gpx', upload.single('gpx_file'), (req, res) => {
                 const lon = parseFloat(pt['@_lon']);
                 const ele = pt.ele ? parseFloat(pt.ele) : 0;
                 const date = new Date(pt.time);
-                if (!startTime) startTime = date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
+                if (!startTime) {
+                    startTime = date.toLocaleString('ja-JP', {
+                        year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit', second: '2-digit',
+                        hour12: false, timeZone: 'Asia/Tokyo'
+                    }).replace(/\//g, '-');
+                }
 
                 if (lastPoint) {
                     const dist = getDistance(lastPoint.lat, lastPoint.lon, lat, lon);
@@ -551,6 +557,27 @@ app.get('/api/chat-history', (req, res) => {
         const limit = parseInt(req.query.limit) || 50;
         const rows = db.prepare("SELECT * FROM ai_chat_log ORDER BY id DESC LIMIT ?").all(limit);
         res.json(rows.reverse()); // 古い順に並べ替え
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- トラックデータ取得 API ---
+app.get('/api/tracks', (req, res) => {
+    try {
+        const tracks = db.prepare("SELECT id, action, timestamp, note, point_count FROM drive_tracks ORDER BY timestamp DESC").all();
+        res.json(tracks);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/tracks/:id', (req, res) => {
+    try {
+        const track = db.prepare("SELECT * FROM drive_tracks WHERE id = ?").get(req.params.id);
+        if (!track) return res.status(404).json({ error: "Track not found" });
+        track.path_data = JSON.parse(track.path_data);
+        res.json(track);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

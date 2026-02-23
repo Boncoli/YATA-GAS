@@ -2,129 +2,241 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YATA Travel Map</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>YATA Travel Map (Dynamic)</title>
+    <!-- Leaflet.js -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
+        :root {
+            --bg-color: #121212;
+            --accent-color: #00e676;
+            --card-bg: #1e1e1e;
+        }
         body {
             font-family: 'Segoe UI', sans-serif;
-            background-color: #121212;
+            background-color: var(--bg-color);
             color: #e0e0e0;
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+            margin: 0; padding: 0;
+            display: flex; flex-direction: column;
+            height: 100vh; overflow: hidden;
         }
-        .container {
-            max-width: 900px;
-            width: 100%;
-            text-align: center;
+        header {
+            padding: 10px 20px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #333;
+            display: flex; justify-content: space-between; align-items: center;
         }
-        h1 {
-            color: #00e676;
-            letter-spacing: 2px;
-            margin-bottom: 5px;
+        h1 { color: var(--accent-color); margin: 0; font-size: 1.2rem; letter-spacing: 2px; }
+        
+        main { flex: 1; display: flex; position: relative; overflow: hidden; }
+        
+        /* Map Area */
+        #map { flex: 1; background: #0a0a0a; z-index: 1; }
+        
+        /* Sidebar (Track List) */
+        #sidebar {
+            width: 280px;
+            background: var(--card-bg);
+            border-left: 1px solid #333;
+            z-index: 2;
+            display: flex; flex-direction: column;
+            height: 100%;
         }
-        .stats-box {
-            display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin: 20px 0;
-            background: #1e1e1e;
-            padding: 15px;
-            border-radius: 12px;
-            border: 1px solid #333;
-        }
-        .stat-item {
-            display: flex;
-            flex-direction: column;
-        }
-        .stat-val {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: #00e676;
-        }
-        .stat-label {
-            font-size: 0.8rem;
-            color: #888;
-        }
-        .map-container {
-            background: #1e1e1e;
-            padding: 10px;
-            border-radius: 15px;
-            border: 1px solid #333;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-        }
-        img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 10px;
-        }
-        .pref-list {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 10px;
-            margin-top: 20px;
-        }
-        .pref-tag {
+        .sidebar-header {
+            padding: 15px; border-bottom: 1px solid #333;
             background: #252525;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.9rem;
-            border: 1px solid #444;
+            flex-shrink: 0; /* ヘッダーの高さを固定 */
+            z-index: 10;
         }
-        .pref-tag.visited {
-            border-color: #00e676;
-            color: #00e676;
+        #track-list {
+            flex: 1; /* 残りの高さを埋める */
+            overflow-y: auto; /* リスト部分のみスクロール */
+        }
+        .track-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #2a2a2a;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .track-item:hover { background: #2a2a2a; }
+        .track-item.active { background: #333; border-left: 4px solid var(--accent-color); }
+        .track-date { font-size: 1.0rem; font-weight: bold; color: #fff; }
+        .track-pts { font-size: 0.8rem; color: #888; margin-top: 4px; }
+
+        /* Stats Overlay */
+        #stats-overlay {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(30, 30, 30, 0.8);
+            padding: 10px 15px; border-radius: 8px;
+            z-index: 1000; pointer-events: none;
+            border: 1px solid #444;
+            backdrop-filter: blur(4px);
+        }
+        .stat-line { font-size: 0.9rem; margin-bottom: 4px; }
+        .stat-num { color: var(--accent-color); font-weight: bold; }
+
+        @media (max-width: 768px) {
+            main { flex-direction: column; }
+            #sidebar { width: 100%; height: 200px; border-left: none; border-top: 1px solid #333; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>TRAVEL LOG</h1>
-        <p style="color: #888; margin-top: 0;">CX-80 全国制覇への軌跡</p>
+    <script>
+        function goBack() {
+            if (window.parent && window.parent.showHome) {
+                window.parent.showHome();
+            } else {
+                window.location.href = 'portal.html';
+            }
+        }
+    </script>
+    <header>
+        <h1>TRAVEL MAP</h1>
+        <button onclick="goBack()" style="background: none; border: 1px solid #555; color: #888; padding: 4px 12px; border-radius: 20px; cursor: pointer; font-size: 0.8rem;">🏠 戻る</button>
+    </header>
 
-        <div class="stats-box" id="stats">
-            <div class="stat-item">
-                <span class="stat-val" id="count">-</span>
-                <span class="stat-label">制覇都道府県</span>
+    <main>
+        <div id="stats-overlay">
+            <div class="stat-line">制覇都道府県: <span class="stat-num" id="stat-count">-</span> / 47</div>
+            <div class="stat-line">制覇率: <span class="stat-num" id="stat-percent">-</span>%</div>
+        </div>
+
+        <div id="map"></div>
+
+        <div id="sidebar">
+            <div class="sidebar-header">記録された足取り (Tracks)</div>
+            <div id="track-list">
+                <div class="track-item active" id="item-all" onclick="showAllTracks()">
+                    <div class="track-date">ALL TRACKS</div>
+                    <div class="track-note" style="font-size: 0.8rem; color: var(--accent-color);">全件表示</div>
+                </div>
+                <!-- Tracks will load here -->
             </div>
-            <div class="stat-item">
-                <span class="stat-val" id="percent">-</span>
-                <span class="stat-label">制覇率 (%)</span>
-            </div>
         </div>
-
-        <div class="map-container">
-            <img src="visited_map.png" alt="Travel Map">
-        </div>
-
-        <div class="pref-list" id="pref-list">
-            <!-- Prefectures will be loaded here -->
-        </div>
-
-        <button onclick="window.location.href='portal.html'" style="margin-top: 30px; background: none; border: 1px solid #555; color: #888; padding: 8px 20px; border-radius: 20px; cursor: pointer;">
-            戻る
-        </button>
-    </div>
+    </main>
 
     <script>
-        fetch('visited_stats.json')
+        const map = L.map('map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([36.5, 137], 6);
+
+        let geoLayer = null;
+        let trackLayer = L.featureGroup().addTo(map);
+        let highlightLayer = L.featureGroup().addTo(map);
+        let allTracksData = [];
+
+        // --- 都道府県白地図の読み込み ---
+        fetch('data/japan.geojson')
             .then(res => res.json())
-            .then(data => {
-                document.getElementById('count').textContent = data.count + ' / ' + data.total;
-                document.getElementById('percent').textContent = data.percent + '%';
-                
-                const list = document.getElementById('pref-list');
-                data.list.forEach(pref => {
-                    const tag = document.createElement('span');
-                    tag.className = 'pref-tag visited';
-                    tag.textContent = pref;
-                    list.appendChild(tag);
+            .then(geoData => {
+                // 訪問済みリストを取得
+                fetch('visited_stats.json')
+                    .then(res => res.json())
+                    .then(stats => {
+                        document.getElementById('stat-count').textContent = stats.count;
+                        document.getElementById('stat-percent').textContent = stats.percent;
+
+                        geoLayer = L.geoJSON(geoData, {
+                            style: (feature) => {
+                                const isVisited = stats.list.includes(feature.properties.nam_ja);
+                                return {
+                                    fillColor: isVisited ? '#00e676' : '#222',
+                                    weight: 1,
+                                    opacity: 1,
+                                    color: '#444',
+                                    fillOpacity: 1
+                                };
+                            }
+                        }).addTo(map);
+                        
+                        // 地図読み込み後に全件表示を試みる
+                        showAllTracks();
+                    });
+            });
+
+        // --- トラック一覧の取得 ---
+        fetch('/api/tracks')
+            .then(res => res.json())
+            .then(tracks => {
+                const list = document.getElementById('track-list');
+                tracks.forEach(track => {
+                    const item = document.createElement('div');
+                    item.className = 'track-item';
+                    
+                    // 日付フォーマット (YYYY-MM-DD HH:mm:ss -> YYYY/MM/DD)
+                    const dateParts = track.timestamp.split(' ');
+                    const displayDate = dateParts[0].replace(/-/g, '/');
+
+                    item.innerHTML = `
+                        <div class="track-date">${displayDate}</div>
+                        <div class="track-pts">${track.point_count.toLocaleString()} pts</div>
+                    `;
+                    item.onclick = () => selectTrack(track.id, item);
+                    list.appendChild(item);
                 });
             });
+
+        async function showAllTracks() {
+            // UI更新
+            document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
+            document.getElementById('item-all').classList.add('active');
+            
+            highlightLayer.clearLayers();
+            trackLayer.clearLayers();
+            
+            // トラックリストを取得
+            const res = await fetch('/api/tracks');
+            const tracks = await res.json();
+            
+            // 各トラックのパスを非同期で取得して描画
+            const promises = tracks.map(t => fetch(`/api/tracks/${t.id}`).then(r => r.json()));
+            const fullTracks = await Promise.all(promises);
+            
+            fullTracks.forEach(track => {
+                const latlngs = track.path_data.map(p => [p[0], p[1]]);
+                L.polyline(latlngs, {
+                    color: '#fff',
+                    weight: 2,
+                    opacity: 0.4
+                }).addTo(trackLayer);
+            });
+            
+            if (trackLayer.getLayers().length > 0) {
+                map.fitBounds(trackLayer.getBounds(), { padding: [50, 50], animate: true });
+            }
+        }
+
+        function selectTrack(id, element) {
+            // UI更新
+            document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+
+            // トラックデータの取得
+            fetch(`/api/tracks/${id}`)
+                .then(res => res.json())
+                .then(track => {
+                    highlightLayer.clearLayers();
+                    
+                    const latlngs = track.path_data.map(p => [p[0], p[1]]);
+                    
+                    const polyline = L.polyline(latlngs, {
+                        color: '#fff',
+                        weight: 5,
+                        opacity: 1,
+                        className: 'floating-track'
+                    }).addTo(highlightLayer);
+
+                    // 自動拡大
+                    map.fitBounds(polyline.getBounds(), { padding: [100, 100], animate: true, duration: 1.0 });
+                });
+        }
+        
+        // 日本全土が見える位置にリセットするボタン (任意)
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+
     </script>
 </body>
 </html>

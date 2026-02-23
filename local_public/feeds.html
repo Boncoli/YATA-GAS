@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA Feed Manager</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --error-color: #ff5252;
+        }
+        body {
+            font-family: 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: var(--accent-color);
+            text-align: center;
+        }
+        .feed-item {
+            background-color: var(--card-bg);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #333;
+        }
+        .feed-info {
+            flex-grow: 1;
+            margin-right: 10px;
+        }
+        .feed-label {
+            font-weight: bold;
+            display: block;
+        }
+        .feed-url {
+            font-size: 0.8rem;
+            color: #888;
+            word-break: break-all;
+        }
+        .btn {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+        .btn:active { opacity: 0.7; }
+        .btn-toggle {
+            background-color: #444;
+            color: white;
+        }
+        .btn-toggle.active {
+            background-color: var(--accent-color);
+            color: #121212;
+        }
+        .btn-remove {
+            background-color: var(--error-color);
+            color: white;
+            margin-left: 5px;
+        }
+        .add-form {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+            border: 1px solid var(--accent-color);
+        }
+        .add-form h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: var(--accent-color);
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background-color: #2a2a2a;
+            color: white;
+            box-sizing: border-box;
+        }
+        .btn-add {
+            width: 100%;
+            background-color: var(--accent-color);
+            color: #121212;
+            font-size: 1rem;
+        }
+        .back-link {
+            display: block;
+            text-align: center;
+            margin-top: 20px;
+            color: #888;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RSS Feed Manager</h1>
+        
+        <div id="feed-list">
+            <!-- 読み込み中表示 -->
+            <p style="text-align: center;">Loading feeds...</p>
+        </div>
+
+        <div class="add-form">
+            <h2>Add New Feed</h2>
+            <input type="text" id="new-label" placeholder="Feed Name (e.g. My Favorite Blog)">
+            <input type="text" id="new-url" placeholder="RSS Feed URL">
+            <button class="btn btn-add" onclick="addFeed()">Add Feed</button>
+        </div>
+    </div>
+
+    <script>
+        let feeds = [];
+
+        async function loadFeeds() {
+            const res = await fetch('/api/feeds');
+            feeds = await res.json();
+            renderFeeds();
+        }
+
+        function renderFeeds() {
+            const list = document.getElementById('feed-list');
+            list.innerHTML = '';
+            feeds.forEach((feed, index) => {
+                const item = document.createElement('div');
+                item.className = 'feed-item';
+                item.innerHTML = `
+                    <div class="feed-info">
+                        <span class="feed-label">${feed.label}</span>
+                        <span class="feed-url">${feed.url}</span>
+                    </div>
+                    <div>
+                        <button class="btn btn-toggle ${feed.active ? 'active' : ''}" onclick="toggleFeed(${index})">
+                            ${feed.active ? 'ON' : 'OFF'}
+                        </button>
+                        <button class="btn btn-remove" onclick="removeFeed(${index})">×</button>
+                    </div>
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        async function saveFeeds() {
+            await fetch('/api/feeds', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ feeds })
+            });
+        }
+
+        async function toggleFeed(index) {
+            feeds[index].active = !feeds[index].active;
+            renderFeeds();
+            await saveFeeds();
+        }
+
+        async function removeFeed(index) {
+            if (!confirm(`Remove "${feeds[index].label}"?`)) return;
+            feeds.splice(index, 1);
+            renderFeeds();
+            await saveFeeds();
+        }
+
+        async function addFeed() {
+            const label = document.getElementById('new-label').value.trim();
+            const url = document.getElementById('new-url').value.trim();
+            if (!url) return alert('URL is required');
+
+            feeds.push({
+                label: label || url,
+                url: url,
+                category: 'General',
+                active: true
+            });
+
+            document.getElementById('new-label').value = '';
+            document.getElementById('new-url').value = '';
+            
+            renderFeeds();
+            await saveFeeds();
+        }
+
+        loadFeeds();
+    </script>
+</body>
+</html>

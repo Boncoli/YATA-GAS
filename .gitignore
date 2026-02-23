@@ -12,6 +12,9 @@ server-properties.json
 *.db-shm
 *.db-wal
 *.db-journal
+*.db.broken*
+*.db.corrupt*
+
 
 # --- Logs ---
 *.log
