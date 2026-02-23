@@ -36,11 +36,16 @@ def get_visited_prefectures(tracks, geo_data):
     # 全ての軌跡をチェック
     for track_id, path_data_str in tracks:
         path = json.loads(path_data_str)
-        # 全ての点をチェック（精度優先）
-        # ただし、すでに全県制覇していたら終了
+        # 10ポイントごとに間引いてチェック（1秒1点の場合、約10秒間隔）
+        # 精度と速度のバランスを最適化
+        sampled_path = path[::10]
+        # 念のため、最後の一点も追加
+        if len(path) % 10 != 1:
+            sampled_path.append(path[-1])
+
         if len(visited) >= 47: break
         
-        for lat, lng, _ in path:
+        for lat, lng, _ in sampled_path:
             for feature in geo_data['features']:
                 pref_name = feature['properties']['nam_ja']
                 if pref_name in visited:
