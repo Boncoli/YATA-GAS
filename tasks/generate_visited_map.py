@@ -33,12 +33,14 @@ def is_inside(point, poly):
 
 def get_visited_prefectures(tracks, geo_data):
     visited = set()
-    # 全ての軌跡をチェック（重いのでサンプリング）
+    # 全ての軌跡をチェック
     for track_id, path_data_str in tracks:
         path = json.loads(path_data_str)
-        # 各軌跡から数点をサンプリングしてチェック
-        samples = [path[0], path[len(path)//2], path[-1]] if len(path) > 2 else path
-        for lat, lng, _ in samples:
+        # 全ての点をチェック（精度優先）
+        # ただし、すでに全県制覇していたら終了
+        if len(visited) >= 47: break
+        
+        for lat, lng, _ in path:
             for feature in geo_data['features']:
                 pref_name = feature['properties']['nam_ja']
                 if pref_name in visited:
@@ -54,7 +56,9 @@ def get_visited_prefectures(tracks, geo_data):
                 for poly in polygons:
                     if is_inside((lng, lat), poly):
                         visited.add(pref_name)
+                        print(f"  -> New discovery in track {track_id}: {pref_name}")
                         break
+            if len(visited) >= 47: break
     return visited
 
 def main():
