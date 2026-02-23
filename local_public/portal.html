@@ -203,6 +203,10 @@
                     <span class="icon">📜</span>
                     <span class="label">Timeline</span>
                 </div>
+                <div onclick="openPage('travel.html')" class="card">
+                    <span class="icon">🗾</span>
+                    <span class="label">Travel Map</span>
+                </div>
                 <div onclick="openPage('todo.html')" class="card">
                     <span class="icon">📝</span>
                     <span class="label">TODO / Ideas</span>
@@ -338,36 +342,27 @@
         }
         setInterval(pollMessages, 5000); 
 
-        async function sendMessage() {
-            const text = chatInput.value.trim();
-            if (!text) return;
-
-            // 1. 旦那様のメッセージを即座に画面に表示
-            appendMessage('user', text);
-            chatInput.value = '';
-
-            try {
-                // 2. サーバーへ送信 (即時応答を待つ)
-                const res = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text })
-                });
-                const data = await res.json();
-                
-                // 3. 応答があれば即座に表示 (pollMessages での重複は lastMessageId で防止)
-                if (data.response) {
-                    // ここでは表示せず、あえて pollMessages に任せることで
-                    // DB保存と整合性を取りつつ、少し待つことで「メイドが考えている間」を演出しても良いですが
-                    // 即時性を取るならここで表示してもOK。
-                    // 重複を防ぐため、ここでは何もしないのが最も安全（pollが5秒以内に拾う）ですが
-                    // せっかくなので pollMessages を即座に一回叩くことにします。
-                    pollMessages();
+                async function sendMessage() {
+                    const text = chatInput.value.trim();
+                    if (!text) return;
+        
+                    // 1. 入力欄をクリア (即時性はポーリングに任せるか、サーバー応答後に)
+                    chatInput.value = '';
+        
+                    try {
+                        // 2. サーバーへ送信 (即時応答を待つ)
+                        const res = await fetch('/api/chat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message: text })
+                        });
+                        
+                        // 3. 送信成功後、即座にポーリングを実行して画面を更新
+                        pollMessages();
+                    } catch (e) {
+                        appendMessage('ai', "通信エラーが発生しました。旦那様、申し訳ございません。", true);
+                    }
                 }
-            } catch (e) {
-                appendMessage('ai', "通信エラーが発生しました。旦那様、申し訳ございません。", true);
-            }
-        }
 
         function appendMessage(role, text, scroll = true) {
             const div = document.createElement('div');

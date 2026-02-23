@@ -144,6 +144,14 @@ app.post('/api/import-gpx', upload.single('gpx_file'), (req, res) => {
 
         fs.unlinkSync(tempPath);
         console.log(`[API] Track Import Success: ${allPoints.length} points. File deleted.`);
+        
+        // 地図の再生成 (バックグラウンド)
+        const { exec } = require('child_process');
+        exec('python3 tasks/generate_visited_map.py', (err) => {
+            if (err) console.error("[API] Map generation failed:", err);
+            else console.log("[API] Travel Map updated.");
+        });
+
         res.json({ status: "success", points: allPoints.length });
 
     } catch (e) {

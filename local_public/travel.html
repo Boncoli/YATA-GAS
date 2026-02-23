@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YATA Travel Map</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            max-width: 900px;
+            width: 100%;
+            text-align: center;
+        }
+        h1 {
+            color: #00e676;
+            letter-spacing: 2px;
+            margin-bottom: 5px;
+        }
+        .stats-box {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin: 20px 0;
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .stat-val {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #00e676;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+        .map-container {
+            background: #1e1e1e;
+            padding: 10px;
+            border-radius: 15px;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 10px;
+        }
+        .pref-list {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .pref-tag {
+            background: #252525;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            border: 1px solid #444;
+        }
+        .pref-tag.visited {
+            border-color: #00e676;
+            color: #00e676;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TRAVEL LOG</h1>
+        <p style="color: #888; margin-top: 0;">CX-80 全国制覇への軌跡</p>
+
+        <div class="stats-box" id="stats">
+            <div class="stat-item">
+                <span class="stat-val" id="count">-</span>
+                <span class="stat-label">制覇都道府県</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-val" id="percent">-</span>
+                <span class="stat-label">制覇率 (%)</span>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <img src="visited_map.png" alt="Travel Map">
+        </div>
+
+        <div class="pref-list" id="pref-list">
+            <!-- Prefectures will be loaded here -->
+        </div>
+
+        <button onclick="window.location.href='portal.html'" style="margin-top: 30px; background: none; border: 1px solid #555; color: #888; padding: 8px 20px; border-radius: 20px; cursor: pointer;">
+            戻る
+        </button>
+    </div>
+
+    <script>
+        fetch('visited_stats.json')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('count').textContent = data.count + ' / ' + data.total;
+                document.getElementById('percent').textContent = data.percent + '%';
+                
+                const list = document.getElementById('pref-list');
+                data.list.forEach(pref => {
+                    const tag = document.createElement('span');
+                    tag.className = 'pref-tag visited';
+                    tag.textContent = pref;
+                    list.appendChild(tag);
+                });
+            });
+    </script>
+</body>
+</html>

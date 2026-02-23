@@ -310,6 +310,7 @@ cd dashboard && python3 dashboard.py
     ### 視覚化 (Visualization)
 
     *   **地図**: `http://[RasPi_IP]:3001/map.html` (走行軌跡、写真地点)
+    *   **全国制覇マップ**: `http://[RasPi_IP]:3001/travel.html` (ggplot2風の白地図、都道府県別の訪問判定)
     *   **履歴**: `http://[RasPi_IP]:3001/history.html` (時系列イベントリスト、ミニマップ付)
     *   **グラフ**: `http://[RasPi_IP]:3000` (Grafana)
         - 2026/02/11 再構築。SQLite プラグイン (`frser-sqlite-datasource`) を使用して `yata.db` を直接可視化。
