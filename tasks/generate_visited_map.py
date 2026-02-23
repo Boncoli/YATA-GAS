@@ -31,24 +31,49 @@ def is_inside(point, poly):
         p1x, p1y = p2x, p2y
     return inside
 
-def get_visited_prefectures(tracks, geo_data):
-    visited = set()
-    # 全ての軌跡をチェック
+def get_already_visited(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM visited_prefectures")
+    return set(row[0] for row in cursor.fetchall())
+
+def save_new_visited(conn, new_visited):
+    if not new_visited: return
+    cursor = conn.cursor()
+    now = sqlite3.connect(DB_PATH).execute("SELECT datetime('now', 'localtime')").fetchone()[0]
+    for pref in new_visited:
+        cursor.execute("INSERT OR IGNORE INTO visited_prefectures (name, first_visited_at) VALUES (?, ?)", (pref, now))
+    conn.commit()
+
+def get_visited_prefectures(conn, geo_data):
+    # すでに訪問済みの県をDBから取得
+    visited = get_already_visited(conn)
+    if len(visited) >= 47: return visited
+
+    cursor = conn.cursor()
+    # まだ訪問していない県を特定
+    all_prefs = {f['properties']['nam_ja'] for f in geo_data['features']}
+    not_visited_prefs = all_prefs - visited
+    
+    # 未訪問県がある場合のみ、最新の軌跡をチェック
+    # (本当は全件チェックが必要だが、一度DBに溜まれば以後は新規分だけでよくなる)
+    # 初回は全件スキャン、2回目以降は未訪問県のみを対象にする
+    cursor.execute("SELECT id, path_data FROM drive_tracks")
+    tracks = cursor.fetchall()
+    
+    newly_found = set()
     for track_id, path_data_str in tracks:
         path = json.loads(path_data_str)
-        # 10ポイントごとに間引いてチェック（1秒1点の場合、約10秒間隔）
-        # 精度と速度のバランスを最適化
         sampled_path = path[::10]
-        # 念のため、最後の一点も追加
-        if len(path) % 10 != 1:
-            sampled_path.append(path[-1])
+        if len(path) % 10 != 1: sampled_path.append(path[-1])
 
-        if len(visited) >= 47: break
-        
         for lat, lng, _ in sampled_path:
+            # まだ見つかっていない県だけをGeoJSONと照合
+            remaining_to_find = not_visited_prefs - newly_found
+            if not remaining_to_find: break
+            
             for feature in geo_data['features']:
                 pref_name = feature['properties']['nam_ja']
-                if pref_name in visited:
+                if pref_name in visited or pref_name in newly_found:
                     continue
                 
                 geometry = feature['geometry']
@@ -60,11 +85,13 @@ def get_visited_prefectures(tracks, geo_data):
                 
                 for poly in polygons:
                     if is_inside((lng, lat), poly):
-                        visited.add(pref_name)
+                        newly_found.add(pref_name)
                         print(f"  -> New discovery in track {track_id}: {pref_name}")
                         break
-            if len(visited) >= 47: break
-    return visited
+        if not (not_visited_prefs - newly_found): break
+    
+    save_new_visited(conn, newly_found)
+    return visited | newly_found
 
 def main():
     print("Generating visited map...")
@@ -74,12 +101,9 @@ def main():
         geo_data = json.load(f)
     
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, path_data FROM drive_tracks")
-    tracks = cursor.fetchall()
     
-    visited_prefs = get_visited_prefectures(tracks, geo_data)
-    print(f"Visited Prefectures: {len(visited_prefs)} ({', '.join(visited_prefs)})")
+    visited_prefs = get_visited_prefectures(conn, geo_data)
+    print(f"Visited Prefectures: {len(visited_prefs)}")
     
     # 統計データの保存
     stats = {
@@ -111,8 +135,10 @@ def main():
             ax.add_patch(poly)
             
     # 軌跡の描画
-    for _, path_data_str in tracks:
-        path = json.loads(path_data_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT path_data FROM drive_tracks")
+    for row in cursor:
+        path = json.loads(row[0])
         lngs = [p[1] for p in path]
         lats = [p[0] for p in path]
         ax.plot(lngs, lats, color=TRACK_COLOR, linewidth=0.3, alpha=0.6)

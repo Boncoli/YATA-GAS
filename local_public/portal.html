@@ -205,7 +205,7 @@
                 </div>
                 <div onclick="openPage('travel.html')" class="card">
                     <span class="icon">🗾</span>
-                    <span class="label">Travel Map</span>
+                    <span class="label">Travel Map <span id="travel-percent" style="font-size: 0.7rem; color: #888;"></span></span>
                 </div>
                 <div onclick="openPage('todo.html')" class="card">
                     <span class="icon">📝</span>
@@ -287,6 +287,13 @@
                 }
                 if (data.weather) {
                     document.getElementById('weather').textContent = data.weather;
+                }
+                
+                // トラベル統計の読み込み
+                const travelRes = await fetch('visited_stats.json');
+                const travelData = await travelRes.json();
+                if (travelData && travelData.percent) {
+                    document.getElementById('travel-percent').textContent = `(${travelData.percent}%)`;
                 }
             } catch (e) {}
         }
