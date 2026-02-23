@@ -33,48 +33,46 @@ async function generateThought() {
         if (m) lastMutter = m.content;
     } catch (e) {}
 
-    // --- 2. ランダムな付加情報 ---
-    const subSourceTypes = ['weather', 'system', 'news', 'trend'];
-    const selectedSub = subSourceTypes[Math.floor(Math.random() * subSourceTypes.length)];
+    // --- 2. データの網羅的収集 ---
     let subInfo = "";
     try {
-        switch(selectedSub) {
-            case 'weather':
-                const w = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
-                subInfo = `外の様子: ${w ? w.main_weather + ' ' + Math.round(w.temp) + '℃' : '穏やか'}`;
-                break;
-            case 'system':
-                const cpu = execSync('vcgencmd measure_temp').toString().replace(/[^\d.]/g, '');
-                subInfo = `屋敷(ラズパイ)の状態: CPU ${cpu}℃ (私の火照り)`;
-                break;
-            case 'news':
-                const n = db.prepare("SELECT title FROM collect ORDER BY date DESC LIMIT 10").all();
-                subInfo = `届いた書信: ${n.length > 0 ? n[Math.floor(Math.random()*n.length)].title : '静かな海'}`;
-                break;
-            case 'trend':
-                const t = db.prepare("SELECT rank1, rank2, rank3 FROM trend_log ORDER BY date DESC LIMIT 1").get();
-                const tr = t ? [t.rank1, t.rank2, t.rank3][Math.floor(Math.random()*3)] : '特になし';
-                subInfo = `世間の噂: ${tr}`;
-                break;
-        }
-    } catch (e) { subInfo = "屋敷は平穏です"; }
-    
-    // --- 3. プロンプト構成 (自己参照含む) ---
-    const promptBody = `あなたは正統派メイドです。現在の状況から、ふと漏れる40文字程度の短い独り言を呟いて。
-[基本] 時刻:${nowTime}, 旦那様:${masterInfo}
-[付加] ${subInfo}
-[直前の自分の呟き] "${lastMutter || '（まだ何も呟いていません）'}"
+        const w = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
+        const cpu = execSync('vcgencmd measure_temp').toString().replace(/[^\d.]/g, '');
+        const n = db.prepare("SELECT title FROM collect ORDER BY date DESC LIMIT 5").all();
+        const t = db.prepare("SELECT rank1, rank2, rank3 FROM trend_log ORDER BY date DESC LIMIT 1").get();
+        
+        const weatherStr = w ? `${w.main_weather} ${Math.round(w.temp)}℃` : '不明';
+        const newsStr = n.length > 0 ? n[Math.floor(Math.random()*n.length)].title : 'なし';
+        const trendStr = t ? `${t.rank1}, ${t.rank2}` : 'なし';
 
-[ルール] 
-- 直前の自分の呟きを読み、それを踏まえた続きや、ふと思い直したこと、あるいは全く別の話題を、あなたのメイドとしての感性で選んでください。
-- 本文のみ出力。上品な口調（〜ですわ、等）。時刻と旦那様を常に意識して。
-- 絵文字を賑やかに。✨🌹`;
+        // 全情報を一つのコンテキストとして集約
+        subInfo = `天気:${weatherStr}, CPU:${cpu}℃, トレンド:${trendStr}, 最新ニュース:${newsStr}`;
+    } catch (e) { subInfo = "システム稼働中"; }
+    
+    // --- 3. プロンプト構成 (外部ファイルから読み込み) ---
+    let personaConfig = "";
+    try {
+        personaConfig = fs.readFileSync(path.join(__dirname, '../persona.txt'), 'utf8');
+    } catch (e) {
+        personaConfig = "あなたは有能なアシスタントです。";
+    }
+
+    const promptBody = `[現在の環境状況]
+${subInfo}
+
+[旦那様の動静]
+${masterInfo}
+
+[ミッション]
+- 上記の状況やトレンド、システムの状態から、あなたのキャラクター（天然なメイド）らしい「ふとした独り言」を20文字程度で呟いてください。
+- データの数値をそのまま出すのではなく、それをあなたの「感覚」や「妄想」に変換して表現すること。
+- 本文のみ出力。`;
 
     const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
     const payload = {
         model: modelName,
         messages: [
-            { role: "system", content: "あなたは控えめで献身的な正統派メイドです。自己との対話を楽しむ情緒を持っています。" },
+            { role: "system", content: personaConfig },
             { role: "user", content: promptBody }
         ]
     };

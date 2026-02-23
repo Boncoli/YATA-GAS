@@ -567,6 +567,7 @@ app.post('/api/chat', async (req, res) => {
         
         const sysStatus = getSystemStatus();
         const weather = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
+        const trend = db.prepare("SELECT rank1 FROM trend_log ORDER BY date DESC LIMIT 1").get();
         const lastLog = db.prepare("SELECT action, timestamp, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
 
         // --- 記憶ファイル (~/.gemini/GEMINI.md) の読み込み ---
@@ -590,7 +591,8 @@ app.post('/api/chat', async (req, res) => {
 
         const systemPrompt = `${personaConfig}
 [旦那メモ] ${userProfile}
-[なう] ${lastLog ? lastLog.action : '静養中'} / CPU ${sysStatus.cpuTemp}°C`;
+[なう] ${lastLog ? lastLog.action : '静養中'} / CPU ${sysStatus.cpuTemp}°C / 天気: ${weather ? weather.main_weather + ' ' + Math.round(weather.temp) + '℃' : '不明'}
+[トレンド] ${trend ? trend.rank1 : '特になし'}`;
 
         const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
         const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
