@@ -73,11 +73,21 @@
         }
         .home-btn:active { transform: scale(0.9); }
 
+        /* --- Layout Wrapper (Responsive) --- */
+        #content-wrapper {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+
         /* --- Main Content --- */
         main {
             flex: 1;
             position: relative;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
 
         #view-grid {
@@ -85,6 +95,9 @@
             max-width: 800px;
             margin: 0 auto;
             text-align: center;
+            width: 100%;
+            box-sizing: border-box;
+            overflow-y: auto;
         }
         h1 {
             font-size: 1.8rem;
@@ -127,6 +140,7 @@
 
         /* --- Chat UI --- */
         #chat-widget {
+            /* Mobile Default Style (Overlay) */
             position: fixed;
             bottom: 20px;
             right: 20px;
@@ -144,6 +158,7 @@
             display: flex; align-items: center; justify-content: center;
         }
         #chat-window {
+            /* Mobile Default Style (Overlay) */
             position: fixed;
             bottom: 80px; right: 20px;
             width: 350px; height: 500px;
@@ -159,17 +174,45 @@
         }
         #chat-header { padding: 10px 15px; background: #252525; border-bottom: 1px solid #333; font-weight: bold; display: flex; justify-content: space-between; }
         #chat-messages { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; font-size: 0.9rem; background: #161616; }
-        .message { max-width: 85%; padding: 8px 12px; border-radius: 10px; line-height: 1.4; }
+        .message { max-width: 85%; padding: 8px 12px; border-radius: 10px; line-height: 1.4; word-wrap: break-word; }
         .user-message { align-self: flex-end; background: var(--accent-color); color: #121212; }
         .ai-message { align-self: flex-start; background: #2a2a2a; border: 1px solid #333; }
-        #chat-input-area { padding: 10px; display: flex; gap: 8px; border-top: 1px solid #333; }
+        #chat-input-area { padding: 10px; display: flex; gap: 8px; border-top: 1px solid #333; background: var(--card-bg); }
         #chat-input { flex: 1; background: #121212; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 6px; outline: none; }
-        #chat-send { background: var(--accent-color); border: none; padding: 0 15px; border-radius: 6px; font-weight: bold; }
+        #chat-send { background: var(--accent-color); border: none; padding: 0 15px; border-radius: 6px; font-weight: bold; cursor: pointer; }
 
         @media (max-width: 480px) {
             .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
             .status-mini { gap: 8px; font-size: 0.7rem; }
             header { padding: 5px 10px; }
+        }
+
+        /* --- Desktop Mode (Sidebar Chat) --- */
+        @media (min-width: 769px) {
+            #chat-widget {
+                position: relative;
+                bottom: auto; right: auto;
+                width: 320px;
+                height: 100%;
+                border-left: 1px solid var(--border-color);
+                background-color: var(--card-bg);
+                z-index: 10;
+                display: flex;
+                flex-direction: column;
+            }
+            #chat-window {
+                position: static;
+                width: 100%;
+                height: 100%;
+                max-width: none;
+                max-height: none;
+                border: none;
+                border-radius: 0;
+                box-shadow: none;
+                display: flex !important; /* Always show */
+            }
+            #chat-button { display: none; }
+            #chat-header button { display: none; } /* Hide close button */
         }
     </style>
 </head>
@@ -190,65 +233,67 @@
         <div style="font-size: 0.8rem; font-weight: bold; color: #555;">YATA</div>
     </header>
 
-    <main>
-        <div id="view-grid">
-            <h1>YATA PORTAL</h1>
-            <div class="grid">
-                <div onclick="openPage('map.html')" class="card">
-                    <span class="icon">🗺️</span>
-                    <span class="label">Life Map</span>
-                </div>
-                <div onclick="openPage('history.html')" class="card">
-                    <span class="icon">📜</span>
-                    <span class="label">Timeline</span>
-                </div>
-                <div onclick="openPage('travel.html')" class="card">
-                    <span class="icon">🗾</span>
-                    <span class="label">Travel Map</span>
-                </div>
-                <div onclick="openPage('todo.html')" class="card">
-                    <span class="icon">📝</span>
-                    <span class="label">TODO / Ideas</span>
-                </div>
-                <div onclick="openPage('news.html')" class="card">
-                    <span class="icon">📰</span>
-                    <span class="label">News Reader</span>
-                </div>
-                <div onclick="openPage('feeds.html')" class="card">
-                    <span class="icon">📡</span>
-                    <span class="label">RSS Feeds</span>
-                </div>
-                <div onclick="openPage('fuel.html')" class="card">
-                    <span class="icon">⛽</span>
-                    <span class="label">Fuel Logs</span>
-                </div>
-                <div onclick="openPage('viz.html')" class="card">
-                    <span class="icon">📊</span>
-                    <span class="label">3D Viz</span>
-                </div>
-                <div onclick="openPage('index.html')" class="card">
-                    <span class="icon">🔍</span>
-                    <span class="label">Search/Analyze</span>
+    <div id="content-wrapper">
+        <main>
+            <div id="view-grid">
+                <h1>YATA PORTAL</h1>
+                <div class="grid">
+                    <div onclick="openPage('map.html')" class="card">
+                        <span class="icon">🗺️</span>
+                        <span class="label">Life Map</span>
+                    </div>
+                    <div onclick="openPage('history.html')" class="card">
+                        <span class="icon">📜</span>
+                        <span class="label">Timeline</span>
+                    </div>
+                    <div onclick="openPage('travel.html')" class="card">
+                        <span class="icon">🗾</span>
+                        <span class="label">Travel Map</span>
+                    </div>
+                    <div onclick="openPage('todo.html')" class="card">
+                        <span class="icon">📝</span>
+                        <span class="label">TODO / Ideas</span>
+                    </div>
+                    <div onclick="openPage('news.html')" class="card">
+                        <span class="icon">📰</span>
+                        <span class="label">News Reader</span>
+                    </div>
+                    <div onclick="openPage('feeds.html')" class="card">
+                        <span class="icon">📡</span>
+                        <span class="label">RSS Feeds</span>
+                    </div>
+                    <div onclick="openPage('fuel.html')" class="card">
+                        <span class="icon">⛽</span>
+                        <span class="label">Fuel Logs</span>
+                    </div>
+                    <div onclick="openPage('viz.html')" class="card">
+                        <span class="icon">📊</span>
+                        <span class="label">3D Viz</span>
+                    </div>
+                    <div onclick="openPage('index.html')" class="card">
+                        <span class="icon">🔍</span>
+                        <span class="label">Search/Analyze</span>
+                    </div>
                 </div>
             </div>
-        </div>
-        <iframe id="view-frame"></iframe>
-    </main>
+            <iframe id="view-frame"></iframe>
+        </main>
 
-    <!-- Chat Widget -->
-    <div id="chat-widget">
-        <button id="chat-button" onclick="toggleChat()">💬</button>
-        <div id="chat-window">
-            <div id="chat-header">
-                <span>YATA Assistant</span>
-                <button onclick="toggleChat()" style="background:none;border:none;color:#666;cursor:pointer;">✕</button>
-            </div>
-            <div id="chat-messages">
-                <div class="message ai-message">こんにちは、BON様。</div>
-            </div>
-            <div id="chat-input-area">
-                <input type="text" id="chat-input" placeholder="入力...">
-                <button id="chat-send" onclick="sendMessage()">送信</button>
+        <!-- Chat Widget -->
+        <div id="chat-widget">
+            <button id="chat-button" onclick="toggleChat()">💬</button>
+            <div id="chat-window">
+                <div id="chat-header">
+                    <span>YATA Assistant</span>
+                    <button onclick="toggleChat()" style="background:none;border:none;color:#666;cursor:pointer;">✕</button>
+                </div>
+                <div id="chat-messages">
+                    <div class="message ai-message">こんにちは、BON様。</div>
+                </div>
+                <div id="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="入力...">
+                    <button id="chat-send" onclick="sendMessage()">送信</button>
+                </div>
             </div>
         </div>
     </div>
@@ -325,18 +370,22 @@
         }
 
         async function pollMessages() {
+            // PCモードなら常時Open扱い
+            const isAlwaysOpen = window.innerWidth >= 769;
+            const effectiveOpen = isChatOpen || isAlwaysOpen;
+
             try {
                 const res = await fetch('/api/chat-history?limit=10');
                 const data = await res.json();
                 let hasNew = false;
                 data.forEach(msg => {
                     if (msg.id > lastMessageId) {
-                        appendMessage(msg.role, msg.content, isChatOpen);
+                        appendMessage(msg.role, msg.content, effectiveOpen);
                         lastMessageId = msg.id;
                         hasNew = true;
                     }
                 });
-                if (hasNew && isChatOpen) chatMessages.scrollTop = chatMessages.scrollHeight;
+                if (hasNew && effectiveOpen) chatMessages.scrollTop = chatMessages.scrollHeight;
             } catch (e) {}
         }
         setInterval(pollMessages, 5000); 
@@ -345,30 +394,21 @@
             const text = chatInput.value.trim();
             if (!text) return;
 
-            // 1. 旦那様のメッセージを即座に画面に表示
             appendMessage('user', text);
             chatInput.value = '';
 
             try {
-                // 2. サーバーへ送信 (即時応答を待つ)
                 const res = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: text })
                 });
                 const data = await res.json();
-                
-                // 3. 応答があれば即座に表示 (pollMessages での重複は lastMessageId で防止)
                 if (data.response) {
-                    // ここでは表示せず、あえて pollMessages に任せることで
-                    // DB保存と整合性を取りつつ、少し待つことで「メイドが考えている間」を演出しても良いですが
-                    // 即時性を取るならここで表示してもOK。
-                    // 重複を防ぐため、ここでは何もしないのが最も安全（pollが5秒以内に拾う）ですが
-                    // せっかくなので pollMessages を即座に一回叩くことにします。
                     pollMessages();
                 }
             } catch (e) {
-                appendMessage('ai', "通信エラーが発生しました。旦那様、申し訳ございません。", true);
+                appendMessage('ai', "通信エラーが発生しました。", true);
             }
         }
 
@@ -381,6 +421,20 @@
         }
 
         chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
+
+        // Layout Check for Desktop
+        function checkLayout() {
+            if (window.innerWidth >= 769) {
+                // Desktop: Always load history if empty
+                if (chatMessages.innerHTML === '' || chatMessages.innerHTML.trim() === '<div class="message ai-message">こんにちは、BON様。</div>') {
+                    loadChatHistory();
+                }
+            }
+        }
+        window.addEventListener('resize', checkLayout);
+        // Initial check
+        checkLayout();
+
     </script>
 </body>
 </html>

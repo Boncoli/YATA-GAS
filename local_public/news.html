@@ -105,7 +105,10 @@
 
 <nav class="navbar navbar-expand-lg mb-4">
     <div class="container">
-        <a class="navbar-brand" href="#"><i class="bi bi-robot me-2"></i>YATA Intelligence</a>
+        <div class="d-flex align-items-center">
+            <a href="#" onclick="if(window.parent && window.parent.showHome){window.parent.showHome();}else{window.location.href='portal.html';} return false;" class="me-3 text-decoration-none" style="font-size: 1.2rem;">🏠</a>
+            <a class="navbar-brand" href="#"><i class="bi bi-robot me-2"></i>YATA Intelligence</a>
+        </div>
         <div class="d-flex gap-2">
             <button class="btn btn-outline-secondary btn-sm" onclick="location.reload()"><i class="bi bi-arrow-clockwise"></i></button>
             <a href="/map.html" class="btn btn-outline-secondary btn-sm"><i class="bi bi-map"></i></a>

@@ -50,7 +50,7 @@
   </style>
 </head>
 <body>
-  <a href="<?= ScriptApp.getService().getUrl() ?>" class="back-btn">← 検索画面に戻る</a>
+  <a href="#" onclick="if(window.parent && window.parent.showHome){window.parent.showHome();}else{window.location.href='portal.html';} return false;" class="back-btn">🏠 戻る</a>
 
   <div id="loading">
     <h3 style="margin-top:0; color:#3498db;">Mapping the Cosmos...</h3>

@@ -1,36 +1,15 @@
-/**
- * maintenance/import-kml.js
- * KML/KMZファイルを解析し、YATAのdrive_logsテーブルにインポートするスクリプト。
- * 
- * 使い方: 
- *   node maintenance/import-kml.js "[ファイル名].kml"
- *   node maintenance/import-kml.js "[ファイル名].kmz"
- */
-
+// maintenance/import-kml.js
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const { XMLParser } = require('fast-xml-parser');
 const Database = require('better-sqlite3');
+const { XMLParser } = require('fast-xml-parser');
+const AdmZip = require('adm-zip');
 
-// --- 設定 ---
-const DB_PATH = process.env.DB_PATH || '/dev/shm/yata.db';
-const TMP_DIR = '/tmp/yata-kml-import';
-const MIN_DISTANCE_METERS = 50; // 最低50m移動したら記録 (間引き)
-const MIN_INTERVAL_SECONDS = 30; // 最低30秒経過したら記録 (間引き)
+const dbPath = fs.existsSync('/dev/shm/yata.db') ? '/dev/shm/yata.db' : './yata.db';
+console.log(`Using DB: ${dbPath}`);
+const db = new Database(dbPath);
 
-if (!fs.existsSync(DB_PATH)) {
-    console.error(`❌ DBが見つかりません: ${DB_PATH}`);
-    process.exit(1);
-}
-
-const db = new Database(DB_PATH);
-const parser = new XMLParser({ 
-    ignoreAttributes: false,
-    attributeNamePrefix: "@_"
-});
-
-// 緯度経度から距離(m)を計算する (ヒュベニの公式)
+// --- ユーティリティ ---
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -42,194 +21,207 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-function formatDate(date) {
-    return date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
+function formatTimestamp(date) {
+    const pad = (n) => (n < 10 ? '0' + n : n);
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-// 日本語の説明文から日時を抽出する関数
-function parseDateFromDescription(desc, defaultTime) {
-    if (!desc) return defaultTime;
-    // 例: 2024年2月9日金曜日 9:09 JST
-    const match = desc.match(/(\d{4})年(\d{1,2})月(\d{1,2})日.*?\s(\d{1,2}):(\d{1,2})\sJST/);
+function parseDateFromFileName(fileName) {
+    const match = fileName.match(/(\d{4})(\d{2})(\d{2})/);
     if (match) {
-        const [_, y, m, d, hh, mm] = match;
-        return new Date(y, m - 1, d, hh, mm, 0);
+        return new Date(`${match[1]}-${match[2]}-${match[3]}T09:00:00`); 
     }
-    return defaultTime;
+    return new Date();
 }
 
-async function run() {
-    const inputFile = process.argv[2];
-    if (!inputFile) {
-        console.log("Usage: node maintenance/import-kml.js <path-to-kml-or-kmz-file>");
-        return;
+function parseDateFromDescription(desc) {
+    if (!desc) return null;
+    // 例: 2017年5月4日 6:52 JST
+    // 例: 2017/05/04 6:52
+    const match = desc.match(/(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?.*?(\d{1,2}):(\d{1,2})/);
+    if (match) {
+        return new Date(match[1], match[2] - 1, match[3], match[4], match[5], 0);
     }
+    return null;
+}
 
-    let kmlPath = inputFile;
-    const isKmz = inputFile.toLowerCase().endsWith('.kmz');
-
-    if (isKmz) {
-        console.log(`📦 KMZファイルを解凍中: ${inputFile}`);
-        if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
-        try {
-            execSync(`unzip -o "${inputFile}" -d "${TMP_DIR}"`);
-            kmlPath = path.join(TMP_DIR, 'doc.kml');
-            if (!fs.existsSync(kmlPath)) {
-                const files = fs.readdirSync(TMP_DIR);
-                const foundKml = files.find(f => f.endsWith('.kml'));
-                if (foundKml) {
-                    kmlPath = path.join(TMP_DIR, foundKml);
-                } else {
-                    throw new Error("KMZ内にかKMLファイルが見つかりません。");
-                }
-            }
-        } catch (e) {
-            console.error(`❌ 解凍失敗: ${e.message}`);
-            return;
-        }
-    }
-
-    console.log(`📖 KMLを読み込み中: ${kmlPath}`);
-    const xmlData = fs.readFileSync(kmlPath, 'utf8');
-    const jsonObj = parser.parse(xmlData);
-
-    function findPlacemarks(obj) {
-        let placemarks = [];
-        if (!obj) return placemarks;
-        if (Array.isArray(obj)) {
-            obj.forEach(item => {
-                placemarks = placemarks.concat(findPlacemarks(item));
-            });
-        } else if (typeof obj === 'object') {
-            if (obj.Placemark) {
-                const p = Array.isArray(obj.Placemark) ? obj.Placemark : [obj.Placemark];
-                placemarks = placemarks.concat(p);
-            }
-            for (const key in obj) {
-                if (key !== 'Placemark') {
-                    placemarks = placemarks.concat(findPlacemarks(obj[key]));
-                }
-            }
-        }
-        return placemarks;
-    }
-
-    const placemarks = findPlacemarks(jsonObj.kml);
-    if (placemarks.length === 0) {
-        console.error("❌ Placemarkが見つかりませんでした。");
-        return;
-    }
-
-    const fileName = path.basename(inputFile);
-    const notePrefix = `[KML Import] ${fileName}`;
-    let totalImportedPoints = 0;
-    let totalTracks = 0;
+// --- メイン処理 ---
+function parseAndImport(kmlContent, defaultDate, sourceName) {
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+    const kmlObj = parser.parse(kmlContent);
     
-    const stats = fs.statSync(inputFile);
-    let fileMtime = stats.mtime;
+    // 日付ごとのトラックデータ保管場所
+    // key: "YYYY-MM-DD", value: { points: [], startTime: Date, name: string }
+    const dailyTracks = {};
 
-    // テーブルがなければ作成
-    db.exec(`CREATE TABLE IF NOT EXISTS drive_tracks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        action TEXT,
-        timestamp TEXT,
-        note TEXT,
-        path_data TEXT,
-        point_count INTEGER
-    )`);
-
-    const insertTrack = db.prepare(`
-        INSERT INTO drive_tracks (action, timestamp, note, path_data, point_count)
-        VALUES (?, ?, ?, ?, ?)
-    `);
-
-    db.transaction(() => {
-        for (const pm of placemarks) {
-            const name = pm.name || "Unnamed Path";
-            const desc = pm.description || "";
-            let rawPoints = [];
-
-            // 1. LineString (軌跡)
-            if (pm.LineString && pm.LineString.coordinates) {
-                const coordsStr = pm.LineString.coordinates.trim();
-                const coordPairs = coordsStr.split(/\s+/);
-                coordPairs.forEach(pair => {
-                    const [lon, lat, alt] = pair.split(',').map(Number);
-                    if (!isNaN(lat) && !isNaN(lon)) {
-                        rawPoints.push({ lat, lon, alt: alt || 0 });
-                    }
-                });
-            }
-            // 2. Point (地点)
-            else if (pm.Point && pm.Point.coordinates) {
-                const [lon, lat, alt] = pm.Point.coordinates.trim().split(',').map(Number);
-                if (!isNaN(lat) && !isNaN(lon)) {
-                    rawPoints.push({ lat, lon, alt: alt || 0 });
-                }
-            }
-            // 3. gx:Track
-            else if (pm['gx:Track']) {
-                const track = pm['gx:Track'];
-                const coords = Array.isArray(track['gx:coord']) ? track['gx:coord'] : [track['gx:coord']];
-                const times = Array.isArray(track['when']) ? track['when'] : [track['when']];
-                coords.forEach((c, i) => {
-                    const [lon, lat, alt] = c.split(' ').map(Number);
-                    if (!isNaN(lat) && !isNaN(lon)) {
-                        rawPoints.push({ lat, lon, alt: alt || 0, time: times[i] ? new Date(times[i]) : null });
-                    }
-                });
-            }
-
-            if (rawPoints.length === 0) continue;
-
-            // 時刻の決定
-            const baseTime = parseDateFromDescription(desc, fileMtime);
-            
-            // 間引きと整形
-            let lastPoint = null;
-            let finalPath = [];
-
-            rawPoints.forEach((pt, idx) => {
-                const currentTime = pt.time || new Date(baseTime.getTime() + idx * 1000);
-                
-                if (lastPoint) {
-                    const dist = getDistance(lastPoint.lat, lastPoint.lon, pt.lat, pt.lon);
-                    const timeDiff = (currentTime - lastPoint.time) / 1000;
-                    if (dist < MIN_DISTANCE_METERS && timeDiff < MIN_INTERVAL_SECONDS) return;
-                }
-
-                // [lat, lon, alt] 形式で格納
-                finalPath.push([pt.lat, pt.lon, pt.alt]);
-                lastPoint = { ...pt, time: currentTime };
-            });
-
-            if (finalPath.length > 0) {
-                const trackTimestamp = formatDate(lastPoint ? lastPoint.time : baseTime);
-                const trackNote = `${notePrefix}: ${name}`;
-
-                insertTrack.run(
-                    'iphone-path',
-                    trackTimestamp,
-                    trackNote,
-                    JSON.stringify(finalPath),
-                    finalPath.length
-                );
-                
-                totalImportedPoints += finalPath.length;
-                totalTracks++;
-                console.log(`✅ Track saved: ${name} (${finalPath.length} points)`);
-            }
+    function addPoints(date, points, name) {
+        const dateKey = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+        
+        if (!dailyTracks[dateKey]) {
+            dailyTracks[dateKey] = { points: [], startTime: date, name: name };
         }
-    })();
-
-    // 後片付け
-    if (isKmz && fs.existsSync(TMP_DIR)) {
-        try { execSync(`rm -rf "${TMP_DIR}"`); } catch (e) {}
+        
+        dailyTracks[dateKey].points.push(...points);
+        
+        if (date < dailyTracks[dateKey].startTime) {
+            dailyTracks[dateKey].startTime = date;
+        }
+        // 名前がまだ汎用的なら更新
+        if ((!dailyTracks[dateKey].name || dailyTracks[dateKey].name.includes('Track')) && name) {
+            dailyTracks[dateKey].name = name;
+        }
     }
 
-    console.log(`✅ インポート完了!`);
-    console.log(`📊 登録Track数: ${totalTracks} 件`);
-    console.log(`📊 総ポイント数: ${totalImportedPoints} 件`);
+    // 再帰探索
+    function traverse(obj, depth = 0, currentDesc = null, currentName = null) {
+        if (!obj) return;
+        
+        // descriptionとnameの継承 (Placemark直下のものを優先)
+        const desc = obj.description || currentDesc;
+        const name = obj.name || currentName;
+
+        // LineString
+        if (obj.LineString) {
+            const lsList = Array.isArray(obj.LineString) ? obj.LineString : [obj.LineString];
+            lsList.forEach((ls, idx) => {
+                if (ls.coordinates) {
+                    const raw = ls.coordinates.trim();
+                    const pairs = raw.split(/\s+/);
+                    const coords = [];
+                    pairs.forEach(pair => {
+                        const parts = pair.split(',');
+                        if (parts.length >= 2) {
+                            coords.push({
+                                lat: parseFloat(parts[1]),
+                                lon: parseFloat(parts[0]),
+                                alt: parseFloat(parts[2] || 0),
+                                time: null
+                            });
+                        }
+                    });
+                    
+                    if (coords.length > 1) {
+                        // descriptionから日付を探す -> なければファイル名の日付
+                        let ts = parseDateFromDescription(desc) || defaultDate;
+                        // 複数ある場合は少し時間をずらす
+                        ts = new Date(ts.getTime() + idx * 60000);
+                        
+                        coords.forEach(p => p.time = ts);
+                        addPoints(ts, coords, name);
+                    }
+                }
+            });
+        }
+        
+        // gx:Track
+        if (obj['gx:Track']) {
+            const trkList = Array.isArray(obj['gx:Track']) ? obj['gx:Track'] : [obj['gx:Track']];
+            trkList.forEach(trk => {
+                const coordList = Array.isArray(trk['gx:coord']) ? trk['gx:coord'] : [trk['gx:coord']];
+                const whenList = Array.isArray(trk['when']) ? trk['when'] : [trk['when']];
+                const coords = [];
+                
+                coordList.forEach((c, i) => {
+                    const parts = c.split(' ');
+                    if (parts.length >= 2) {
+                        const t = whenList[i] ? new Date(whenList[i]) : defaultDate;
+                        coords.push({
+                            lat: parseFloat(parts[1]),
+                            lon: parseFloat(parts[0]),
+                            alt: parseFloat(parts[2] || 0),
+                            time: t
+                        });
+                    }
+                });
+
+                if (coords.length > 1) {
+                    addPoints(coords[0].time, coords, name);
+                }
+            });
+        }
+
+        // 子要素探索
+        for (const key in obj) {
+            if (typeof obj[key] === 'object') traverse(obj[key], depth + 1, desc, name);
+        }
+    }
+
+    traverse(kmlObj.kml);
+
+    // --- DB保存 ---
+    const insertStmt = db.prepare("INSERT INTO drive_tracks (action, timestamp, note, path_data, point_count) VALUES (?, ?, ?, ?, ?)");
+    let savedCount = 0;
+
+    Object.keys(dailyTracks).sort().forEach(dateKey => {
+        const data = dailyTracks[dateKey];
+        
+        // 時間順にソート
+        data.points.sort((a, b) => a.time - b.time);
+
+        // 間引き
+        const simplified = [];
+        if (data.points.length > 0) {
+            simplified.push([data.points[0].lat, data.points[0].lon, data.points[0].alt]);
+            let last = data.points[0];
+
+            for (let i = 1; i < data.points.length; i++) {
+                const curr = data.points[i];
+                const dist = getDistance(last.lat, last.lon, curr.lat, curr.lon);
+                if (dist > 30) {
+                    simplified.push([curr.lat, curr.lon, curr.alt]);
+                    last = curr;
+                }
+            }
+        }
+
+        if (simplified.length > 1) {
+            const tsStr = formatTimestamp(data.startTime);
+            const note = `[KML Import] ${data.name || sourceName}`; // 元のファイル名ではなく、フォルダ名などを採用
+            
+            insertStmt.run('kml-import', tsStr, note, JSON.stringify(simplified), simplified.length);
+            console.log(`✅ Saved daily track: ${dateKey} - ${note} (${simplified.length} pts)`);
+            savedCount++;
+        }
+    });
+
+    return savedCount;
 }
 
-run().catch(console.error);
+// --- メイン ---
+const targetFile = process.argv[2];
+if (!targetFile) process.exit(1);
+
+const fileName = path.basename(targetFile);
+const fileDate = parseDateFromFileName(fileName);
+
+try {
+    let content = "";
+    if (targetFile.toLowerCase().endsWith('.kmz')) {
+        const zip = new AdmZip(targetFile);
+        const entries = zip.getEntries();
+        const kmlEntry = entries.find(e => e.entryName.toLowerCase().endsWith('.kml'));
+        if (!kmlEntry) throw new Error("No KML in KMZ");
+        content = zip.readAsText(kmlEntry);
+    } else {
+        content = fs.readFileSync(targetFile, 'utf8');
+    }
+    
+    const count = parseAndImport(content, fileDate, fileName);
+
+    // 地図の更新 (Pythonスクリプト実行)
+    if (count > 0) {
+        console.log("🗺️ Updating visited map...");
+        const { exec } = require('child_process');
+        exec('python3 tasks/generate_visited_map.py', (error, stdout, stderr) => {
+            if (error) {
+                console.error(`❌ Map update failed: ${error.message}`);
+                return;
+            }
+            if (stderr) console.error(`⚠️ Map update stderr: ${stderr}`);
+            console.log(`✅ Map updated: ${stdout.trim()}`);
+        });
+    }
+
+} catch (e) {
+    console.error(`Error: ${e.message}`);
+}

@@ -219,7 +219,7 @@
 </head>
 <body>
     <header>
-        <a href="/portal.html" class="back-btn"><i class="bi bi-chevron-left"></i> 戻る</a>
+        <a href="#" onclick="if(window.parent && window.parent.showHome){window.parent.showHome();}else{window.location.href='portal.html';} return false;" class="back-btn"><i class="bi bi-chevron-left"></i> 戻る</a>
         <h1>足取り履歴</h1>
         <div class="date-jump">
             <i class="bi bi-calendar3" style="font-size: 0.9rem; color: var(--accent-color);"></i>

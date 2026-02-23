@@ -33,6 +33,12 @@ def is_inside(point, poly):
 
 def get_already_visited(conn):
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS visited_prefectures (
+            name TEXT PRIMARY KEY,
+            first_visited_at TEXT
+        )
+    """)
     cursor.execute("SELECT name FROM visited_prefectures")
     return set(row[0] for row in cursor.fetchall())
 
@@ -63,8 +69,9 @@ def get_visited_prefectures(conn, geo_data):
     newly_found = set()
     for track_id, path_data_str in tracks:
         path = json.loads(path_data_str)
-        sampled_path = path[::10]
-        if len(path) % 10 != 1: sampled_path.append(path[-1])
+        # 精度と速度のバランス (1/2間引き)
+        sampled_path = path[::2]
+        if len(path) % 2 != 1: sampled_path.append(path[-1])
 
         for lat, lng, _ in sampled_path:
             # まだ見つかっていない県だけをGeoJSONと照合

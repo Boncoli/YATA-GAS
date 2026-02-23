@@ -106,7 +106,10 @@
 </head>
 <body>
     <header>
-        <h1>📝 YATA TODO Editor</h1>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <a href="#" onclick="if(window.parent && window.parent.showHome){window.parent.showHome();}else{window.location.href='portal.html';} return false;" style="text-decoration:none; font-size: 1.2rem;">🏠</a>
+            <h1>📝 YATA TODO Editor</h1>
+        </div>
         <div class="controls">
             <span id="status">Ready</span>
             <button id="saveBtn">保存 (Ctrl+S)</button>
