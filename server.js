@@ -145,19 +145,20 @@ app.post('/api/import-gpx', upload.single('gpx_file'), (req, res) => {
                 INSERT INTO drive_tracks (action, timestamp, note, path_data, point_count)
                 VALUES (?, ?, ?, ?, ?)
             `);
-            insert.run('iphone-path', startTime, note, JSON.stringify(allPoints), allPoints.length);
+            const info = insert.run('iphone-path', startTime, note, JSON.stringify(allPoints), allPoints.length);
+            const newTrackId = info.lastInsertRowid;
+
+            // 地図の再生成 (バックグラウンド、ID指定で高速化)
+            const { exec } = require('child_process');
+            exec(`python3 tasks/generate_visited_map.py --track-id ${newTrackId}`, (err) => {
+                if (err) console.error("[API] Map generation failed:", err);
+                else console.log(`[API] Travel Map updated for Track ID: ${newTrackId}`);
+            });
         }
 
         fs.unlinkSync(tempPath);
         console.log(`[API] Track Import Success: ${allPoints.length} points. File deleted.`);
         
-        // 地図の再生成 (バックグラウンド)
-        const { exec } = require('child_process');
-        exec('python3 tasks/generate_visited_map.py', (err) => {
-            if (err) console.error("[API] Map generation failed:", err);
-            else console.log("[API] Travel Map updated.");
-        });
-
         res.json({ status: "success", points: allPoints.length });
 
     } catch (e) {

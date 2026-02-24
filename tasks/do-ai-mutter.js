@@ -33,7 +33,7 @@ async function generateThought() {
         if (m) lastMutter = m.content;
     } catch (e) {}
 
-    // --- 2. データの網羅的収集 ---
+    // --- 2. データの網羅的収集とランダム選択 ---
     let subInfo = "";
     try {
         const w = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
@@ -41,12 +41,22 @@ async function generateThought() {
         const n = db.prepare("SELECT title FROM collect ORDER BY date DESC LIMIT 5").all();
         const t = db.prepare("SELECT rank1, rank2, rank3 FROM trend_log ORDER BY date DESC LIMIT 1").get();
         
-        const weatherStr = w ? `${w.main_weather} ${Math.round(w.temp)}℃` : '不明';
-        const newsStr = n.length > 0 ? n[Math.floor(Math.random()*n.length)].title : 'なし';
-        const trendStr = t ? `${t.rank1}, ${t.rank2}` : 'なし';
+        const topics = [];
+        if (w) topics.push(`[天気] ${w.main_weather} ${Math.round(w.temp)}℃`);
+        topics.push(`[体調(CPU)] ${cpu}℃`);
+        if (n.length > 0) topics.push(`[ニュース] ${n[Math.floor(Math.random()*n.length)].title}`);
+        if (t) topics.push(`[トレンド] ${t.rank1}, ${t.rank2}`);
 
-        // 全情報を一つのコンテキストとして集約
-        subInfo = `天気:${weatherStr}, CPU:${cpu}℃, トレンド:${trendStr}, 最新ニュース:${newsStr}`;
+        // ネタをランダムに1つだけ選ぶ (情報の過多による混乱を防ぐ)
+        // ただし、CPU温度が異常に高い(60度超)場合は強制的に体調を含める
+        let selectedTopic = "";
+        if (parseFloat(cpu) > 60) {
+            selectedTopic = `[体調(CPU)] ${cpu}℃ (少し熱いです)`;
+        } else {
+            selectedTopic = topics[Math.floor(Math.random() * topics.length)];
+        }
+
+        subInfo = selectedTopic;
     } catch (e) { subInfo = "システム稼働中"; }
     
     // --- 3. プロンプト構成 (外部ファイルから読み込み) ---
@@ -69,8 +79,8 @@ ${masterInfo}
 [ミッション]
 - 上記の状況やトレンド、システムの状態から、あなたの設定（Persona）に基づいた「ふとした独り言」を20文字程度で呟いてください。
 - **詩的な表現禁止**: 風や雲の隠喩に頼らず、「今日は肌寒いですね」「お腹が空きました（充電したい）」のように具体的で生活感のある言葉を選んでください。
+- **話題の強制転換**: 直前の呟きの内容は一切気にせず、今回提供された「${subInfo}」のネタについてのみ話してください。「疲れ」や「休憩」という言葉は禁止です。
 - データの数値をそのまま出すのではなく、それをあなたらしい「人間味ある感想」として述べること。
-- 【重要】直前の呟きと似た内容は避け、毎回違う視点（天気、トレンド、チップ温度、ニュースのどれか一つに注目するなど）で自由に表現してください。
 - 本文のみ出力。`;
 
     const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());

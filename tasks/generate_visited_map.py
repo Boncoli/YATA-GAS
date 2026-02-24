@@ -63,7 +63,16 @@ def get_visited_prefectures(conn, geo_data):
     # 未訪問県がある場合のみ、最新の軌跡をチェック
     # (本当は全件チェックが必要だが、一度DBに溜まれば以後は新規分だけでよくなる)
     # 初回は全件スキャン、2回目以降は未訪問県のみを対象にする
-    cursor.execute("SELECT id, path_data FROM drive_tracks")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--track-id", type=int, help="Specific track ID to process")
+    args = parser.parse_args()
+
+    if args.track_id:
+        cursor.execute("SELECT id, path_data FROM drive_tracks WHERE id = ?", (args.track_id,))
+    else:
+        cursor.execute("SELECT id, path_data FROM drive_tracks")
+    
     tracks = cursor.fetchall()
     
     newly_found = set()
