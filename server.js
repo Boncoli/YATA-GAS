@@ -7,25 +7,31 @@ const multer = require('multer');
 const { XMLParser } = require('fast-xml-parser');
 
 // ★重要：YATAを読み込む前に、DBの場所を決定する
-// ... (中略: 既存のDBパス決定ロジック)
-if (fs.existsSync('/dev/shm/yata.db')) {
-    process.env.DB_PATH = '/dev/shm/yata.db';
-    console.log("👉 RAMディスク上のDB (/dev/shm/yata.db) を使用します");
+const RAM_DB = '/dev/shm/yata.db';
+const REAL_DB = path.join(__dirname, 'yata.db');
+
+if (fs.existsSync(RAM_DB)) {
+    process.env.DB_PATH = RAM_DB;
+    console.log(`👉 RAMディスク上のDB (${RAM_DB}) を使用します`);
 } else {
-    process.env.DB_PATH = './yata.db';
-    console.log("👉 ディスク上のDB (./yata.db) を使用します");
+    process.env.DB_PATH = REAL_DB;
+    console.log(`👉 ディスク上のDB (${REAL_DB}) を使用します`);
 }
 
-// ★ YATAの脳みそをロード
-require('./lib/gas-bridge.js'); 
-require('./lib/yata-loader.js');
-
 // ---------------------------------------------------------
-// DB初期化
+// DB初期化 (一本化)
 // ---------------------------------------------------------
 const dbPath = process.env.DB_PATH;
 const Database = require('better-sqlite3');
 const db = new Database(dbPath);
+db.pragma('journal_mode = WAL');
+
+// グローバルにDBを公開して gas-bridge 等が同じ接続を使うようにする
+global.YATA_DB = db;
+
+// ★ YATAの脳みそをロード (DB初期化後に行う)
+require('./lib/gas-bridge.js'); 
+require('./lib/yata-loader.js');
 
 // ... (中略: テーブル作成ロジック)
 db.exec(`CREATE TABLE IF NOT EXISTS drive_logs (
@@ -67,6 +73,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS fuel_logs (
     note TEXT
 )`);
 
+const compression = require('compression');
 const app = express();
 const cors = require('cors');
 const PORT = 3001;
@@ -75,9 +82,27 @@ const PORT = 3001;
 const upload = multer({ dest: '/tmp/yata-uploads/' });
 const xmlParser = new XMLParser({ ignoreAttributes: false });
 
+// データ圧縮 (Gzip) を有効化して高速化
+app.use(compression());
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// キャッシュ設定の最適化
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    
+    // API (/api/) 以外はブラウザにキャッシュさせる (一瞬で開くようにする)
+    if (req.url.startsWith('/api/')) {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    } else {
+        // 静的ファイル (html, js, css, geojson, png) は 1時間キャッシュ
+        res.set('Cache-Control', 'public, max-age=3600');
+    }
+    next();
+});
+
+// 静的ファイルのルート
 app.use(express.static(path.join(__dirname, 'local_public')));
 
 // 距離計算用
@@ -193,18 +218,24 @@ app.post('/api/carplay-log', (req, res) => {
             }
 
             // 2. 自宅Wi-Fiの「隙間埋め」ロジック
-            // OutHomeしてから10分以内にInHomeしたなら、そのOutHomeを削除して継続扱いにする
-            if (lastLog.action === "OutHome" && action === "InHome" && diffMin < 10) {
+            // OutHomeしてから3分以内にInHomeしたなら、そのOutHomeを削除して継続扱いにする (短縮: 10m -> 3m)
+            // これにより、コンビニ等の短い外出もしっかり記録されるようになる。
+            if (lastLog.action === "OutHome" && action === "InHome" && diffMin < 3) {
                 console.log(`[IoT] 🌁 Gap bridged: Deleting previous OutHome (ID: ${lastLog.id}) to keep connection continuous.`);
                 db.prepare("DELETE FROM drive_logs WHERE id = ?").run(lastLog.id);
                 return res.json({ status: "success", message: "Gap bridged, connection maintained" });
             }
 
-            // 3. 「通過」判定 (In -> Out が3分以内なら「いなかったこと」にする)
-            if (lastLog.action === "InHome" && action === "OutHome" && diffMin < 3) {
-                console.log(`[IoT] 🚮 Pass-by detected (In->Out). Deleting previous In log (ID: ${lastLog.id})`);
-                db.prepare("DELETE FROM drive_logs WHERE id = ?").run(lastLog.id);
-                return res.json({ status: "ignored", message: "Pass-by detected, logs removed" });
+            // 3. マンション・エレベーター対策 (In -> Out が5分以内なら、その Out を無視する)
+            // 以前は「InHomeを消してなかったことにする」ロジックだったが、それだと
+            // 「エントランスでInHome -> エレベーターでOutHome -> 部屋でInHome」の時に
+            // 最初の帰宅記録が消えてしまい、空白時間ができてしまう。
+            // 
+            // 改善案: 「一度帰宅したら、5分以内の切断はエレベーターや死角とみなして、切断ログ(OutHome)の方を捨てる」
+            // これにより、InHome は残り続け、Timeline上は「ずっと家にいた」ことになる。
+            if (lastLog.action === "InHome" && action === "OutHome" && diffMin < 5) {
+                console.log(`[IoT] 🏢 Elevator/Blindspot detected: Ignoring OutHome (InHome was ${diffMin.toFixed(1)}m ago). Keeping InHome.`);
+                return res.json({ status: "ignored", message: "Short disconnection ignored (Elevator logic)" });
             }
 
             // 4. InCar の位置情報継承ロジック (New!)
@@ -361,11 +392,23 @@ app.get('/api/fuel-stats', (req, res) => {
 app.get('/api/drive-history', (req, res) => {
     try {
         const logs = db.prepare("SELECT * FROM drive_logs ORDER BY timestamp ASC").all();
-        const tracks = db.prepare("SELECT id, action, timestamp, note, path_data, point_count FROM drive_tracks ORDER BY timestamp ASC").all();
+        const tracksRaw = db.prepare("SELECT id, action, timestamp, note, path_data, point_count FROM drive_tracks ORDER BY timestamp ASC").all();
         
-        // path_dataをパースして返す
-        tracks.forEach(t => {
-            t.path_data = JSON.parse(t.path_data);
+        const tracks = [];
+        tracksRaw.forEach(t => {
+            try {
+                let data = JSON.parse(t.path_data);
+                
+                // データが多すぎる場合は間引く (ブラウザをクラッシュさせないため)
+                // 1000点以上ある場合は、1/5 に。5000点以上は 1/10 に間引く。
+                if (data.length > 5000) data = data.filter((_, i) => i % 10 === 0);
+                else if (data.length > 1000) data = data.filter((_, i) => i % 5 === 0);
+                
+                t.path_data = data;
+                tracks.push(t);
+            } catch (parseErr) {
+                console.warn(`[DB] ⚠️ Track ID ${t.id} のパースに失敗: ${parseErr.message}`);
+            }
         });
 
         res.json({ logs, tracks });
@@ -377,8 +420,8 @@ app.get('/api/drive-history', (req, res) => {
 // 0.3 ニュース取得 API
 app.get('/api/news', (req, res) => {
     try {
-        // 直近200件を取得し、配列をランダムにシャッフルして返す (埋もれた記事を拾いやすくするため)
-        const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 200").all();
+        // 直近100件を取得し、配列をランダムにシャッフルして返す (埋もれた記事を拾いやすくするため)
+        const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 100").all();
         
         // Fisher-Yates シャッフル
         for (let i = rows.length - 1; i > 0; i--) {
@@ -692,10 +735,19 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // サーバー起動
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
+    const interfaces = require('os').networkInterfaces();
+    let ip = 'localhost';
+    for (const dev in interfaces) {
+        interfaces[dev].forEach((details) => {
+            if (details.family === 'IPv4' && !details.internal) {
+                ip = details.address;
+            }
+        });
+    }
     console.log(`=========================================`);
     console.log(`🚀 YATA Web Server running!`);
-    console.log(`📡 URL: http://192.168.1.151:${PORT}`);
+    console.log(`📡 URL: http://${ip}:${PORT}`);
     console.log(`📂 HTML root: ${path.join(__dirname, 'local_public')}`);
     console.log(`=========================================`);
 });
