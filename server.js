@@ -4,6 +4,7 @@ const bodyParser = require('body-parser');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
+const upload = multer({ dest: '/tmp/yata-uploads/' });
 const { XMLParser } = require('fast-xml-parser');
 
 // ★重要：YATAを読み込む前に、DBの場所を決定する
@@ -78,8 +79,7 @@ const app = express();
 const cors = require('cors');
 const PORT = 3001;
 
-// アップロード設定
-const upload = multer({ dest: '/tmp/yata-uploads/' });
+// XMLパーサーの設定
 const xmlParser = new XMLParser({ ignoreAttributes: false });
 
 // データ圧縮 (Gzip) を有効化して高速化

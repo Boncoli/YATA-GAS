@@ -319,6 +319,7 @@ cd dashboard && python3 dashboard.py
     ---
 
     ### メンテナンス記録
+    - **2026/02/25**: `server.js` の起動時クラッシュ（ReferenceError）を修正。`do-backup.sh` に毎日AM4:35の「完全リフレッシュ処理（メモリDB削除→再起動）」を追加し、長期稼働による遅延を根絶。
     - **2026/02/24**: `YATA.js` の極限最適化を完遂。並列要約 (`summarizeBatch`)、Embedding APIのバッチ通信化 (`generateVectorBatch`)、および `getArticlesInDateWindow` の二段階読み込み方式を実装し、GAS環境での通信・メモリ消費を劇的に削減。`gas-bridge.js` の機能拡張 (`getKeys`) も実施。
     - **2026/02/23**: 記事数カウントの乖離修正（24時間集計へ統一）。Timeline（時系列リスト）機能の追加。
 

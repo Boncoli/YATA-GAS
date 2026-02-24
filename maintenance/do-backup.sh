@@ -58,4 +58,19 @@ for LOG in "${LOG_LIST[@]}"; do
     fi
 done
 
+# --- 4. サーバーのリフレッシュ (完全再起動) ---
+# 安全第一: 再起動前にメモリ上のデータをSDカードへ強制同期する
+echo "Syncing RAM to SD before restart..." >> "$LOG_FILE"
+/home/boncoli/yata-local/run-ram.sh --sync-only >> "$LOG_FILE" 2>&1
+
+echo "Stopping yata-server..." >> "$LOG_FILE"
+/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop yata-server >> "$LOG_FILE" 2>&1
+
+# メモリ上のDBを削除して強制リフレッシュ (次回起動時にSDからコピーされる)
+echo "Cleaning up RAM DB..." >> "$LOG_FILE"
+rm -f /dev/shm/yata.db* >> "$LOG_FILE" 2>&1
+
+echo "Starting yata-server..." >> "$LOG_FILE"
+/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start yata-server >> "$LOG_FILE" 2>&1
+
 echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
