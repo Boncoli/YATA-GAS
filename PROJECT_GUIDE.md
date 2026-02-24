@@ -319,7 +319,7 @@ cd dashboard && python3 dashboard.py
     ---
 
     ### メンテナンス記録
-    - **2026/02/24**: `YATA.js` の最新版同期（並列要約・RSS一括書き込み最適化）。`gas-bridge.js` の `PropertiesService.getKeys()` 実装。
+    - **2026/02/24**: `YATA.js` の極限最適化を完遂。並列要約 (`summarizeBatch`)、Embedding APIのバッチ通信化 (`generateVectorBatch`)、および `getArticlesInDateWindow` の二段階読み込み方式を実装し、GAS環境での通信・メモリ消費を劇的に削減。`gas-bridge.js` の機能拡張 (`getKeys`) も実施。
     - **2026/02/23**: 記事数カウントの乖離修正（24時間集計へ統一）。Timeline（時系列リスト）機能の追加。
 
     *Last Updated: 2026-02-23 by Gemini Agent*

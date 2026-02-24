@@ -75,9 +75,10 @@ YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・
     - `run-ram.sh` に `--no-sync` を実装し、書き込み回数を1/6に削減。
 - [x] **ネイティブ燃費ダッシュボードの実装 (2026/02/15)**:
     - Grafanaに依存せず、iPhoneから最高に見やすい燃費レポート画面 (`fuel.html`) を構築。
-- [x] **YATA.js 同期と GAS Bridge の機能拡張 (2026/02/24)**:
-    - `main` ブランチの最新ロジック（並列要約 `summarizeBatch`, RSS一括書き込み最適化, 意味的検索のメモリ最適化）をローカル環境に同期。
-    - `gas-bridge.js` に `PropertiesService.getKeys()` を追加し、新設された RSS ストライク・キャッシュ・システムとの互換性を確保。
+- [x] **YATA.js の極限最適化と GAS Bridge の機能拡張 (2026/02/24)**:
+    - `main` ブランチの最新ロジック（並列要約 `summarizeBatch`, RSS一括書き込み最適化）を同期。
+    - 追加で **Embedding API の一括通信化 (Batch処理)** と、シート読み込みの **「二段階方式（日付スキャン後に範囲取得）」** を独自実装し、GAS環境での通信量とメモリ消費を極限まで削減。
+    - `gas-bridge.js` に `PropertiesService.getKeys()` 追加し、新設された RSS ストライク・キャッシュ・システムとの互換性を確保。
 - [x] **全国制覇マップ（Travel Map）の自動生成実装 (2026/02/23)**:
     - `tasks/generate_visited_map.py` を新規作成。GeoJSON と GPS ログを照合し、訪問済み都道府県を YATA カラーで塗りつぶす日本地図（ggplot2風）の生成に成功。
     - ポータル画面 (`travel.html`) を新設し、制覇率 (12.8%) や走行軌跡の俯瞰表示を実現。
