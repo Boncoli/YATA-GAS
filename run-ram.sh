@@ -29,6 +29,10 @@ if [[ "$NODE_SCRIPT" == *"dashboard"* ]]; then
 fi
 
 # --- 1. RAMにDBがなければ, SDからコピーする ---
+# 排他ロックを利用し、複数プロセスが同時にコピーを開始する競合(I/Oエラーの原因)を防止
+exec 9>"/tmp/yata-ram-copy.lock"
+flock 9
+
 if [ ! -f "$RAM_DB" ]; then
     echo "[Wrapper] Copying DB to RAM..."
     if [ -f "$REAL_DB" ]; then
@@ -38,6 +42,10 @@ if [ ! -f "$RAM_DB" ]; then
         touch "$RAM_DB"
     fi
 fi
+
+# コピー用ロックの解放
+flock -u 9
+exec 9>&-
 
 # ★ ここに追加！
 # メモリ上のDBファイルとその関連ファイル（-wal, -shm）の権限を全開放する
@@ -104,6 +112,10 @@ fi
 # --- 3. 終わったらRAMからSDへ書き戻す (データの保存) ---
 if [ "$SYNC_BACK" = true ]; then
     echo "[Wrapper] Syncing back to SD card..."
+    # 排他ロックを利用し、複数プロセスが同時に書き戻す競合を防止
+    exec 9>"/tmp/yata-sd-copy.lock"
+    flock 9
+
     # WALとSHMも含めて同期するように改善
     cp "$RAM_DB" "$REAL_DB"
     [ -f "$RAM_DB-wal" ] && cp "$RAM_DB-wal" "${REAL_DB}-wal"
@@ -112,6 +124,10 @@ if [ "$SYNC_BACK" = true ]; then
     # 書き戻したファイルの所有権を修正 (root実行対策)
     REAL_TARGET=$(readlink -f "$REAL_DB")
     chmod 666 "$REAL_TARGET" "${REAL_TARGET}-wal" "${REAL_TARGET}-shm" 2>/dev/null
+
+    # ロック解放
+    flock -u 9
+    exec 9>&-
 else
     if [ "$READ_ONLY_MODE" = true ]; then
         echo "[Wrapper] Read-only mode: Skipping sync back to SD card."
