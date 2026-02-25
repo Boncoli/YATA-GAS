@@ -3,9 +3,6 @@
 YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・パートナー」へと昇華させるためのロードマップ。
 
 ## 📊 次なるライフログ・パーソナライズ (Next Evolution)
-- [x] **YATA アプリアイコンの生成と設定**:
-    - AIに以下のコマンドを実行させ、生成された画像を `local_public/icon.png` として保存する。
-    - コマンド案: `/icon background="black" prompt="A modern, minimal app icon for a personal AI platform called YATA. The design features a stylish abstract logo that seamlessly combines a smooth road curve with the letter 'Y'. The logo is in a vibrant emerald green (accent color #00e676) set against a deep black background. The overall aesthetic is sleek and tech-focused, representing data flow and driving intelligence (inspired by the Mazda CX-80)." sizes=[1024] style="modern" type="app-icon"`
 - [ ] **デジタル・ツイン (分身) の構築と深化**:
     - 「独り言キャッチャー」で得た生の思考プロセスを Gemini で分析し、BON 様の価値観や判断基準をプロファイリング。
     - ニュースや事象に対し「BON 様ならどう考え、どう反応するか」をシミュレート・代弁できるレベルまで精度を上げる。
@@ -34,6 +31,11 @@ YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・
     - よく通る道（CX-80の活動圏内）を視覚的に強調。
 
 ## ✅ 完了した実績 (Achievements)
+- [x] **本家(main)の最新最適化ロジックの同期と README 刷新 (2026/02/25)**:
+    - グローバルキャッシュ (`_SsCache`) の導入によるスプレッドシート読み込みの高速化。
+    - 生成済みベクトルのキャッシュ (`parsedVector`) による類似記事検索の超高速化。
+    - 英語出力の検知・一括消去ツール (`clearEnglishSummaries`) の導入とプロンプト強化。
+    - 本家 `README.md` の大幅刷新（GAS アーキテクチャの全貌「虎の巻」）をローカル環境と同期。
 - [x] **サーバーの完全安定化とDB二重起動問題の解消 (2026/02/25)**:
     - `server.js` と `gas-bridge.js` のDB排他制御を実装し、無限再起動ループ (`malformed` エラー) を根絶。
     - `run-ram.sh` の安定化と、PM2 プロセス管理の最適化を実施。
@@ -43,6 +45,9 @@ YATA (boncoli RasPi) をさらに進化させ、真の「パーソナル・AI・
 - [x] **マンション特化型・帰宅判定ロジックの実装 (2026/02/25)**:
     - エントランスでの一瞬の Wi-Fi 接続を「帰宅」として確定させ、その後のエレベーター等による切断 (5分以内) を無視するロジックを導入。
     - これにより、ログが細切れにならず、自然な「帰宅」が記録されるようになった。
+- [x] **YATA アプリアイコンの生成と設定**:
+    - AIに以下のコマンドを実行させ、生成された画像を `local_public/icon.png` として保存する。
+    - コマンド案: `/icon background="black" prompt="A modern, minimal app icon for a personal AI platform called YATA. The design features a stylish abstract logo that seamlessly combines a smooth road curve with the letter 'Y'. The logo is in a vibrant emerald green (accent color #00e676) set against a deep black background. The overall aesthetic is sleek and tech-focused, representing data flow and driving intelligence (inspired by the Mazda CX-80)." sizes=[1024] style="modern" type="app-icon"`
 - [x] **システム健康診断（一括チェック）ツールの導入 (2026/02/20)**:
     - `tasks/do-health-check.js` を新規作成。
     - サーバー、ダッシュボード、RAMディスク、CPU温度、DB更新状況、ログの直近エラーをコマンド一つで俯瞰できる環境を構築。
