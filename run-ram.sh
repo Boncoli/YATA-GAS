@@ -8,18 +8,50 @@ SCRIPT_DIR="/home/boncoli/yata-local"
 # 引数解析
 SYNC_BACK=true
 SYNC_ONLY=false
-if [[ "$1" == "--no-sync" ]]; then
-    SYNC_BACK=false
-    echo "[Wrapper] 🚀 Lazy Commit Mode: Sync back to SD will be skipped."
-    shift
-elif [[ "$1" == "--sync-only" ]]; then
-    SYNC_ONLY=true
-    echo "[Wrapper] 💾 Sync-Only Mode: Cleaning up and saving RAM DB to SD..."
-    shift
+NODE_SCRIPT=""
+EXT_ARGS=()
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --no-sync)
+            SYNC_BACK=false
+            shift
+            ;;
+        --sync-only)
+            SYNC_ONLY=true
+            shift
+            ;;
+        -*)
+            EXT_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            if [ -z "$NODE_SCRIPT" ]; then
+                NODE_SCRIPT="$1"
+            else
+                EXT_ARGS+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+# ★ 安全装置：頻繁に実行される特定のスクリプトは、デフォルトで --no-sync 扱いにする
+# これにより、指定し忘れによるSDカードの摩耗を防ぐ
+if [[ "$NODE_SCRIPT" == *"do-ai-mutter"* ]] || [[ "$NODE_SCRIPT" == *"dashboard"* ]] || [[ "$NODE_SCRIPT" == *"do-health-check"* ]]; then
+    if [ "$SYNC_BACK" = true ] && [ "$SYNC_ONLY" = false ]; then
+        SYNC_BACK=false
+        LAZY_REASON="[Auto-Protect]"
+    fi
 fi
 
-NODE_SCRIPT="$1"
-shift
+if [ "$SYNC_BACK" = false ]; then
+    echo "[Wrapper] 🚀 Lazy Commit Mode ${LAZY_REASON}: Sync back to SD will be skipped."
+fi
+
+if [ "$SYNC_ONLY" = true ]; then
+    echo "[Wrapper] 💾 Sync-Only Mode: Cleaning up and saving RAM DB to SD..."
+fi
 
 # ★ Dashboardなどは読み取り専用なので書き戻しをスキップする
 READ_ONLY_MODE=false

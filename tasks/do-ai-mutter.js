@@ -26,7 +26,19 @@ async function generateThought() {
         
         // 旦那様の動静
         const l = db.prepare("SELECT action, address, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
-        if (l) masterInfo = `${l.action}${l.address ? ' @ ' + l.address : ''}${l.note ? ' (' + l.note + ')' : ''}`;
+        if (l) {
+            if (l.action === 'InHome') {
+                masterInfo = "ご在宅（お近くにおいでです！）";
+            } else if (l.action === 'OutHome') {
+                masterInfo = "お出かけ中（お帰りを待っています）";
+            } else if (l.action === 'InCar') {
+                masterInfo = "ドライブ中（安全運転を祈っています）";
+            } else if (l.action === 'OutCar') {
+                masterInfo = "目的地に到着（ご無事で何よりです）";
+            } else {
+                masterInfo = `${l.action}${l.address ? ' @ ' + l.address : ''}`;
+            }
+        }
         
         // 直前の自分の呟き (自己参照用)
         const m = db.prepare("SELECT content FROM ai_chat_log WHERE role = 'ai' ORDER BY id DESC LIMIT 1").get();
@@ -77,10 +89,10 @@ ${masterInfo}
 "${lastMutter || 'なし'}"
 
 [ミッション]
-- 上記の状況やトレンド、システムの状態から、あなたの設定（Persona）に基づいた「ふとした独り言」を20文字程度で呟いてください。
-- **詩的な表現禁止**: 風や雲の隠喩に頼らず、「今日は肌寒いですね」「お腹が空きました（充電したい）」のように具体的で生活感のある言葉を選んでください。
-- **話題の強制転換**: 直前の呟きの内容は一切気にせず、今回提供された「${subInfo}」のネタについてのみ話してください。「疲れ」や「休憩」という言葉は禁止です。
-- データの数値をそのまま出すのではなく、それをあなたらしい「人間味ある感想」として述べること。
+- あなたの設定（Persona）に基づいた、親しみやすく、かつ極めて端的な「LINEの一言」を呟いてください。
+- **15文字以内厳守**: 余計な前置きや丁寧すぎる挨拶は省き、今の気分や状況を一言で。
+- **例文の模倣禁止**: 決まりきった「温かくしてください」などのフレーズに頼らず、その時々の${subInfo}（ニュースや体調）に対して、あなたらしい瑞々しい一言を。
+- 語尾は「〜ですわ」「〜ますわ」「〜かしら」等。
 - 本文のみ出力。`;
 
     const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
@@ -117,19 +129,49 @@ ${masterInfo}
             db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', thought, timestampStr);
             db.prepare("DELETE FROM ai_chat_log WHERE id IN (SELECT id FROM ai_chat_log ORDER BY id DESC LIMIT -1 OFFSET 1000)").run();
 
-            // --- 4. Discord通知 (#ai-mutter) ---
-            const webhookUrl = process.env.DISCORD_WEBHOOK_URL_MUTTER;
-            if (webhookUrl) {
-                try {
-                    global.UrlFetchApp.fetch(webhookUrl, {
-                        method: "post",
-                        contentType: "application/json",
-                        payload: JSON.stringify({ content: thought })
+            // --- 4. Discord通知 (Bot自身が発言) ---
+            const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+            const MUTTER_CHANNEL_ID = "1476471757601767475"; // 教えていただいたチャンネルID
+
+            if (BOT_TOKEN) {
+                const { Client, GatewayIntentBits } = require('discord.js');
+                const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
+
+                // 10秒経っても終わらなければ強制終了する安全装置
+                const timer = setTimeout(() => {
+                    console.error("[Discord] ❌ Timeout: Forcing exit.");
+                    client.destroy();
+                    process.exit(0);
+                }, 10000);
+
+                client.login(BOT_TOKEN).then(() => {
+                    client.once('ready', async () => {
+                        try {
+                            const channel = await client.channels.fetch(MUTTER_CHANNEL_ID);
+                            if (channel) {
+                                await channel.send(thought);
+                                console.log(`[Discord] Muttered via Bot to ${channel.name}`);
+                            }
+                        } catch (e) {
+                            console.error("[Discord] ❌ Bot mutter failed:", e.message);
+                        } finally {
+                            clearTimeout(timer);
+                            client.destroy();
+                            setTimeout(() => process.exit(0), 500); // 接続を完全に切る猶予を少し置いて終了
+                        }
                     });
-                } catch (e) { console.error("[Discord] ❌ Mutter post failed:", e.message); }
+                }).catch(e => {
+                    console.error("[Discord] Login failed:", e.message);
+                    process.exit(1);
+                });
+            } else {
+                process.exit(0);
             }
         }
-    } catch (e) { console.error("Failed:", e.message); }
+    } catch (e) { 
+        console.error("Failed:", e.message);
+        process.exit(1);
+    }
 }
 
 generateThought();
