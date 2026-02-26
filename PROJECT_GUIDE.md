@@ -319,6 +319,7 @@ cd dashboard && python3 dashboard.py
     ---
 
     ### メンテナンス記録
+    - **2026/02/26 (重大インシデント)**: `do-backup.sh` が cron 実行された際、PATH が通っておらず `pm2 stop` が失敗。サーバーが起動したまま RAM ディスクの DB (`/dev/shm/yata.db*`) を削除したため、サーバープロセスが削除済みファイルディスクリプタを掴んだまま最新データを書き込み続ける「幽霊化」が発生。直近10時間のデータ消失の危機に陥ったが、`/proc/82873/fd/...` からファイルを救出して復旧。対策として、スクリプト内に `export PATH` を追加し、さらに `pgrep` でプロセスが完全に停止したことを確認できた場合のみ DB を削除するフェイルセーフを実装。
     - **2026/02/25**: `server.js` の起動時クラッシュ（ReferenceError）を修正。`do-backup.sh` に毎日AM4:35の「完全リフレッシュ処理（メモリDB削除→再起動）」を追加し、長期稼働による遅延を根絶。
     - **2026/02/24**: `YATA.js` の極限最適化を完遂。並列要約 (`summarizeBatch`)、Embedding APIのバッチ通信化 (`generateVectorBatch`)、および `getArticlesInDateWindow` の二段階読み込み方式を実装し、GAS環境での通信・メモリ消費を劇的に削減。`gas-bridge.js` の機能拡張 (`getKeys`) も実施。
     - **2026/02/23**: 記事数カウントの乖離修正（24時間集計へ統一）。Timeline（時系列リスト）機能の追加。

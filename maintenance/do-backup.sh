@@ -7,6 +7,8 @@ SD_BACKUP="/mnt/backup"
 NAS_BACKUP="/mnt/nas"
 LOG_FILE="$YATA_DIR/backup.log"
 
+export PATH="/home/boncoli/.nvm/versions/node/v24.12.0/bin:$PATH"
+
 echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
 
 # --- 1. SDカードへのバックアップ (ホーム全体同期) ---
@@ -66,9 +68,16 @@ echo "Syncing RAM to SD before restart..." >> "$LOG_FILE"
 echo "Stopping yata-server..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop yata-server >> "$LOG_FILE" 2>&1
 
-# メモリ上のDBを削除して強制リフレッシュ (次回起動時にSDからコピーされる)
-echo "Cleaning up RAM DB..." >> "$LOG_FILE"
-rm -f /dev/shm/yata.db* >> "$LOG_FILE" 2>&1
+# 致命的なバグ対策：確実にプロセスが停止したか確認する
+if pgrep -f "server.js" > /dev/null; then
+    echo "CRITICAL ERROR: yata-server process is still running after stop command!" >> "$LOG_FILE"
+    echo "ABORTING RAM DB CLEANUP TO PREVENT DATA LOSS." >> "$LOG_FILE"
+    # プロセスが残っている場合、RAM上のDBを消すとデータが消滅するのでスキップして再起動だけ試みる
+else
+    # プロセスが完全に終了していること（＝ファイルが握られていないこと）を確認できた場合のみ削除
+    echo "Server completely stopped. Cleaning up RAM DB..." >> "$LOG_FILE"
+    rm -f /dev/shm/yata.db* >> "$LOG_FILE" 2>&1
+fi
 
 echo "Starting yata-server..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start yata-server >> "$LOG_FILE" 2>&1
