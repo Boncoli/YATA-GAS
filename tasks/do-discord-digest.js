@@ -132,9 +132,9 @@ ${promptList}`;
   
   console.log(`[Digest] Summary generated (${summary.length} chars). Posting to Discord...`);
 
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL_DIGEST || process.env.DISCORD_WEBHOOK_URL;
   if (!webhookUrl) {
-    console.error("❌ DISCORD_WEBHOOK_URL is not set.");
+    console.error("❌ Discord Webhook URL is not set.");
     return;
   }
 

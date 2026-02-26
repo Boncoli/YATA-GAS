@@ -272,7 +272,7 @@ app.post('/api/carplay-log', (req, res) => {
                             note = (note ? note + " " : "") + `[Distance: ${distanceKm}km]`;
                             
                             // Discord通知
-                            const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+                            const webhookUrl = process.env.DISCORD_WEBHOOK_URL_DRIVE;
                             if (webhookUrl) {
                                 const message = `🚗 **ドライブ完了報告 (CX-80)**\n` +
                                                 `📍 出発: ${lastInCar.address || '不明な地点'}\n` +
@@ -338,7 +338,7 @@ app.post('/api/fuel-log', (req, res) => {
         insert.run(finalTs, odometer, amount, price, location, note);
 
         // --- 3. Discordへ通知 ---
-        const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+        const webhookUrl = process.env.DISCORD_WEBHOOK_URL_DRIVE;
         if (webhookUrl) {
             let message = `⛽ **給油完了報告 (CX-80)**\n`;
             message += `📍 場所: ${location || '未設定'}\n`;

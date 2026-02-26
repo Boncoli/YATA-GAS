@@ -9,7 +9,21 @@ LOG_FILE="$YATA_DIR/backup.log"
 
 export PATH="/home/boncoli/.nvm/versions/node/v24.12.0/bin:$PATH"
 
+# Discord通知関数 (System Alerts用)
+send_discord_alert() {
+    local msg="$1"
+    if [ -n "$DISCORD_WEBHOOK_URL_SYSTEM" ]; then
+        curl -H "Content-Type: application/json" -X POST -d "{\"content\": \"$msg\"}" "$DISCORD_WEBHOOK_URL_SYSTEM" > /dev/null 2>&1
+    fi
+}
+
+# .env から変数を読み込む (Webhook URL取得用)
+if [ -f "$YATA_DIR/.env" ]; then
+    export $(grep -v '^#' "$YATA_DIR/.env" | xargs)
+fi
+
 echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
+send_discord_alert "🛠️ **システムバックアップ開始**"
 
 # --- 1. SDカードへのバックアップ (ホーム全体同期) ---
 # 目的: SDカード内での冗長化（直近の復旧用）
@@ -72,6 +86,7 @@ echo "Stopping yata-server..." >> "$LOG_FILE"
 if pgrep -f "server.js" > /dev/null; then
     echo "CRITICAL ERROR: yata-server process is still running after stop command!" >> "$LOG_FILE"
     echo "ABORTING RAM DB CLEANUP TO PREVENT DATA LOSS." >> "$LOG_FILE"
+    send_discord_alert "🚨 **バックアップ警告**: サーバー停止に失敗したため、RAM DBの削除を中止しました。データ消失は回避しましたが、再起動が必要です。"
     # プロセスが残っている場合、RAM上のDBを消すとデータが消滅するのでスキップして再起動だけ試みる
 else
     # プロセスが完全に終了していること（＝ファイルが握られていないこと）を確認できた場合のみ削除
@@ -83,3 +98,4 @@ echo "Starting yata-server..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start yata-server >> "$LOG_FILE" 2>&1
 
 echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
+send_discord_alert "✅ **システムバックアップ完了**: サーバーを正常にリフレッシュしました。"

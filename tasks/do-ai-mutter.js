@@ -116,6 +116,18 @@ ${masterInfo}
             const timestampStr = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
             db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', thought, timestampStr);
             db.prepare("DELETE FROM ai_chat_log WHERE id IN (SELECT id FROM ai_chat_log ORDER BY id DESC LIMIT -1 OFFSET 1000)").run();
+
+            // --- 4. Discord通知 (#ai-mutter) ---
+            const webhookUrl = process.env.DISCORD_WEBHOOK_URL_MUTTER;
+            if (webhookUrl) {
+                try {
+                    global.UrlFetchApp.fetch(webhookUrl, {
+                        method: "post",
+                        contentType: "application/json",
+                        payload: JSON.stringify({ content: thought })
+                    });
+                } catch (e) { console.error("[Discord] ❌ Mutter post failed:", e.message); }
+            }
         }
     } catch (e) { console.error("Failed:", e.message); }
 }
