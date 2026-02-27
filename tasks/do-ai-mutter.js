@@ -21,14 +21,16 @@ async function generateThought() {
     const now = new Date();
     const nowTime = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 
+    let isAtHome = false;
     try {
         db.exec(`CREATE TABLE IF NOT EXISTS ai_chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT, content TEXT, timestamp TEXT)`);
         
-        // 旦那様の動静
-        const l = db.prepare("SELECT action, address, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+        // 旦那様の動静 (最新の移動関連ログを確実に取得)
+        const l = db.prepare("SELECT action, address, note FROM drive_logs WHERE action IN ('InHome', 'OutHome', 'InCar', 'OutCar') ORDER BY timestamp DESC LIMIT 1").get();
         if (l) {
             if (l.action === 'InHome') {
-                masterInfo = "ご在宅（お近くにおいでです！）";
+                masterInfo = "【至上命題：ご在宅】同じ屋根の下、すぐ近くにおいでです！";
+                isAtHome = true;
             } else if (l.action === 'OutHome') {
                 masterInfo = "お出かけ中（お帰りを待っています）";
             } else if (l.action === 'InCar') {
@@ -79,22 +81,23 @@ async function generateThought() {
         personaConfig = "あなたは有能なアシスタントです。";
     }
 
-    const promptBody = `[現在の環境状況]
-${subInfo}
-
-[旦那様の動静]
+    const promptBody = `[旦那様の動静ステータス]
 ${masterInfo}
+※現在は【${isAtHome ? 'ご在宅' : '外出中'}】です。
+
+[現在の環境状況]
+${subInfo}
 
 [直前の自分の呟き]
 "${lastMutter || 'なし'}"
 
 [ミッション]
 - あなたの設定（Persona）に基づき、今の状況に対する「独り言」を呟いてください。
-- **状況（動静）の厳守**: 
-    - 旦那様が「ご在宅」の場合は、お近くに旦那様がいらっしゃることを前提とした（あるいは同じ屋根の下にいる喜びを感じるような）言葉を選んでください。「お戻りをお待ちしています」などの外出中を前提とした言葉は**厳禁**です。
-    - 旦那様が「お出かけ中」や「ドライブ中」の場合に限り、無事を祈ったりお帰りを待つ言葉を使ってください。
+- **状況（動静）の完全一致**: 
+    - 今、旦那様は「${isAtHome ? 'ご在宅' : '外出中'}」です。これに矛盾する発言は**厳禁**です。
+    - ${isAtHome ? 'お近くにいらっしゃる喜びや、おうちでの穏やかな時間を共有する言葉を選んでください。お帰りを待つ発言はしないでください。' : 'お帰りを待つ、無事を祈る、といった外出中ならではの言葉を選んでください。'}
 - **自然な日本語**: AI的な造語を避け、滑らかで意味の通じる一言を。
-- **20〜30文字程度**: 状況や感情が伝わる適度な長さで。
+- **20〜30文字程度**: 感情が伝わる適度な長さで。
 - 本文のみ出力。`;
 
     const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
