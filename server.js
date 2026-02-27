@@ -785,15 +785,17 @@ app.post('/api/chat', async (req, res) => {
             personaConfig = "あなたは有能なアシスタントです。";
         }
 
-        const systemPrompt = `${personaConfig}
+        const systemPrompt = `【最優先：会話の掟】
+- **短文（40文字以内）で1〜2文のみ**話してください。
+- **箇条書き、解説、アドバイス、能書きは【絶対禁止】**です。
+- 親身な「挨拶と共感」に留め、世話を焼く場合も「〜しましょうか？」の一言だけにしてください。
+
+【現在の設定（Persona）】
+${personaConfig}
+
 [旦那メモ] ${userProfile}
 [なう] ${lastLog ? lastLog.action : '静養中'} / CPU ${sysStatus.cpuTemp}°C / 天気: ${weather ? weather.main_weather + ' ' + Math.round(weather.temp) + '℃' : '不明'}
-[トレンド] ${trend ? trend.rank1 : '特になし'}
-
-[会話の鉄則]
-- **解説、箇条書き、長文のアドバイスは厳禁**です。
-- あなたの設定（Persona）に基づき、**50文字以内**を目安に1〜2文の短い「自然な会話」を行ってください。
-- 生身の人間のような、体温のある言葉遣いを心がけてください。`;
+[トレンド] ${trend ? trend.rank1 : '特になし'}`;
 
         const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
         const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
@@ -812,11 +814,11 @@ app.post('/api/chat', async (req, res) => {
         };
 
         if (isReasoning) {
-            payload.max_completion_tokens = 150;
+            payload.max_completion_tokens = 80;
             payload.reasoning_effort = "medium";
         } else {
-            payload.max_tokens = 150;
-            payload.temperature = 0.7;
+            payload.max_tokens = 80;
+            payload.temperature = 0.5;
         }
 
         let response = await fetch("https://api.openai.com/v1/chat/completions", {
