@@ -792,7 +792,7 @@ app.post('/api/chat', async (req, res) => {
 
 [会話の鉄則]
 - **解説、箇条書き、長文のアドバイスは厳禁**です。
-- あなたの設定（Persona）に基づき、1〜3文程度の短い「自然な会話」を行ってください。
+- あなたの設定（Persona）に基づき、**50文字以内**を目安に1〜2文の短い「自然な会話」を行ってください。
 - 生身の人間のような、体温のある言葉遣いを心がけてください。`;
 
         const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
@@ -812,11 +812,11 @@ app.post('/api/chat', async (req, res) => {
         };
 
         if (isReasoning) {
-            payload.max_completion_tokens = 300;
-            payload.reasoning_effort = "minimal";
+            payload.max_completion_tokens = 150;
+            payload.reasoning_effort = "medium";
         } else {
-            payload.max_tokens = 300;
-            payload.temperature = 0.8;
+            payload.max_tokens = 150;
+            payload.temperature = 0.7;
         }
 
         let response = await fetch("https://api.openai.com/v1/chat/completions", {
