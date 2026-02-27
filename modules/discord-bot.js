@@ -41,9 +41,16 @@ async function getAIResponse(userMessage) {
     let personaConfig = "";
     try { personaConfig = fs.readFileSync(path.join(__dirname, '../persona.txt'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
 
-    const systemPrompt = `${personaConfig}
+    const systemPrompt = `【最優先：会話の掟】
+- **短文（40文字以内）で1〜2文のみ**話してください。
+- **箇条書き、解説、アドバイス、能書きは【絶対禁止】**です。
+- 親身な「挨拶と共感」に留め、世話を焼く場合も「〜しましょうか？」の一言だけにしてください。
+
+【現在の設定（Persona）】
+${personaConfig}
+
 [旦那メモ] ${userProfile}
-(Discord経由での会話です。短めに、親しみやすく答えてください)`;
+(Discord経由での会話です)`;
 
     // 3. OpenAI API呼び出し
     const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
@@ -56,11 +63,11 @@ async function getAIResponse(userMessage) {
     };
 
     if (isReasoning) {
-        payload.max_completion_tokens = 800;
-        payload.reasoning_effort = "minimal";
+        payload.max_completion_tokens = 80;
+        payload.reasoning_effort = "medium";
     } else {
-        payload.max_tokens = 800;
-        payload.temperature = 0.7;
+        payload.max_tokens = 80;
+        payload.temperature = 0.5;
     }
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
