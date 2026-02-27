@@ -27,6 +27,7 @@
 - **YATA.jsの同期**: 「YATA.jsを同期して」と指示されたら、リモートの `origin/main:YATA.js` を `lib/YATA.js` に強制上書きしてください。
     - 使用コマンド: `git fetch origin && git show origin/main:YATA.js > lib/YATA.js`
 - **Gitリポジトリ**: `main`は会社との共通ブランチ、`local-raspi`はラズパイ専用ブランチです。lib/YATA.jsの修正時はブランチ間の競合に細心の注意を払ってください。
+- **Tempブランチの鉄則 (2026/02/27追加)**: 作業開始前に必ず `git checkout -b Temp_yymmdd_xxx` で作業用ブランチを作成すること。作業完了後は `local-raspi` へスカッシュマージを行い、履歴の美しさを死守すること。
 
 ---
 この掟は YATA プロジェクトの魂です。今日も `PROJECT_GUIDE.md` と共に、最高にスマートなニュース環境を作り上げましょう！
