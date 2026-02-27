@@ -815,7 +815,7 @@ ${personaConfig}
 
         if (isReasoning) {
             payload.max_completion_tokens = 500;
-            payload.reasoning_effort = "medium";
+            payload.reasoning_effort = "low";
         } else {
             payload.max_tokens = 500;
             payload.temperature = 0.5;
