@@ -12,22 +12,69 @@ async function updateInterestProfile() {
   const db = new Database(dbPath);
   const articles = db.prepare("SELECT title, summary FROM collect WHERE clicks > 0 ORDER BY date DESC LIMIT 30").all();
   const model = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
-  if (articles.length === 0) return null;
+  
+  // YouTubeキーワードの読み込み
+  let youtubeKeywords = [];
+  const takeoutPath = path.join(__dirname, '../data/takeout_keywords.json');
+  if (fs.existsSync(takeoutPath)) {
+    try {
+      youtubeKeywords = JSON.parse(fs.readFileSync(takeoutPath, 'utf8'));
+    } catch (e) { console.error("Failed to read takeout_keywords.json:", e); }
+  }
 
-  const articleText = articles.map(a => "Title: " + a.title + "\nSummary: " + a.summary).join("\n\n---\n\n");
-  const prompt = `あなたはプロのパーソナル・アナリストです。以下の記事リストを分析し、ユーザーの興味関心を抽出してJSONで出力してください。\n\n${articleText}`;
-  const apiKey = process.env.OPENAI_API_KEY_PERSONAL;
+  if (articles.length === 0 && youtubeKeywords.length === 0) return null;
+
+  const articleText = articles.length > 0 
+    ? articles.map(a => "Title: " + a.title + "\nSummary: " + a.summary).join("\n\n---\n\n")
+    : "（最近のクリック記事はありません）";
+
+  const prompt = `あなたはプロのパーソナル・アナリストです。
+以下の「ユーザーが実際にクリックした記事リスト」と「YouTubeの活動履歴から抽出されたキーワード」を総合的に分析し、ユーザーの現在の興味関心を抽出して構造化されたJSON形式で出力してください。
+
+【実際にクリックした記事】
+${articleText}
+
+【YouTube活動からのキーワード】
+${youtubeKeywords.join(', ')}
+
+【抽出のガイドライン】
+1. YouTubeキーワードは長期的な嗜好やライフスタイル、クリック記事は短期的な関心事を示しています。これらを融合させてください。
+2. 各トピックに対して、関心の強さ（weight: 0.1〜1.0）を付与してください。
+3. YATA（ニュース収集ツール）でスコアリングに使用するため、各トピックに関連する「具体的なキーワード（keywords）」を5〜10個程度含めてください。
+4. 最終的に、このユーザーがどのような人物であるか（persona）を1文でまとめてください。
+
+【出力形式（厳守）】
+{
+  "interests": [
+    { "topic": "トピック名", "weight": 0.9, "keywords": ["キーワード1", "キーワード2", ...], "reason": "理由" }
+  ],
+  "persona": "ユーザー像の要約"
+}`;
+
+  const apiKey = process.env.OPENAI_API_KEY_PERSONAL || process.env.OPENAI_API_KEY;
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: model, messages: [{ role: "user", content: prompt }], response_format: { type: "json_object" }, reasoning_effort: "minimal" })
+      body: JSON.stringify({ 
+        model: model, 
+        messages: [{ role: "user", content: prompt }], 
+        response_format: { type: "json_object" } 
+      })
     });
     const json = await response.json();
+    if (json.error) throw new Error(json.error.message);
     const result = json.choices[0].message.content;
     fs.writeFileSync(path.join(__dirname, '../interests.json'), result);
+    console.log("✅ Interest profile updated with YouTube data.");
     return JSON.parse(result);
-  } catch (e) { return null; }
+  } catch (e) { 
+    console.error("Failed to update interest profile:", e);
+    // 既存の interests.json があればそれを返す
+    const existingPath = path.join(__dirname, '../interests.json');
+    if (fs.existsSync(existingPath)) return JSON.parse(fs.readFileSync(existingPath, 'utf8'));
+    return null; 
+  }
 }
 
 function computeScore(article, interestsData) {
