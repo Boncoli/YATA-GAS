@@ -788,7 +788,13 @@ app.post('/api/chat', async (req, res) => {
         const systemPrompt = `${personaConfig}
 [旦那メモ] ${userProfile}
 [なう] ${lastLog ? lastLog.action : '静養中'} / CPU ${sysStatus.cpuTemp}°C / 天気: ${weather ? weather.main_weather + ' ' + Math.round(weather.temp) + '℃' : '不明'}
-[トレンド] ${trend ? trend.rank1 : '特になし'}`;
+[トレンド] ${trend ? trend.rank1 : '特になし'}
+
+[会話の鉄則]
+- **解説や箇条書き、長文のアドバイスは厳禁**です。
+- あなたは生身のメイドとして、1〜3文程度の短い「会話」を行ってください。
+- 状況に応じた「配慮」や「提案」は、一言添える程度（例：「お茶を淹れますわね」）が最も美しい振る舞いです。
+- AIであることを感じさせない、体温のある言葉遣いを心がけてください。`;
 
         const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
         const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
@@ -807,11 +813,11 @@ app.post('/api/chat', async (req, res) => {
         };
 
         if (isReasoning) {
-            payload.max_completion_tokens = 1000;
+            payload.max_completion_tokens = 300;
             payload.reasoning_effort = "minimal";
         } else {
-            payload.max_tokens = 1000;
-            payload.temperature = 0.7;
+            payload.max_tokens = 300;
+            payload.temperature = 0.8;
         }
 
         let response = await fetch("https://api.openai.com/v1/chat/completions", {
