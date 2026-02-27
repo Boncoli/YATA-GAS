@@ -74,6 +74,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS fuel_logs (
     note TEXT
 )`);
 
+// 1日1行の統合ヘルスケアテーブル
+db.exec(`CREATE TABLE IF NOT EXISTS daily_health (
+    date TEXT PRIMARY KEY,
+    steps INTEGER DEFAULT 0,
+    sleep_hours REAL DEFAULT 0,
+    sleep_note TEXT
+)`);
+
 const compression = require('compression');
 const app = express();
 const cors = require('cors');
@@ -385,6 +393,60 @@ app.get('/api/fuel-stats', (req, res) => {
         res.json(rows);
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// 0.2.2 ヘルスケアログ API (iPhone ショートカットから受信)
+app.post('/api/health-log', (req, res) => {
+    try {
+        let { date, type, value, note } = req.body;
+        
+        if (!date || !type || value === undefined) {
+            return res.status(400).json({ error: "Missing required fields" });
+        }
+
+        // 1. 日付の整形 (ISO形式等から YYYY-MM-DD を抽出)
+        let formattedDate = date;
+        if (date.includes('T')) formattedDate = date.split('T')[0];
+        else if (date.includes('/')) formattedDate = date.replace(/\//g, '-').split(' ')[0];
+
+        // 2. 特殊なデータ形式 (AutoSleep等) の処理
+        let finalValue = value;
+        let finalNote = note;
+        if (typeof value === 'string' && value.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(value);
+                finalNote = value;
+                finalValue = parsed["睡眠"] || parsed["Sleep"] || 0;
+            } catch (e) { finalNote = value; finalValue = 0; }
+        } else if (typeof value === 'object' && value !== null) {
+            finalNote = JSON.stringify(value);
+            finalValue = value["睡眠"] || value["Sleep"] || 0;
+        }
+
+        // 3. 統合テーブル (daily_health) へ保存 (UPSERT方式)
+        // 既存レコードがなければ作成、あれば該当する列だけを更新する
+        const insertStmt = db.prepare(`
+            INSERT INTO daily_health (date, steps, sleep_hours, sleep_note)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                steps = CASE WHEN ? = 'steps' THEN EXCLUDED.steps ELSE steps END,
+                sleep_hours = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_hours ELSE sleep_hours END,
+                sleep_note = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_note ELSE sleep_note END
+        `);
+
+        // type に応じて値を振り分ける
+        const stepsVal = (type === 'steps') ? Math.round(finalValue) : 0;
+        const sleepVal = (type === 'sleep' || type === 'sleep_hours') ? parseFloat(finalValue) : 0;
+        const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
+
+        insertStmt.run(formattedDate, stepsVal, sleepVal, sleepNoteVal, type, type, type);
+        
+        console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
+        res.json({ status: "success" });
+    } catch (e) {
+        console.error(`[IoT] Health Log Error: ${e.message}`);
+        res.status(500).json({ status: "error", message: e.message });
     }
 });
 
