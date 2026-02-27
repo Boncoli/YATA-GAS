@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Insights - YATA</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --sleep-color: #81d4fa;
+            --hrv-color: #f48fb1;
+            --hr-color: #ef5350;
+            --kcal-color: #ffca28;
+            --border-color: #333;
+        }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+        h1 {
+            color: var(--accent-color);
+            text-align: center;
+            font-size: 1.4rem;
+            margin-bottom: 20px;
+            letter-spacing: 2px;
+        }
+        
+        /* Summary Grid */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        @media (min-width: 600px) {
+            .summary-grid { grid-template-columns: repeat(5, 1fr); }
+        }
+        .summary-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px 8px;
+            text-align: center;
+        }
+        .summary-card .label { font-size: 0.65rem; color: #888; margin-bottom: 4px; }
+        .summary-card .value { font-size: 1.2rem; font-weight: bold; color: var(--accent-color); }
+        .summary-card .unit { font-size: 0.65rem; margin-left: 2px; color: #666; font-weight: normal; }
+        .summary-card.sleep .value { color: var(--sleep-color); }
+        .summary-card.hrv .value { color: var(--hrv-color); }
+        .summary-card.hr .value { color: var(--hr-color); }
+        .summary-card.kcal .value { color: var(--kcal-color); }
+
+        /* Chart Section */
+        .chart-section {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 15px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 20px;
+        }
+        .section-title {
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #aaa;
+        }
+        .canvas-container {
+            position: relative;
+            height: 200px;
+            width: 100%;
+        }
+
+        /* Sleep Details */
+        .details-box {
+            background: rgba(129, 212, 250, 0.05);
+            border: 1px dashed rgba(129, 212, 250, 0.3);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 20px;
+            font-size: 0.8rem;
+            display: none;
+        }
+        .detail-item { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        .detail-val { font-weight: bold; color: var(--sleep-color); }
+
+        .loading { text-align: center; padding: 50px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HEALTH INSIGHTS</h1>
+
+        <div id="loading" class="loading">データ分析中...</div>
+
+        <div id="main-content" style="display: none;">
+            <div class="summary-grid">
+                <div class="summary-card"><div class="label">歩数</div><div class="value" id="today-steps">0<span class="unit">歩</span></div></div>
+                <div class="summary-card sleep"><div class="label">睡眠</div><div class="value" id="today-sleep">0<span class="unit">h</span></div></div>
+                <div class="summary-card hrv"><div class="label">ストレス(HRV)</div><div class="value" id="today-hrv">0<span class="unit">ms</span></div></div>
+                <div class="summary-card hr"><div class="label">安静時心拍</div><div class="value" id="today-hr">0<span class="unit">bpm</span></div></div>
+                <div class="summary-card kcal"><div class="label">消費</div><div class="value" id="today-kcal">0<span class="unit">kcal</span></div></div>
+            </div>
+
+            <div id="sleep-details" class="details-box"></div>
+
+            <div class="chart-section">
+                <div class="section-title">🏃 Activity & Energy (7 Days)</div>
+                <div class="canvas-container">
+                    <canvas id="activityChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <div class="section-title">💤 Sleep & Recovery (7 Days)</div>
+                <div class="canvas-container">
+                    <canvas id="recoveryChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js Default Config
+        Chart.defaults.color = '#888';
+        Chart.defaults.font.family = "'Segoe UI', sans-serif";
+        const gridConfig = { color: '#333', drawBorder: false };
+
+        function formatSleepTime(decimalHours) {
+            const h = Math.floor(decimalHours);
+            const m = Math.round((decimalHours - h) * 60);
+            return `${h}h ${m}m`;
+        }
+
+        async function loadHealthData() {
+            try {
+                const res = await fetch('/api/health-stats?limit=7');
+                const data = await res.json();
+                if (data.length === 0) {
+                    document.getElementById('loading').textContent = "データがありません。";
+                    return;
+                }
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('main-content').style.display = 'block';
+
+                const latest = data[0];
+                const sortedData = [...data].reverse();
+                const labels = sortedData.map(d => d.date.split('-').slice(1).join('/'));
+
+                // Update Cards
+                document.getElementById('today-steps').innerHTML = `${latest.steps.toLocaleString()}<span class="unit">歩</span>`;
+                document.getElementById('today-sleep').innerHTML = formatSleepTime(latest.sleep_hours);
+                document.getElementById('today-hrv').innerHTML = `${Math.round(latest.hrv)}<span class="unit">ms</span>`;
+                document.getElementById('today-hr').innerHTML = `${latest.resting_hr}<span class="unit">bpm</span>`;
+                document.getElementById('today-kcal').innerHTML = `${latest.active_kcal.toLocaleString()}<span class="unit">kcal</span>`;
+
+                // Sleep Details
+                if (latest.sleep_note) {
+                    try {
+                        const note = JSON.parse(latest.sleep_note);
+                        const detailsDiv = document.getElementById('sleep-details');
+                        detailsDiv.style.display = 'block';
+                        detailsDiv.innerHTML = '<div style="margin-bottom:8px; font-weight:bold; color:#888;">AutoSleep Ring Analysis</div>';
+                        ["良質な睡眠", "深い", "心拍数", "睡眠の評価"].forEach(key => {
+                            if (note[key]) {
+                                let val = (key === "心拍数") ? note[key]+" bpm" : (key === "睡眠の評価" ? note[key]+" 点" : formatSleepTime(parseFloat(note[key])));
+                                detailsDiv.innerHTML += `<div class="detail-item"><span>${key}</span><span class="detail-val">${val}</span></div>`;
+                            }
+                        });
+                    } catch (e) {}
+                }
+
+                // --- Chart 1: Activity & Energy ---
+                new Chart(document.getElementById('activityChart'), {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: '歩数',
+                                data: sortedData.map(d => d.steps),
+                                backgroundColor: 'rgba(0, 230, 118, 0.6)',
+                                borderRadius: 4,
+                                yAxisID: 'ySteps'
+                            },
+                            {
+                                label: 'カロリー',
+                                data: sortedData.map(d => d.active_kcal),
+                                type: 'line',
+                                borderColor: '#ffca28',
+                                backgroundColor: '#ffca28',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                tension: 0.3,
+                                yAxisID: 'yKcal'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { grid: { display: false } },
+                            ySteps: { position: 'left', grid: gridConfig, min: 0, title: { display: true, text: '歩数' } },
+                            yKcal: { position: 'right', grid: { display: false }, min: 0, title: { display: true, text: 'kcal' } }
+                        }
+                    }
+                });
+
+                // --- Chart 2: Sleep & Recovery ---
+                new Chart(document.getElementById('recoveryChart'), {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: '睡眠時間',
+                                data: sortedData.map(d => d.sleep_hours),
+                                backgroundColor: 'rgba(129, 212, 250, 0.6)',
+                                borderRadius: 4,
+                                yAxisID: 'ySleep'
+                            },
+                            {
+                                label: 'HRV',
+                                data: sortedData.map(d => d.hrv),
+                                type: 'line',
+                                borderColor: '#f48fb1',
+                                backgroundColor: '#f48fb1',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                tension: 0.3,
+                                yAxisID: 'yHRV'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { grid: { display: false } },
+                            ySleep: { position: 'left', grid: gridConfig, min: 0, title: { display: true, text: 'h' } },
+                            yHRV: { position: 'right', grid: { display: false }, min: 0, title: { display: true, text: 'ms' } }
+                        }
+                    }
+                });
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loading').textContent = "分析エラー";
+            }
+        }
+        loadHealthData();
+    </script>
+</body>
+</html>

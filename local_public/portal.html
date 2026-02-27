@@ -226,6 +226,7 @@
                 <span>💾<span id="diskPercent" class="status-val">--</span></span>
                 <span>📦<span id="nasAvail" class="status-val">--</span></span>
                 <span>📰 <span id="articleCount" class="status-val">--</span></span>
+                <span>🏃 <span id="todaySteps" class="status-val">--</span></span>
                 <span>📍 <span id="lastSpot" class="status-val" style="color:#aaa; font-weight:normal;">--</span></span>
                 <span>☁️ <span id="weather" class="status-val">--</span></span>
             </div>
@@ -266,6 +267,10 @@
                         <span class="icon">⛽</span>
                         <span class="label">Fuel Logs</span>
                     </div>
+                    <div onclick="openPage('health.html')" class="card">
+                        <span class="icon">🏃</span>
+                        <span class="label">Health Insights</span>
+                    </div>
                     <div onclick="openPage('viz.html')" class="card">
                         <span class="icon">📊</span>
                         <span class="label">3D Viz</span>
@@ -303,7 +308,10 @@
         const frameView = document.getElementById('view-frame');
 
         function openPage(url) {
-            frameView.src = url;
+            // キャッシュ回避のためタイムスタンプを付与
+            const cacheBuster = 'v=' + Date.now();
+            const finalUrl = url.includes('?') ? `${url}&${cacheBuster}` : `${url}?${cacheBuster}`;
+            frameView.src = finalUrl;
             gridView.style.display = 'none';
             frameView.style.display = 'block';
         }
@@ -331,6 +339,24 @@
                 }
                 if (data.weather) {
                     document.getElementById('weather').textContent = data.weather;
+                }
+                
+                // --- 追加: 今日の歩数を取得 ---
+                try {
+                    const hRes = await fetch('/api/health-stats?limit=1');
+                    const hData = await hRes.json();
+                    if (hData && hData.length > 0) {
+                        const today = new Date().toLocaleDateString('ja-JP', {year:'numeric', month:'2-digit', day:'2-digit'}).replace(/\//g, '-');
+                        if (hData[0].date === today) {
+                            document.getElementById('todaySteps').textContent = hData[0].steps.toLocaleString();
+                        } else {
+                            document.getElementById('todaySteps').textContent = "0";
+                        }
+                    } else {
+                        document.getElementById('todaySteps').textContent = "0";
+                    }
+                } catch (he) {
+                    document.getElementById('todaySteps').textContent = "--";
                 }
             } catch (e) {}
         }

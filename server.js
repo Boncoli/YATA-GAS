@@ -79,6 +79,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS daily_health (
     date TEXT PRIMARY KEY,
     steps INTEGER DEFAULT 0,
     sleep_hours REAL DEFAULT 0,
+    hrv REAL DEFAULT 0,
+    resting_hr INTEGER DEFAULT 0,
+    active_kcal INTEGER DEFAULT 0,
     sleep_note TEXT
 )`);
 
@@ -104,8 +107,8 @@ app.use((req, res, next) => {
     if (req.url.startsWith('/api/')) {
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     } else {
-        // 静的ファイル (html, js, css, geojson, png) は 1時間キャッシュ
-        res.set('Cache-Control', 'public, max-age=3600');
+        // 調整中はキャッシュを無効化 (開発が終わったら 3600 に戻す)
+        res.set('Cache-Control', 'public, max-age=0');
     }
     next();
 });
@@ -397,6 +400,16 @@ app.get('/api/fuel-stats', (req, res) => {
 });
 
 // 0.2.2 ヘルスケアログ API (iPhone ショートカットから受信)
+app.get('/api/health-stats', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 30;
+        const rows = db.prepare("SELECT * FROM daily_health ORDER BY date DESC LIMIT ?").all(limit);
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/health-log', (req, res) => {
     try {
         let { date, type, value, note } = req.body;
@@ -427,20 +440,27 @@ app.post('/api/health-log', (req, res) => {
         // 3. 統合テーブル (daily_health) へ保存 (UPSERT方式)
         // 既存レコードがなければ作成、あれば該当する列だけを更新する
         const insertStmt = db.prepare(`
-            INSERT INTO daily_health (date, steps, sleep_hours, sleep_note)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
                 steps = CASE WHEN ? = 'steps' THEN EXCLUDED.steps ELSE steps END,
                 sleep_hours = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_hours ELSE sleep_hours END,
+                hrv = CASE WHEN ? = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
+                resting_hr = CASE WHEN ? = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
+                active_kcal = CASE WHEN ? = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
                 sleep_note = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_note ELSE sleep_note END
         `);
 
         // type に応じて値を振り分ける
         const stepsVal = (type === 'steps') ? Math.round(finalValue) : 0;
         const sleepVal = (type === 'sleep' || type === 'sleep_hours') ? parseFloat(finalValue) : 0;
+        const hrvVal = (type === 'hrv') ? parseFloat(finalValue) : 0;
+        const restingHrVal = (type === 'resting_hr') ? Math.round(finalValue) : 0;
+        const activeKcalVal = (type === 'active_kcal') ? Math.round(finalValue) : 0;
         const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
 
-        insertStmt.run(formattedDate, stepsVal, sleepVal, sleepNoteVal, type, type, type);
+        insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, 
+                        type, type, type, type, type, type);
         
         console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
         res.json({ status: "success" });
