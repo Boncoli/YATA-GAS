@@ -142,15 +142,15 @@ ${subInfo}
                 const { Client, GatewayIntentBits } = require('discord.js');
                 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
-                // 10秒経っても終わらなければ強制終了する安全装置
+                // 20秒経っても終わらなければ強制終了する安全装置 (ラズパイの負荷を考慮)
                 const timer = setTimeout(() => {
                     console.error("[Discord] ❌ Timeout: Forcing exit.");
                     client.destroy();
                     process.exit(0);
-                }, 10000);
+                }, 20000);
 
                 client.login(BOT_TOKEN).then(() => {
-                    client.once('ready', async () => {
+                    client.once('clientReady', async () => {
                         try {
                             const channel = await client.channels.fetch(MUTTER_CHANNEL_ID);
                             if (channel) {
