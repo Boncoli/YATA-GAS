@@ -617,6 +617,41 @@ app.post('/api/feeds', (req, res) => {
     }
 });
 
+// 4.2 ペルソナ管理 API
+const PERSONA_FILE = path.join(__dirname, 'persona.txt');
+const PERSONA_TEMPLATE = path.join(__dirname, 'persona.txt.template');
+
+app.get('/api/persona', (req, res) => {
+    try {
+        if (!fs.existsSync(PERSONA_FILE)) {
+            // ファイルがない場合はテンプレートから復元を試みる
+            if (fs.existsSync(PERSONA_TEMPLATE)) {
+                fs.copyFileSync(PERSONA_TEMPLATE, PERSONA_FILE);
+                console.log(`[Web] 🎭 persona.txt restored from template.`);
+            } else {
+                return res.send("");
+            }
+        }
+        const content = fs.readFileSync(PERSONA_FILE, 'utf8');
+        res.send(content);
+    } catch (e) {
+        res.status(500).send("persona.txt の読み込みに失敗しました。");
+    }
+});
+
+app.post('/api/persona', (req, res) => {
+    try {
+        const { content } = req.body;
+        if (content === undefined) return res.status(400).json({ error: "Missing content" });
+        fs.writeFileSync(PERSONA_FILE, content, 'utf8');
+        console.log(`[Web] ✅ persona.txt updated!`);
+        res.json({ status: "success" });
+    } catch (e) {
+        console.error(`[Web] ❌ Persona update error: ${e.message}`);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 5. システムステータス API
 const { execSync } = require('child_process');
 function getSystemStatus() {

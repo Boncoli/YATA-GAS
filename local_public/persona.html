@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Persona Editor</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00e676;
+            --border-color: #333;
+        }
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        h1 {
+            font-size: 1.5rem;
+            color: var(--accent-color);
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .desc {
+            font-size: 0.85rem;
+            color: #888;
+            margin-bottom: 15px;
+        }
+        textarea {
+            flex: 1;
+            background-color: #1a1a1a;
+            color: #fff;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            font-family: 'Fira Code', 'Courier New', Courier, monospace;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            resize: none;
+            outline: none;
+        }
+        textarea:focus {
+            border-color: var(--accent-color);
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        #save-btn {
+            background-color: var(--accent-color);
+            color: #121212;
+        }
+        #reload-btn {
+            background-color: #333;
+            color: #fff;
+        }
+        button:active { opacity: 0.7; }
+        .toast {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: none;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <h1>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <a href="portal.html" style="text-decoration: none; font-size: 1.2rem;">⬅️</a>
+            🎭 Persona Editor
+        </div>
+        <span id="status-tag" style="font-size: 0.7rem; background: #333; padding: 4px 8px; border-radius: 4px; color: #aaa;">Ready</span>
+    </h1>
+    <div class="desc">AIの性格や口調、知識のベースを定義します。変更は次回の会話から反映されます。</div>
+    
+    <textarea id="persona-content" placeholder="ここにペルソナ設定を記述してください..."></textarea>
+
+    <div class="controls">
+        <button id="reload-btn" onclick="loadPersona()">再読み込み</button>
+        <button id="save-btn" onclick="savePersona()">保存する</button>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const textarea = document.getElementById('persona-content');
+        const statusTag = document.getElementById('status-tag');
+        const toast = document.getElementById('toast');
+        const ACCENT_COLOR = "#00e676";
+
+        function showToast(msg) {
+            toast.textContent = msg;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 2000);
+        }
+
+        async function loadPersona() {
+            statusTag.textContent = "Loading...";
+            try {
+                const res = await fetch('/api/persona');
+                const content = await res.text();
+                textarea.value = content;
+                statusTag.textContent = "Loaded";
+                statusTag.style.color = "#aaa";
+            } catch (e) {
+                statusTag.textContent = "Error";
+                statusTag.style.color = "#ff5252";
+                showToast("読み込みに失敗しました。");
+            }
+        }
+
+        async function savePersona() {
+            const content = textarea.value;
+            statusTag.textContent = "Saving...";
+            try {
+                const res = await fetch('/api/persona', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                if (res.ok) {
+                    statusTag.textContent = "Saved";
+                    statusTag.style.color = ACCENT_COLOR;
+                    showToast("保存しました！");
+                    setTimeout(() => {
+                        statusTag.textContent = "Ready";
+                        statusTag.style.color = "#aaa";
+                    }, 2000);
+                } else {
+                    throw new Error("Save failed");
+                }
+            } catch (e) {
+                statusTag.textContent = "Error";
+                statusTag.style.color = "#ff5252";
+                showToast("保存に失敗しました。");
+            }
+        }
+
+        // Initial load
+        loadPersona();
+    </script>
+</body>
+</html>

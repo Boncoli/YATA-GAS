@@ -325,6 +325,7 @@ cd dashboard && python3 dashboard.py
     ---
 
     ### メンテナンス記録
+    - **2026/02/27 (機能拡張)**: **ダイナミック・ペルソナ・エディタの実装**。ポータル画面から `persona.txt` を直接編集・保存できる UI (`persona.html`) と API を構築。あわせてペルソナ設定を BON 様の最新の興味関心（CX-80, RimWorld, Cities: Skylines II 等）に基づき詳細化。
     - **2026/02/27 (機能拡張)**: 統合ライフログエンジン (`daily_health`) の拡張と可視化。iPhoneから歩数・睡眠に加え、心拍変動(HRV)・安静時心拍・消費カロリーの収集に対応。Chart.jsによる2軸複合グラフをポータルに実装。ルートディレクトリの整理と `RECOVERY_GUIDE.md` の整備を完遂。
     - **2026/02/26 (機能拡張)**: Discord通知を内容ごとに4つの専用チャンネルへ分離・拡張。AIの自律的な独り言を `#ai-mutter` にリアルタイム投稿する機能を実装。
     - **2026/02/26 (重大インシデント)**: `do-backup.sh` が cron 実行された際、PATH が通っておらず `pm2 stop` が失敗。サーバーが起動したまま RAM ディスクの DB (`/dev/shm/yata.db*`) を削除したため、サーバープロセスが削除済みファイルディスクリプタを掴んだまま最新データを書き込み続ける「幽霊化」が発生。直近10時間のデータ消失の危機に陥ったが、`/proc/82873/fd/...` からファイルを救出して復旧。対策として、スクリプト内に `export PATH` を追加し、さらに `pgrep` でプロセスが完全に停止したことを確認できた場合のみ DB を削除するフェイルセーフを実装。
@@ -332,7 +333,7 @@ cd dashboard && python3 dashboard.py
     - **2026/02/24**: `YATA.js` の極限最適化を完遂。並列要約 (`summarizeBatch`)、Embedding APIのバッチ通信化 (`generateVectorBatch`)、および `getArticlesInDateWindow` の二段階読み込み方式を実装し、GAS環境での通信・メモリ消費を劇的に削減。`gas-bridge.js` の機能拡張 (`getKeys`) も実施。
     - **2026/02/23**: 記事数カウントの乖離修正（24時間集計へ統一）。Timeline（時系列リスト）機能の追加。
 
-    *Last Updated: 2026-02-23 by Gemini Agent*
+    *Last Updated: 2026-02-27 by Gemini Agent*
 
     
 
