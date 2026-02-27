@@ -66,7 +66,7 @@ fi
 
 # --- 3. ログのローテーション ---
 echo "Rotating logs..." >> "$LOG_FILE"
-LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log" "$YATA_DIR/logs/dashboard.log")
+LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log" "$YATA_DIR/logs/dashboard.log" "$YATA_DIR/logs/task.log")
 
 for LOG in "${LOG_LIST[@]}"; do
     if [ -f "$LOG" ]; then
