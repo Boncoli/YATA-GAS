@@ -814,10 +814,10 @@ ${personaConfig}
         };
 
         if (isReasoning) {
-            payload.max_completion_tokens = 80;
+            payload.max_completion_tokens = 500;
             payload.reasoning_effort = "medium";
         } else {
-            payload.max_tokens = 80;
+            payload.max_tokens = 500;
             payload.temperature = 0.5;
         }
 
