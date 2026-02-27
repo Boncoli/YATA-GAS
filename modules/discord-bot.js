@@ -63,26 +63,30 @@ ${personaConfig}
     };
 
     if (isReasoning) {
-        payload.max_completion_tokens = 80;
+        payload.max_completion_tokens = 150;
         payload.reasoning_effort = "medium";
     } else {
-        payload.max_tokens = 80;
+        payload.max_tokens = 150;
         payload.temperature = 0.5;
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
-        body: JSON.stringify(payload)
-    });
+    try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
+            body: JSON.stringify(payload)
+        });
 
-    const data = await response.json();
-    if (data.choices?.[0]?.message) {
-        const aiResponse = data.choices[0].message.content;
-        db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', aiResponse, now);
-        return aiResponse;
+        const data = await response.json();
+        if (data.choices?.[0]?.message?.content) {
+            const aiResponse = data.choices[0].message.content.trim();
+            db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', aiResponse, now);
+            return aiResponse;
+        }
+    } catch (err) {
+        console.error("[OpenAI] Chat error:", err.message);
     }
-    return "申し訳ありません、うまくお返事ができませんでしたわ。";
+    return "はい、旦那様。良い夢を。";
 }
 
 client.on('ready', () => {
