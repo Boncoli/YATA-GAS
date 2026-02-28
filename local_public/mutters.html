@@ -15,6 +15,8 @@
             --border-color: #30363d;
             --accent-color: #00e676;
             --card-radius: 12px;
+            --mic-on: #f44336;
+            --mic-off: #8b949e;
         }
 
         body {
@@ -32,6 +34,7 @@
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 1px solid var(--border-color);
+            gap: 10px;
         }
 
         .header h1 {
@@ -39,6 +42,48 @@
             font-size: 24px;
             color: var(--text-color);
             flex-grow: 1;
+        }
+
+        .mic-btn {
+            background-color: var(--surface-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .mic-btn.on {
+            border-color: var(--mic-on);
+            color: var(--mic-on);
+        }
+
+        .mic-btn.off {
+            border-color: var(--mic-off);
+            color: var(--mic-off);
+        }
+
+        .mic-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+        }
+
+        .mic-btn.on .mic-indicator {
+            box-shadow: 0 0 8px currentColor;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
         }
 
         .back-btn {
@@ -140,6 +185,10 @@
 
     <div class="header" style="max-width: 800px; margin: 0 auto 20px auto;">
         <h1>🎙️ 思考ログ (Mutter Logs)</h1>
+        <button id="micToggleBtn" class="mic-btn off" onclick="toggleMic()" style="display: none;">
+            <div class="mic-indicator"></div>
+            <span id="micToggleText">Mic: ---</span>
+        </button>
         <a href="/" class="back-btn">← ポータルへ戻る</a>
     </div>
 
@@ -148,6 +197,64 @@
     </div>
 
     <script>
+        let isMicOn = false;
+
+        async function updateMicStatus() {
+            try {
+                const res = await fetch('/api/mic/status');
+                const data = await res.json();
+                const btn = document.getElementById('micToggleBtn');
+                const text = document.getElementById('micToggleText');
+                
+                btn.style.display = 'flex'; // Show button once status is known
+
+                if (data.status === 'online') {
+                    isMicOn = true;
+                    btn.className = 'mic-btn on';
+                    text.textContent = 'Mic: ON';
+                } else {
+                    isMicOn = false;
+                    btn.className = 'mic-btn off';
+                    text.textContent = 'Mic: OFF';
+                }
+            } catch (e) {
+                console.error("Failed to fetch mic status");
+            }
+        }
+
+        async function toggleMic() {
+            const btn = document.getElementById('micToggleBtn');
+            const text = document.getElementById('micToggleText');
+            const action = isMicOn ? 'stop' : 'start';
+            
+            // Optimistic update
+            btn.className = 'mic-btn off';
+            text.textContent = 'Mic: Wait...';
+            btn.style.opacity = '0.5';
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/mic/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                
+                if (res.ok) {
+                    await updateMicStatus();
+                } else {
+                    alert('Failed to toggle mic');
+                    await updateMicStatus(); // Revert
+                }
+            } catch (e) {
+                alert('Error connecting to server');
+                await updateMicStatus(); // Revert
+            } finally {
+                btn.style.opacity = '1';
+                btn.disabled = false;
+            }
+        }
+
         async function loadMutters() {
             const container = document.getElementById('mutterContainer');
             
@@ -208,7 +315,10 @@
         }
 
         // ページ読み込み時に実行
-        document.addEventListener('DOMContentLoaded', loadMutters);
+        document.addEventListener('DOMContentLoaded', () => {
+            loadMutters();
+            updateMicStatus();
+        });
         // 10秒おきに自動更新
         setInterval(loadMutters, 10000);
     </script>

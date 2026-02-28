@@ -734,6 +734,35 @@ app.get('/api/mutters', (req, res) => {
     }
 });
 
+// --- API: Voice Catcher Mic Control ---
+app.get('/api/mic/status', (req, res) => {
+    try {
+        const { execSync } = require('child_process');
+        const output = execSync('pm2 jlist').toString();
+        const processes = JSON.parse(output);
+        const micProcess = processes.find(p => p.name === 'yata-voice-catcher');
+        const status = micProcess ? micProcess.pm2_env.status : 'unknown';
+        res.json({ status });
+    } catch (e) {
+        res.status(500).json({ error: e.message, status: 'error' });
+    }
+});
+
+app.post('/api/mic/toggle', (req, res) => {
+    try {
+        const { execSync } = require('child_process');
+        const { action } = req.body; // 'start' or 'stop'
+        if (action === 'start' || action === 'stop') {
+            execSync(`pm2 ${action} yata-voice-catcher && pm2 save`);
+            res.json({ status: "success", action });
+        } else {
+            res.status(400).json({ error: "Invalid action" });
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- トラックデータ取得 API ---
 app.get('/api/tracks', (req, res) => {
     try {
