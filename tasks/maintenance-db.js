@@ -55,7 +55,8 @@ const targets = [
     { table: 'trend_log', dateCol: 'date', label: 'トレンドログ' },
     { table: 'log', dateCol: 'timestamp', label: 'システムログ' },
     { table: 'history', dateCol: 'date', label: '検索履歴' },
-    { table: 'ai_chat_log', dateCol: 'timestamp', label: 'AIチャット履歴' }
+    { table: 'ai_chat_log', dateCol: 'timestamp', label: 'AIチャット履歴' },
+    { table: 'mutter_logs', dateCol: 'timestamp', label: '独り言ログ' }
 ];
 
 let totalDeleted = 0;

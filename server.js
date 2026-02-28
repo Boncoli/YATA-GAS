@@ -723,6 +723,17 @@ app.get('/api/chat-history', (req, res) => {
     }
 });
 
+// --- API: Voice Catcher Logs (Mutter) ---
+app.get('/api/mutters', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 100;
+        const rows = db.prepare("SELECT * FROM mutter_logs ORDER BY id DESC LIMIT ?").all(limit);
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- トラックデータ取得 API ---
 app.get('/api/tracks', (req, res) => {
     try {

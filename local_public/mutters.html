@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mutter Logs - YATA</title>
+    <link rel="icon" href="icon.png">
+    <link rel="apple-touch-icon" href="icon.png">
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --surface-color: #161b22;
+            --text-color: #c9d1d9;
+            --text-muted: #8b949e;
+            --border-color: #30363d;
+            --accent-color: #00e676;
+            --card-radius: 12px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            line-height: 1.5;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: var(--text-color);
+            flex-grow: 1;
+        }
+
+        .back-btn {
+            background-color: var(--surface-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .back-btn:hover {
+            border-color: var(--text-muted);
+            background-color: #1c2128;
+        }
+
+        .mutter-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .mutter-card {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            padding: 16px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .mutter-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 12px;
+        }
+
+        .mutter-time {
+            font-size: 12px;
+            color: var(--text-muted);
+            background-color: rgba(255,255,255,0.05);
+            padding: 4px 8px;
+            border-radius: 12px;
+        }
+
+        .mutter-text {
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+            margin: 0;
+            padding-left: 12px;
+            border-left: 4px solid var(--accent-color);
+        }
+
+        .mutter-analysis {
+            margin-top: 16px;
+            padding: 12px;
+            background-color: rgba(0, 230, 118, 0.05);
+            border-radius: 8px;
+            font-size: 14px;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px 16px;
+            align-items: start;
+        }
+
+        .analysis-label {
+            color: var(--accent-color);
+            font-weight: bold;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding-top: 2px;
+        }
+
+        .analysis-value {
+            color: var(--text-color);
+        }
+
+        .no-data {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 40px;
+            font-style: italic;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--accent-color);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header" style="max-width: 800px; margin: 0 auto 20px auto;">
+        <h1>🎙️ 思考ログ (Mutter Logs)</h1>
+        <a href="/" class="back-btn">← ポータルへ戻る</a>
+    </div>
+
+    <div id="mutterContainer" class="mutter-container">
+        <div class="loading">読み込み中...</div>
+    </div>
+
+    <script>
+        async function loadMutters() {
+            const container = document.getElementById('mutterContainer');
+            
+            try {
+                const response = await fetch('/api/mutters');
+                const data = await response.json();
+                
+                container.innerHTML = ''; // Clear loading
+                
+                if (!data || data.length === 0) {
+                    container.innerHTML = '<div class="no-data">まだ独り言は記録されていません。</div>';
+                    return;
+                }
+
+                data.forEach(log => {
+                    const card = document.createElement('div');
+                    card.className = 'mutter-card';
+                    
+                    // Parse timestamp to readable format
+                    const date = new Date(log.timestamp);
+                    const timeStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+
+                    let analysisHtml = '';
+                    if (log.analysis_json) {
+                        try {
+                            const analysis = JSON.parse(log.analysis_json);
+                            if (Object.keys(analysis).length > 0 && !analysis.error) {
+                                analysisHtml = `
+                                    <div class="mutter-analysis">
+                                        ${analysis.emotion ? `<div class="analysis-label">Emotion</div><div class="analysis-value">${analysis.emotion}</div>` : ''}
+                                        ${analysis.interest ? `<div class="analysis-label">Interest</div><div class="analysis-value">${analysis.interest}</div>` : ''}
+                                        ${analysis.next_action ? `<div class="analysis-label">Action</div><div class="analysis-value">${analysis.next_action}</div>` : ''}
+                                    </div>
+                                `;
+                            } else if (analysis.error) {
+                                analysisHtml = `<div class="mutter-analysis" style="background-color: rgba(255,100,100,0.1);"><div class="analysis-label" style="color: #ff6b6b;">Error</div><div class="analysis-value">${analysis.error}</div></div>`;
+                            }
+                        } catch(e) {
+                            // JSONパースエラー時はスキップ
+                        }
+                    }
+
+                    card.innerHTML = `
+                        <div class="mutter-header">
+                            <h2 class="mutter-text">「${log.raw_text}」</h2>
+                            <span class="mutter-time">${timeStr}</span>
+                        </div>
+                        ${analysisHtml}
+                    `;
+                    
+                    container.appendChild(card);
+                });
+                
+            } catch (error) {
+                console.error('Error fetching mutters:', error);
+                container.innerHTML = `<div class="no-data" style="color: #ff6b6b;">エラーが発生しました: ${error.message}</div>`;
+            }
+        }
+
+        // ページ読み込み時に実行
+        document.addEventListener('DOMContentLoaded', loadMutters);
+        // 10秒おきに自動更新
+        setInterval(loadMutters, 10000);
+    </script>
+</body>
+</html>
