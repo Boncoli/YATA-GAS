@@ -1,5 +1,9 @@
 import os
 import sys
+import time
+import threading
+import queue
+import subprocess
 from ctypes import *
 
 # --- 邪魔なALSAエラー出力を捨てるおまじない ---
@@ -15,81 +19,110 @@ except OSError:
 
 import speech_recognition as sr
 from faster_whisper import WhisperModel
-import time
 
 # 設定
-MODEL_SIZE = "tiny" # ラズパイでの速度重視（"base"にすると精度アップ）
-TEMP_WAV = "/dev/shm/mutter_temp.wav" # RAMディスク上で処理
+MODEL_SIZE = "base" # ラズパイでの速度重視（"base"にすると精度アップ）
+# スレッドごとに別々のファイル名を使うためのベース
+TEMP_WAV_BASE = "/dev/shm/mutter_temp" 
+
+# --- テストモード設定 ---
+# True の場合、文字起こし結果を画面に表示するだけで、Gemini API (Node.js) は呼び出しません。
+TEST_MODE = False
 
 print("Loading local Whisper model...")
-# CPUで軽量に動かす設定
 model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
 r = sr.Recognizer()
+r.pause_threshold = 1.0 
+r.dynamic_energy_threshold = True
 
-# マイクの感度調整
-with sr.Microphone() as source:
-    print("マイクの環境音を調整しています（数秒お待ち下さい）...")
-    r.adjust_for_ambient_noise(source, duration=2)
-    print(f"環境音の基準値が設定されました: {r.energy_threshold}")
+# 音声データを積むキュー
+audio_queue = queue.Queue()
 
-print("==================================================")
-print("🎙️ 独り言キャッチャー 起動完了")
-print("==================================================")
+# --- ワーカー・スレッド（文字起こし＆AI解析をバックグラウンドで処理する） ---
+def process_audio():
+    # スレッドごとの連番（複数同時処理時のファイル名衝突を避ける）
+    thread_id = threading.get_ident()
+    temp_wav = f"{TEMP_WAV_BASE}_{thread_id}.wav"
 
-while True:
-    try:
-        with sr.Microphone() as source:
-            print("\n[待機中] 声を検知するまで待機しています...")
-            # 声がするまで待機、話し終わったら自動で録音終了
-            # phrase_time_limit で最大録音時間を制限可能（例: 10秒）
-            audio = r.listen(source, timeout=None, phrase_time_limit=15)
-            
-            print("[録音完了] 音声をRAMに保存しています...")
-            with open(TEMP_WAV, "wb") as f:
+    while True:
+        audio = audio_queue.get()
+        if audio is None: break # 終了シグナル
+
+        try:
+            # print("\n[Worker] 録音データを処理中...")
+            with open(temp_wav, "wb") as f:
                 f.write(audio.get_wav_data())
             
-            print("[文字起こし中] Whisperで解析中...")
             start_time = time.time()
-            segments, info = model.transcribe(TEMP_WAV, beam_size=5, language="ja")
-            
+            segments, info = model.transcribe(temp_wav, beam_size=5, language="ja")
             text = "".join([segment.text for segment in segments]).strip()
             elapsed_time = time.time() - start_time
             
-            # --- ノイズ・短い音の足切りフィルター ---
-            # カナや記号だけの短い文字列や、明らかに独り言ではない単発の音を弾く
+            # --- フィルター処理 ---
             ignore_words = ["あ", "う", "え", "お", "ん", "あっ", "うっ", "えっ", "おっ", "うん", "はい", "いいえ", "ふふ", "へえ"]
+            hallucinations = [
+                "ご視聴ありがとうございました", "ご視聴いただきありがとうございました", 
+                "チャンネル登録", "高評価", "お疲れ様でした", "字幕", "ありがとうございました"
+            ]
+            is_hallucination = any(h in text for h in hallucinations)
             
             if not text:
-                print("※ 有効な音声が検出されませんでした")
+                pass
+            elif is_hallucination:
+                print(f"※ 幻聴スキップ: 「{text}」")
             elif len(text) <= 2 and text in ignore_words:
-                print(f"※ ノイズまたは短すぎる音声のためスキップ: 「{text}」")
+                print(f"※ 短音スキップ: 「{text}」")
             elif len(text.replace(" ", "").replace("　", "")) < 2:
-                 print(f"※ 1文字以下のためスキップ: 「{text}」")
+                 print(f"※ 1文字スキップ: 「{text}」")
             else:
-                print(f"✨ 認識結果: 「{text}」 (処理時間: {elapsed_time:.2f}秒)")
-                print("🔄 Node.jsに解析とDB保存を要求しています...")
-                # Node.jsプロセスを呼び出して、RAM上のDBにアクセスさせる
-                import subprocess
-                try:
-                    # 確実に yata-local ディレクトリから実行するようパスを指定し、標準出力を表示する
-                    node_cmd = ["node", "tasks/process-mutter.js", text]
-                    # cwd を指定して .env を確実に読み込ませる
-                    result = subprocess.run(node_cmd, cwd="/home/boncoli/yata-local", check=True, capture_output=True, text=True)
-                    print(result.stdout.strip())
-                except subprocess.CalledProcessError as e:
-                    print(f"Node.jsの呼び出しに失敗しました:\n標準出力: {e.stdout}\nエラー出力: {e.stderr}")
-                except Exception as e:
-                    print(f"予期せぬエラー: {e}")
-            
-            # 処理が終わったら即座にRAMから削除
-            if os.path.exists(TEMP_WAV):
-                os.remove(TEMP_WAV)
+                print(f"✨ 認識結果: 「{text}」 ({elapsed_time:.2f}秒)")
+                
+                if not TEST_MODE:
+                    print(f"🔄 Node.jsへ送信中: 「{text[:10]}...」")
+                    try:
+                        node_cmd = ["node", "tasks/process-mutter.js", text]
+                        subprocess.run(node_cmd, cwd="/home/boncoli/yata-local", check=True, capture_output=True, text=True)
+                        print("✅ AI解析＆DB保存完了")
+                    except Exception as e:
+                        print(f"❌ Node.js送信エラー: {e}")
 
-    except sr.WaitTimeoutError:
-        pass
-    except KeyboardInterrupt:
-        print("\n停止します。")
-        break
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
-        time.sleep(1)
+        except Exception as e:
+            print(f"Worker Error: {e}")
+        finally:
+            if os.path.exists(temp_wav):
+                os.remove(temp_wav)
+            audio_queue.task_done()
+
+# ワーカー・スレッドを起動 (1スレッドで順次処理)
+worker = threading.Thread(target=process_audio, daemon=True)
+worker.start()
+
+# --- コールバック関数（音声が拾えるたびに呼ばれる） ---
+def callback(recognizer, audio):
+    # 録音完了したらすぐにキューに投げる。メインスレッドはブロックしない。
+    audio_queue.put(audio)
+
+# マイクの感度調整
+with sr.Microphone() as source:
+    print("マイクの環境音を調整しています（2秒お待ち下さい）...")
+    r.adjust_for_ambient_noise(source, duration=2)
+    r.energy_threshold = r.energy_threshold * 0.8
+    print(f"環境音の基準値（感度）が設定されました: {r.energy_threshold:.2f}")
+
+print("==================================================")
+print("🎙️ 独り言キャッチャー [マルチスレッド版] 起動完了")
+print("   (録音しながらバックグラウンドで解析します)")
+print("==================================================")
+
+# バックグラウンドで常時リッスン開始
+stop_listening = r.listen_in_background(sr.Microphone(), callback, phrase_time_limit=15)
+
+try:
+    while True:
+        time.sleep(0.1) # メインスレッドはただ生き続けるだけ
+except KeyboardInterrupt:
+    print("\n停止シグナルを受信しました。")
+    stop_listening(wait_for_stop=False) # リッスン停止
+    print("残りのキューを処理しています...")
+    audio_queue.join() # キューが空になるまで待つ
+    print("終了しました。")
