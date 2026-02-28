@@ -32,8 +32,14 @@ TEST_MODE = False
 print("Loading local Whisper model...")
 model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
 r = sr.Recognizer()
-r.pause_threshold = 1.0 
-r.dynamic_energy_threshold = True
+
+# キーボードの打鍵音などの瞬間的なノイズを無視するため、
+# 少し長く（2.5秒）声が途切れるまでを一つの発話とみなす（ぶつ切り防止）
+r.pause_threshold = 2.5 
+# 環境音の自動追従をオフにし、固定のしきい値を使用する
+r.dynamic_energy_threshold = False
+# 音量がしきい値を超えても、それが0.3秒以上継続しなければ「声」とみなさず無視する（キーボード強打対策）
+r.non_speaking_duration = 0.3
 
 # 音声データを積むキュー
 audio_queue = queue.Queue()
@@ -59,6 +65,7 @@ def process_audio():
             elapsed_time = time.time() - start_time
             
             # --- フィルター処理 ---
+            # タイピング音などで空振りした場合に生成されやすいノイズ
             ignore_words = ["あ", "う", "え", "お", "ん", "あっ", "うっ", "えっ", "おっ", "うん", "はい", "いいえ", "ふふ", "へえ"]
             hallucinations = [
                 "ご視聴ありがとうございました", "ご視聴いただきありがとうございました", 
@@ -73,7 +80,7 @@ def process_audio():
             elif len(text) <= 2 and text in ignore_words:
                 print(f"※ 短音スキップ: 「{text}」")
             elif len(text.replace(" ", "").replace("　", "")) < 2:
-                 print(f"※ 1文字スキップ: 「{text}」")
+                 print(f"※ 1文字スキップ(打鍵音等の可能性): 「{text}」")
             else:
                 print(f"✨ 認識結果: 「{text}」 ({elapsed_time:.2f}秒)")
                 
@@ -85,6 +92,8 @@ def process_audio():
                         print("✅ AI解析＆DB保存完了")
                     except Exception as e:
                         print(f"❌ Node.js送信エラー: {e}")
+                else:
+                    print("🛠️ テストモード: LLM送信をスキップしました")
 
         except Exception as e:
             print(f"Worker Error: {e}")
@@ -102,12 +111,11 @@ def callback(recognizer, audio):
     # 録音完了したらすぐにキューに投げる。メインスレッドはブロックしない。
     audio_queue.put(audio)
 
-# マイクの感度調整
-with sr.Microphone() as source:
-    print("マイクの環境音を調整しています（2秒お待ち下さい）...")
-    r.adjust_for_ambient_noise(source, duration=2)
-    r.energy_threshold = r.energy_threshold * 0.8
-    print(f"環境音の基準値（感度）が設定されました: {r.energy_threshold:.2f}")
+# マイクの感度設定
+# 起動時の自動調整は行わず、メーターで計測した固定のしきい値を使用する
+# 300(無音) 〜 600(キーボード) 〜 1000(小声/強打) という環境のため、800で固定
+r.energy_threshold = 800
+print(f"環境音の固定基準値（感度）が設定されました: {r.energy_threshold}")
 
 print("==================================================")
 print("🎙️ 独り言キャッチャー [マルチスレッド版] 起動完了")
