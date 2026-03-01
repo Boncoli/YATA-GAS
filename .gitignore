@@ -57,3 +57,4 @@ interests_test.json
 persona.txt
 local_llm/models/
 core.*
+hdd.logs/
