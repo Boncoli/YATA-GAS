@@ -6,7 +6,7 @@
 [![Version](https://img.shields.io/badge/version-3.5.1-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Google_Apps_Script-0F9D58.svg)]()
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%7C%20Azure%20%7C%20Gemini-orange.svg)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 
 本書は、完全サーバーレスで動作するAI駆動型RSS収集・分析プラットフォーム「YATA」の全貌を記したマスターマニュアル（虎の巻）です。システムの全体像、日々の運用、緊急時の対応までを網羅しています。
 
@@ -383,10 +383,18 @@ AIの気まぐれによる出力ミスや、過去データの再利用を行う
 
 ---
 
-## ⚖️ License & Disclaimer
+## ⚖️ Copyright & Disclaimer
 
-* **License**: This project is licensed under the MIT License.
-* **Disclaimer**: 本スクリプトは外部API（OpenAI, Azure, Gemini等）を利用します。利用に伴うAPIの課金や、Google Apps Scriptの利用制限・クォータ超過による問題について、開発者は一切の責任を負いません。設定内容およびAPIキーの管理は自己責任にてお願いいたします。
+* **Copyright**: &copy; 2026 boncoli. All Rights Reserved.
+  * 本リポジトリに公開されているソースコードおよびドキュメントの著作権は作者に帰属します。
+  * 現在、オープンソース・ライセンス（MIT等）は付与されておりません。無断での複製、改変、再配布、および商用利用はご遠慮ください。
+  * 利用許可に関するお問い合わせがある場合は、GitHubのIssueまたはプロフィール欄の連絡先までお願いいたします。
+  * This source code is published for the purpose of demonstrating my technical skills and architectural design. Use, reproduction, or distribution of this code is strictly prohibited.
+
+* **Disclaimer (免責事項)**: 
+  * 本スクリプトは外部API（OpenAI, Azure OpenAI, Gemini等）を利用します。利用に伴うAPIの課金や、Google Apps Scriptの利用制限・クォータ超過による問題について、開発者は一切の責任を負いません。
+  * 設定内容およびAPIキーの管理は自己責任にてお願いいたします。
+  * 本ソフトウェアの使用により生じた損害について、作者は一切の責任を負いません。
 
 ---
 **YATA Project** - *Illuminating the unseen paths of information.*
