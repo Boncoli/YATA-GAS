@@ -484,7 +484,7 @@ app.post('/api/health-log', (req, res) => {
                 const bpDiaVal = (type === 'bp_dia') ? Math.round(finalValue) : 0;
 
                 insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, bpSysVal, bpDiaVal,
-                                type, type, type, type, type, type, type, type);
+                                type, type, type, type, type, type, type, type, type, type);
                 
                 console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
                 processedCount++;
