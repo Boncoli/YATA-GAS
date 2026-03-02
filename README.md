@@ -3,7 +3,7 @@
 > **The Three-Legged Guide to the Web.**
 > **情報の海を導き、真実を映し出す。Google Apps Script (GAS) 上で完結する、あなたのための「AIインテリジェンス・パートナー」。**
 
-[![Version](https://img.shields.io/badge/version-3.5-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-3.5.1-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Google_Apps_Script-0F9D58.svg)]()
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%7C%20Azure%20%7C%20Gemini-orange.svg)]()
 
@@ -296,7 +296,7 @@ APIの不調や、RSSの取得漏れなどの原因究明に使います。
 * **`archiveAndPruneOldData()`**
   * **機能**: 規定の月数（デフォルト6ヶ月等）を過ぎた古い記事をJSON化してGoogle Driveへ退避し、シートから削除します。同時に、その期間の「ベクトル重心」と「要約」を `MacroTrends` シートに記録します。
 * **`maintenanceLightenOldArticles()`**
-  * **機能**: 1ヶ月以上前の記事の「ベクトルデータ（G列）」だけを削除します。
+  * **機能**: 機能: 35日以上前の記事の「ベクトルデータ（G列）」だけを削除します。要約ジョブ（30日）との競合による無限ループを防ぐため、安全なバッファ期間を設けています。
   * **用途**: 記事自体は残してキーワード検索の対象にしつつ、クソデカ配列であるベクトルだけを消してシート容量を劇的に回復させます。
 * **`maintenanceRoundExistingVectors()`**
   * **機能**: 既に保存されているベクトルを走査し、小数点以下が7桁以上あるものを「6桁」に丸め直します。
@@ -367,6 +367,7 @@ AIの気まぐれによる出力ミスや、過去データの再利用を行う
 
 | Version | Date | Key Updates |
 | :--- | :--- | :--- |
+| **v3.5.1** | 2026-03-02 | **API Cost Optimization & Bugfix**<br>カレンダーの月またぎ（28日問題）によるベクトル生成・削除の無限ループを解消（生成30日/削除35日に固定）。エラーテキストの無限APIリトライを防止するガードレールを実装。 |
 | **v3.5** | 2026-01-16 | **Refactoring & Resilience Update**<br>収集ジョブの二重実行防止(LockService)、AI要約エラーの分類処理(恒久/一時)、APIコスト保存の高速化(Batch Save)。 |
 | **v3.4.0** | 2026-01-10 | **UI/UX Enhancement**<br>3Dベクトル可視化(Visualize.html)、レポート内「AI要約ボタン」実装、バッジデザイン刷新。 |
 | **v3.3.2** | 2026-01-05 | **Sustainability Optimization**<br>データライフサイクルの再定義（30日でベクトル軽量化、60日で完全削除）、予兆検知の分析期間を30日に延長。 |
