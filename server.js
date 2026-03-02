@@ -440,7 +440,7 @@ app.post('/api/health-log', (req, res) => {
                     ELSE sleep_note 
                 END,
                 bp_sys = CASE WHEN ? = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
-                bp_dia = CASE WHEN ? = 'bp_dia' THEN EXCLUDED.bp_dia ELSE bp_dia END
+                bp_dia = CASE WHEN ? IN ('bp_dia', 'bp_sia') THEN EXCLUDED.bp_dia ELSE bp_dia END
         `);
 
         // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
@@ -481,7 +481,7 @@ app.post('/api/health-log', (req, res) => {
                 const activeKcalVal = (type === 'active_kcal') ? Math.round(finalValue) : 0;
                 const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
                 const bpSysVal = (type === 'bp_sys') ? Math.round(finalValue) : 0;
-                const bpDiaVal = (type === 'bp_dia') ? Math.round(finalValue) : 0;
+                const bpDiaVal = (type === 'bp_dia' || type === 'bp_sia') ? Math.round(finalValue) : 0;
 
                 insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, bpSysVal, bpDiaVal,
                                 type, type, type, type, type, type, type, type, type, type);
