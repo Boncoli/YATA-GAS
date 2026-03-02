@@ -85,7 +85,7 @@
         }
         .canvas-container {
             position: relative;
-            height: 200px;
+            height: 240px;
             width: 100%;
         }
 
@@ -123,17 +123,27 @@
 
             <div id="sleep-details" class="details-box"></div>
 
+            <!-- Activity Chart -->
             <div class="chart-section">
-                <div class="section-title">🏃 Activity & Energy (7 Days)</div>
+                <div class="section-title">🏃 Activity Trends</div>
                 <div class="canvas-container">
                     <canvas id="activityChart"></canvas>
                 </div>
             </div>
 
+            <!-- Recovery Chart -->
             <div class="chart-section">
-                <div class="section-title">💓 Recovery & Heart (7 Days)</div>
+                <div class="section-title">💤 Recovery Trends</div>
                 <div class="canvas-container">
                     <canvas id="recoveryChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Vital Chart -->
+            <div class="chart-section">
+                <div class="section-title">💓 Vital Trends</div>
+                <div class="canvas-container">
+                    <canvas id="vitalChart"></canvas>
                 </div>
             </div>
         </div>
@@ -145,6 +155,13 @@
             const m = Math.round((hours - h) * 60);
             return `${h}<span class="unit">h</span> ${m}<span class="unit">m</span>`;
         }
+
+        // Global Chart Defaults
+        Chart.defaults.color = '#888';
+        Chart.defaults.plugins.legend.labels.usePointStyle = true;
+        Chart.defaults.plugins.legend.labels.pointStyle = 'circle';
+        Chart.defaults.plugins.legend.labels.boxWidth = 8;
+        Chart.defaults.plugins.legend.labels.font = { size: 11 };
 
         async function init() {
             try {
@@ -170,7 +187,6 @@
                 document.getElementById('today-hr').innerHTML = `${latest.resting_hr}<span class="unit">bpm</span>`;
                 document.getElementById('today-kcal').innerHTML = `${latest.active_kcal.toLocaleString()}<span class="unit">kcal</span>`;
                 
-                // 血圧が0の場合は「-」表示にする
                 if (latest.bp_sys > 0 && latest.bp_dia > 0) {
                     document.getElementById('today-bp').innerHTML = `${latest.bp_sys}/${latest.bp_dia}<span class="unit">mmHg</span>`;
                 } else {
@@ -193,24 +209,32 @@
                     } catch (e) {}
                 }
 
-                // Activity Chart
+                // Axis Styling Configuration
+                const getAxisConfig = (color, title) => ({
+                    position: 'left',
+                    grid: { color: '#333' },
+                    ticks: { color: color, font: { size: 11, weight: 'bold' } },
+                    title: { display: true, text: title, color: color, font: { size: 12, weight: 'bold' } },
+                    grace: '10%'
+                });
+
+                // --- Activity Chart ---
                 new Chart(document.getElementById('activityChart'), {
-                    type: 'bar',
+                    type: 'line',
                     data: {
                         labels: labels,
                         datasets: [
                             {
                                 label: 'Steps',
                                 data: sortedData.map(d => d.steps),
-                                backgroundColor: 'rgba(0, 230, 118, 0.3)',
                                 borderColor: '#00e676',
-                                borderWidth: 1,
+                                backgroundColor: 'transparent',
+                                tension: 0.3,
                                 yAxisID: 'y'
                             },
                             {
-                                label: 'Kcal',
+                                label: 'Calories',
                                 data: sortedData.map(d => d.active_kcal),
-                                type: 'line',
                                 borderColor: '#ffca28',
                                 backgroundColor: 'transparent',
                                 tension: 0.3,
@@ -221,40 +245,120 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
+                        plugins: { legend: { display: true } },
                         scales: {
-                            y: { position: 'left', grid: { color: '#333' } },
-                            y1: { position: 'right', grid: { display: false } }
+                            y: getAxisConfig('#00e676', 'Steps (歩)'),
+                            y1: { ...getAxisConfig('#ffca28', 'Calories (kcal)'), position: 'right', grid: { display: false } }
                         }
                     }
                 });
 
-                // Recovery Chart
+                // --- Recovery Chart ---
                 new Chart(document.getElementById('recoveryChart'), {
                     type: 'line',
                     data: {
                         labels: labels,
                         datasets: [
                             {
-                                label: 'Sleep',
-                                data: sortedData.map(d => d.sleep_hours),
-                                borderColor: '#81d4fa',
-                                tension: 0.3
-                            },
-                            {
                                 label: 'HRV',
                                 data: sortedData.map(d => d.hrv),
                                 borderColor: '#f48fb1',
-                                tension: 0.3
+                                backgroundColor: 'transparent',
+                                tension: 0.3,
+                                yAxisID: 'y'
+                            },
+                            {
+                                label: 'Sleep',
+                                data: sortedData.map(d => d.sleep_hours),
+                                borderColor: '#81d4fa',
+                                backgroundColor: 'transparent',
+                                tension: 0.3,
+                                yAxisID: 'y1'
                             }
                         ]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
+                        plugins: { legend: { display: true } },
                         scales: {
-                            y: { grid: { color: '#333' } }
+                            y: getAxisConfig('#f48fb1', 'HRV (ms)'),
+                            y1: { 
+                                ...getAxisConfig('#81d4fa', 'Sleep (hours)'), 
+                                position: 'right', 
+                                grid: { display: false },
+                                min: 0,
+                                suggestedMax: 10
+                            }
+                        }
+                    }
+                });
+
+                // --- Vital Chart ---
+                new Chart(document.getElementById('vitalChart'), {
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                type: 'bar',
+                                label: 'BP Range (Sys/Dia)',
+                                data: sortedData.map(d => (d.bp_sys > 0 && d.bp_dia > 0) ? [d.bp_dia, d.bp_sys] : null),
+                                backgroundColor: 'rgba(255, 82, 82, 0.5)',
+                                borderColor: '#ff5252',
+                                borderWidth: 1,
+                                borderRadius: 4,
+                                barPercentage: 0.5,
+                                yAxisID: 'y'
+                            },
+                            {
+                                type: 'line',
+                                label: 'Resting HR',
+                                data: sortedData.map(d => d.resting_hr),
+                                borderColor: '#ef5350',
+                                backgroundColor: 'transparent',
+                                tension: 0.3,
+                                yAxisID: 'y1'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { 
+                            legend: { 
+                                display: true,
+                                labels: {
+                                    generateLabels: (chart) => {
+                                        const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                                        labels.forEach(l => l.pointStyle = 'circle');
+                                        return labels;
+                                    }
+                                }
+                            } 
+                        },
+                        scales: {
+                            y: { 
+                                ...getAxisConfig('#ff5252', 'Pressure (mmHg)'),
+                                min: 50,
+                                suggestedMax: 150,
+                                ticks: {
+                                    stepSize: 10,
+                                    color: '#ff5252',
+                                    font: { size: 11, weight: 'bold' }
+                                }
+                            },
+                            y1: { 
+                                ...getAxisConfig('#ef5350', 'Heart Rate (bpm)'), 
+                                position: 'right', 
+                                grid: { display: false },
+                                min: 40,
+                                suggestedMax: 100,
+                                ticks: {
+                                    stepSize: 10,
+                                    color: '#ef5350',
+                                    font: { size: 11, weight: 'bold' }
+                                }
+                            }
                         }
                     }
                 });
