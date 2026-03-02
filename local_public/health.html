@@ -116,6 +116,7 @@
                 <div class="summary-card hrv"><div class="label">ストレス(HRV)</div><div class="value" id="today-hrv">0<span class="unit">ms</span></div></div>
                 <div class="summary-card hr"><div class="label">安静時心拍</div><div class="value" id="today-hr">0<span class="unit">bpm</span></div></div>
                 <div class="summary-card kcal"><div class="label">消費</div><div class="value" id="today-kcal">0<span class="unit">kcal</span></div></div>
+                <div class="summary-card" style="background:#fff3f3; color:#c0392b;"><div class="label">血圧</div><div class="value" id="today-bp">0/0<span class="unit">mmHg</span></div></div>
             </div>
 
             <div id="sleep-details" class="details-box"></div>
@@ -170,6 +171,13 @@
                 document.getElementById('today-hrv').innerHTML = `${Math.round(latest.hrv)}<span class="unit">ms</span>`;
                 document.getElementById('today-hr').innerHTML = `${latest.resting_hr}<span class="unit">bpm</span>`;
                 document.getElementById('today-kcal').innerHTML = `${latest.active_kcal.toLocaleString()}<span class="unit">kcal</span>`;
+                
+                // 血圧が0の場合は「-」表示にする
+                if (latest.bp_sys > 0 && latest.bp_dia > 0) {
+                    document.getElementById('today-bp').innerHTML = `${latest.bp_sys}/${latest.bp_dia}<span class="unit">mmHg</span>`;
+                } else {
+                    document.getElementById('today-bp').innerHTML = `- / -<span class="unit">mmHg</span>`;
+                }
 
                 // Sleep Details
                 if (latest.sleep_note) {

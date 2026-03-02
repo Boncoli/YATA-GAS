@@ -82,7 +82,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS daily_health (
     hrv REAL DEFAULT 0,
     resting_hr INTEGER DEFAULT 0,
     active_kcal INTEGER DEFAULT 0,
-    sleep_note TEXT
+    sleep_note TEXT,
+    bp_sys INTEGER DEFAULT 0,
+    bp_dia INTEGER DEFAULT 0
 )`);
 
 const compression = require('compression');
@@ -420,8 +422,8 @@ app.post('/api/health-log', (req, res) => {
         }
 
         const insertStmt = db.prepare(`
-            INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note, bp_sys, bp_dia)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
                 steps = CASE WHEN ? = 'steps' THEN EXCLUDED.steps ELSE steps END,
                 sleep_hours = CASE 
@@ -436,7 +438,9 @@ app.post('/api/health-log', (req, res) => {
                     WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
                     WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
                     ELSE sleep_note 
-                END
+                END,
+                bp_sys = CASE WHEN ? = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
+                bp_dia = CASE WHEN ? = 'bp_dia' THEN EXCLUDED.bp_dia ELSE bp_dia END
         `);
 
         // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
@@ -476,9 +480,11 @@ app.post('/api/health-log', (req, res) => {
                 const restingHrVal = (type === 'resting_hr') ? Math.round(finalValue) : 0;
                 const activeKcalVal = (type === 'active_kcal') ? Math.round(finalValue) : 0;
                 const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
+                const bpSysVal = (type === 'bp_sys') ? Math.round(finalValue) : 0;
+                const bpDiaVal = (type === 'bp_dia') ? Math.round(finalValue) : 0;
 
-                insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, 
-                                type, type, type, type, type, type);
+                insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, bpSysVal, bpDiaVal,
+                                type, type, type, type, type, type, type, type);
                 
                 console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
                 processedCount++;
