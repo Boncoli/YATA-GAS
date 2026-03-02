@@ -424,11 +424,19 @@ app.post('/api/health-log', (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
                 steps = CASE WHEN ? = 'steps' THEN EXCLUDED.steps ELSE steps END,
-                sleep_hours = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_hours ELSE sleep_hours END,
+                sleep_hours = CASE 
+                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_hours 
+                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_hours
+                    ELSE sleep_hours 
+                END,
                 hrv = CASE WHEN ? = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
                 resting_hr = CASE WHEN ? = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
                 active_kcal = CASE WHEN ? = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
-                sleep_note = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_note ELSE sleep_note END
+                sleep_note = CASE 
+                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
+                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
+                    ELSE sleep_note 
+                END
         `);
 
         // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
