@@ -178,7 +178,7 @@
                         const detailsDiv = document.getElementById('sleep-details');
                         detailsDiv.style.display = 'block';
                         detailsDiv.innerHTML = '<div style="margin-bottom:8px; font-weight:bold; color:#888;">AutoSleep Ring Analysis</div>';
-                        ["良質な睡眠", "深い", "心拍数", "睡眠の評価"].forEach(key => {
+                        ["レム", "深い", "心拍数", "睡眠の評価"].forEach(key => {
                             if (note[key]) {
                                 let val = (key === "心拍数") ? note[key]+" bpm" : (key === "睡眠の評価" ? note[key]+" 点" : formatSleepTime(parseFloat(note[key])));
                                 detailsDiv.innerHTML += `<div class="detail-item"><span>${key}</span><span class="detail-val">${val}</span></div>`;
