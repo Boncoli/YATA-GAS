@@ -412,33 +412,13 @@ app.get('/api/health-stats', (req, res) => {
 
 app.post('/api/health-log', (req, res) => {
     try {
-        let { date, type, value, note } = req.body;
+        // 配列で一括受信された場合と、単一オブジェクトの場合を両方サポート
+        const records = Array.isArray(req.body) ? req.body : [req.body];
         
-        if (!date || !type || value === undefined) {
-            return res.status(400).json({ error: "Missing required fields" });
+        if (records.length === 0) {
+            return res.status(400).json({ error: "Empty request" });
         }
 
-        // 1. 日付の整形 (ISO形式等から YYYY-MM-DD を抽出)
-        let formattedDate = date;
-        if (date.includes('T')) formattedDate = date.split('T')[0];
-        else if (date.includes('/')) formattedDate = date.replace(/\//g, '-').split(' ')[0];
-
-        // 2. 特殊なデータ形式 (AutoSleep等) の処理
-        let finalValue = value;
-        let finalNote = note;
-        if (typeof value === 'string' && value.trim().startsWith('{')) {
-            try {
-                const parsed = JSON.parse(value);
-                finalNote = value;
-                finalValue = parsed["睡眠"] || parsed["Sleep"] || 0;
-            } catch (e) { finalNote = value; finalValue = 0; }
-        } else if (typeof value === 'object' && value !== null) {
-            finalNote = JSON.stringify(value);
-            finalValue = value["睡眠"] || value["Sleep"] || 0;
-        }
-
-        // 3. 統合テーブル (daily_health) へ保存 (UPSERT方式)
-        // 既存レコードがなければ作成、あれば該当する列だけを更新する
         const insertStmt = db.prepare(`
             INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -451,19 +431,55 @@ app.post('/api/health-log', (req, res) => {
                 sleep_note = CASE WHEN ? IN ('sleep', 'sleep_hours') THEN EXCLUDED.sleep_note ELSE sleep_note END
         `);
 
-        // type に応じて値を振り分ける
-        const stepsVal = (type === 'steps') ? Math.round(finalValue) : 0;
-        const sleepVal = (type === 'sleep' || type === 'sleep_hours') ? parseFloat(finalValue) : 0;
-        const hrvVal = (type === 'hrv') ? parseFloat(finalValue) : 0;
-        const restingHrVal = (type === 'resting_hr') ? Math.round(finalValue) : 0;
-        const activeKcalVal = (type === 'active_kcal') ? Math.round(finalValue) : 0;
-        const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
+        // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
+        const processRecords = db.transaction((records) => {
+            let processedCount = 0;
+            for (const record of records) {
+                let { date, type, value, note } = record;
+                
+                if (!date || !type || value === undefined) {
+                    console.warn(`[IoT] Health Log Warning: Missing required fields in record`, record);
+                    continue;
+                }
 
-        insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, 
-                        type, type, type, type, type, type);
-        
-        console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
-        res.json({ status: "success" });
+                // 1. 日付の整形 (ISO形式等から YYYY-MM-DD を抽出)
+                let formattedDate = date;
+                if (date.includes('T')) formattedDate = date.split('T')[0];
+                else if (date.includes('/')) formattedDate = date.replace(/\//g, '-').split(' ')[0];
+
+                // 2. 特殊なデータ形式 (AutoSleep等) の処理
+                let finalValue = value;
+                let finalNote = note;
+                if (typeof value === 'string' && value.trim().startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(value);
+                        finalNote = value;
+                        finalValue = parsed["睡眠"] || parsed["Sleep"] || 0;
+                    } catch (e) { finalNote = value; finalValue = 0; }
+                } else if (typeof value === 'object' && value !== null) {
+                    finalNote = JSON.stringify(value);
+                    finalValue = value["睡眠"] || value["Sleep"] || 0;
+                }
+
+                // type に応じて値を振り分ける
+                const stepsVal = (type === 'steps') ? Math.round(finalValue) : 0;
+                const sleepVal = (type === 'sleep' || type === 'sleep_hours') ? parseFloat(finalValue) : 0;
+                const hrvVal = (type === 'hrv') ? parseFloat(finalValue) : 0;
+                const restingHrVal = (type === 'resting_hr') ? Math.round(finalValue) : 0;
+                const activeKcalVal = (type === 'active_kcal') ? Math.round(finalValue) : 0;
+                const sleepNoteVal = (type === 'sleep' || type === 'sleep_hours') ? finalNote : null;
+
+                insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, 
+                                type, type, type, type, type, type);
+                
+                console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
+                processedCount++;
+            }
+            return processedCount;
+        });
+
+        const count = processRecords(records);
+        res.json({ status: "success", count: count });
     } catch (e) {
         console.error(`[IoT] Health Log Error: ${e.message}`);
         res.status(500).json({ status: "error", message: e.message });
