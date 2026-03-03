@@ -58,3 +58,4 @@ persona.txt
 local_llm/models/
 core.*
 hdd.logs/
+data/high_concentration_archive.json

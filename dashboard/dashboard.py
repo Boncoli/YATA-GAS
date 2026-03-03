@@ -279,12 +279,26 @@ def draw_weather_icon_smart(draw_b, draw_r, xy, icon_char, font, is_highlight=Fa
         # Standard (Black/White)
         draw_b.text(xy, icon_char, font=font, fill=1)
 
+def normalize_text(text):
+    if not text: return text
+    replace_map = {
+        '；': ';', '！': '!', '？': '?', '：': ':', '【': '[', '】': ']',
+        '　': ' ', '～': '~', '＋': '+', '─': '-', '％': '%', '＆': '&',
+        '＝': '=', '＞': '>', '＜': '<', '（': '(', '）': ')', '／': '/',
+        '－': '-', '”': '"', '“': '"', '’': "'", '‘': "'", '℃': 'C',
+        '…': '...', '—': '-', '−': '-', '〔': '[', '〕': ']'
+    }
+    for k, v in replace_map.items():
+        text = text.replace(k, v)
+    return text
+
 def draw_smart_text(draw_b, draw_r, xy, text, font, color_type=COLOR_BLACK):
     target = draw_r if color_type == COLOR_RED else draw_b
-    target.text(xy, text, font=font, fill=0)
+    target.text(xy, normalize_text(text), font=font, fill=0)
 
 def draw_text_wrapped_smart(draw_b, draw_r, text, font, x, y, max_w, max_lines=None, color_type=COLOR_BLACK, max_y=None):
     if not text: return y
+    text = normalize_text(text)
     lines, current_line = [], ""
     for char in text:
         if char == '\n': lines.append(current_line); current_line = ""; continue

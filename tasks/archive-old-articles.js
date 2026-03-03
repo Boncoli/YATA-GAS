@@ -5,10 +5,13 @@ const dbPath = process.env.DB_PATH || 'yata.db';
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 
-// 17:00 JST = 08:00 UTC 以前をすべてアーカイブ
-const threshold = '2026-02-05T08:00:00.000Z';
+// 180日以上前のデータをすべてアーカイブ
+const retentionDays = 180;
+const thresholdDate = new Date();
+thresholdDate.setDate(thresholdDate.getDate() - retentionDays);
+const threshold = thresholdDate.toISOString();
 
-console.log(`Archiving all articles older than ${threshold} (17:00 JST)...`);
+console.log(`Archiving all articles older than ${retentionDays} days (${threshold})...`);
 
 try {
   db.exec(`

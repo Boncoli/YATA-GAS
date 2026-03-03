@@ -423,24 +423,24 @@ app.post('/api/health-log', (req, res) => {
 
         const insertStmt = db.prepare(`
             INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note, bp_sys, bp_dia)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (:date, :steps, :sleep_hours, :hrv, :resting_hr, :active_kcal, :sleep_note, :bp_sys, :bp_dia)
             ON CONFLICT(date) DO UPDATE SET
-                steps = CASE WHEN ? = 'steps' THEN EXCLUDED.steps ELSE steps END,
+                steps = CASE WHEN :type = 'steps' THEN EXCLUDED.steps ELSE steps END,
                 sleep_hours = CASE 
-                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_hours 
-                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_hours
+                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_hours 
+                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_hours
                     ELSE sleep_hours 
                 END,
-                hrv = CASE WHEN ? = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
-                resting_hr = CASE WHEN ? = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
-                active_kcal = CASE WHEN ? = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
+                hrv = CASE WHEN :type = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
+                resting_hr = CASE WHEN :type = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
+                active_kcal = CASE WHEN :type = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
                 sleep_note = CASE 
-                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
-                    WHEN ? IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
+                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
+                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
                     ELSE sleep_note 
                 END,
-                bp_sys = CASE WHEN ? = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
-                bp_dia = CASE WHEN ? IN ('bp_dia', 'bp_sia') THEN EXCLUDED.bp_dia ELSE bp_dia END
+                bp_sys = CASE WHEN :type = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
+                bp_dia = CASE WHEN :type IN ('bp_dia', 'bp_sia') THEN EXCLUDED.bp_dia ELSE bp_dia END
         `);
 
         // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
@@ -483,10 +483,20 @@ app.post('/api/health-log', (req, res) => {
                 const bpSysVal = (type === 'bp_sys') ? Math.round(finalValue) : 0;
                 const bpDiaVal = (type === 'bp_dia' || type === 'bp_sia') ? Math.round(finalValue) : 0;
 
-                insertStmt.run(formattedDate, stepsVal, sleepVal, hrvVal, restingHrVal, activeKcalVal, sleepNoteVal, bpSysVal, bpDiaVal,
-                                type, type, type, type, type, type, type, type, type, type);
+                insertStmt.run({
+                    date: formattedDate,
+                    steps: stepsVal,
+                    sleep_hours: sleepVal,
+                    hrv: hrvVal,
+                    resting_hr: restingHrVal,
+                    active_kcal: activeKcalVal,
+                    sleep_note: sleepNoteVal,
+                    bp_sys: bpSysVal,
+                    bp_dia: bpDiaVal,
+                    type: type
+                });
                 
-                console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated)`);
+                console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated to ${finalValue})`);
                 processedCount++;
             }
             return processedCount;

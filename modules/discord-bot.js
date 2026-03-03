@@ -94,7 +94,7 @@ async function performMutter() {
 
         // 3. プロンプト構成
         let personaConfig = "";
-        try { personaConfig = fs.readFileSync(path.join(__dirname, '../persona.txt'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
+        try { personaConfig = fs.readFileSync(path.join(__dirname, '../data/digital_twin_analysis/synthesized_master_persona.md'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
 
         const promptBody = `[旦那様の状況] ${masterInfo}
 [現在の時刻/雰囲気] ${timeContext}
@@ -194,7 +194,7 @@ async function getAIResponse(userMessage) {
     } catch (e) {}
 
     let personaConfig = "";
-    try { personaConfig = fs.readFileSync(path.join(__dirname, '../persona.txt'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
+    try { personaConfig = fs.readFileSync(path.join(__dirname, '../data/digital_twin_analysis/synthesized_master_persona.md'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
 
     const systemPrompt = `【最優先：会話の掟】
 - **短文（40文字以内）で1〜2文のみ**話してください。
@@ -296,7 +296,7 @@ client.on('ready', () => {
     // 次の定刻まで待ってから、5分おきのタイマーを開始
     setTimeout(() => {
         performMutter();
-        setInterval(performMutter, 300000);
+        // setInterval(performMutter, 300000); // DISABLED BY USER
     }, delay);
 });
 
