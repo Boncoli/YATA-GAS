@@ -1,0 +1,267 @@
+👍 OK、これは「未来の自分のための設計メモ」ですね。  
+（＝今はやらないけど、**Method Embedding（二層ベクトル化）に進化させる時のToDo**）
+
+***
+
+# 🧾 YATA：2nd Vectorization（Method Embedding）ToDoメモ
+
+※べた書き／将来改修用
+
+***
+
+## 🎯 目的
+
+現在：
+
+    G列 = Topic Embedding（記事の話題）
+
+↓
+
+将来：
+
+    G列 = Topic Embedding（What）
+    H列 = Method Embedding（How）
+
+EmergingSignalEngineを  
+Topic → Method 検知へ変更可能にする
+
+***
+
+***
+
+# ✅ STEP 0：collectシート拡張
+
+*   H列追加
+
+<!---->
+
+    H1 = METHOD_VECTOR
+
+***
+
+***
+
+# ✅ STEP 1：CollectSheet Columns拡張
+
+AppConfig内：
+
+```js
+CollectSheet: {
+ Columns: {
+   URL: 3,
+   ABSTRACT: 4,
+   SUMMARY: 5,
+   SOURCE: 6,
+   VECTOR: 7,
+   METHOD_VECTOR: 8 // NEW
+ }
+}
+```
+
+***
+
+***
+
+# ✅ STEP 2：Method Descriptor抽出関数追加
+
+（LlmServiceの外）
+
+```js
+function extractMethodDescriptor(title, abstractText){
+
+ const systemPrompt = `
+Extract ONLY the measurement or assay methodology.
+Return JSON:
+{
+"principle":"",
+"detection":"",
+"sample":"",
+"automation":"",
+"instrumentation":""
+}
+`;
+
+ const userPrompt = `
+Title: ${title}
+Abstract: ${abstractText}
+`;
+
+ const json = LlmService.analyzeKeywordSearch(
+   systemPrompt,
+   userPrompt,
+   {temperature:0.0}
+ );
+
+ const parsed = cleanAndParseJSON(json);
+ if(!parsed) return null;
+
+ return `
+Principle:${parsed.principle}
+Detection:${parsed.detection}
+Sample:${parsed.sample}
+Automation:${parsed.automation}
+Instrumentation:${parsed.instrumentation}
+ `;
+}
+```
+
+***
+
+***
+
+# ✅ STEP 3：Method Embedding生成関数
+
+```js
+function generateMethodVector(title, abstractText){
+
+ const descriptor = extractMethodDescriptor(title, abstractText);
+ if(!descriptor) return null;
+
+ return LlmService.generateVector(descriptor);
+}
+```
+
+***
+
+***
+
+# ✅ STEP 4：\_generateAndSetVector()改修
+
+***
+
+### BEFORE（現行）
+
+```js
+const textToEmbed = `Title: ${title}\nSummary: ${summary}`;
+const vector = LlmService.generateVector(textToEmbed);
+rowArray[vecColIdx] = vector.join(',');
+```
+
+***
+
+### AFTER（将来）
+
+```js
+// Topic
+const topicText = `Title: ${title}\nSummary: ${summary}`;
+const topicVector = LlmService.generateVector(topicText);
+
+if(topicVector){
+ rowArray[vecColIdx] = topicVector.join(',');
+}
+
+// Method
+const methodVector = generateMethodVector(title, summary);
+
+if(methodVector){
+ rowArray[vecColIdx+1] = methodVector.join(',');
+}
+```
+
+***
+
+***
+
+# ✅ STEP 5：EmergingSignalEngine変更
+
+***
+
+### BEFORE（Topicベース）
+
+```js
+const vec = parseVector(r[6]);
+```
+
+***
+
+### AFTER（Methodベース）
+
+```js
+const vec = parseVector(r[7]);
+```
+
+***
+
+***
+
+# ✅ STEP 6：parseVector再利用OK（変更不要）
+
+***
+
+***
+
+# ✅ STEP 7：SignalDetection閾値再調整（必要）
+
+Method Drift用：
+
+```js
+OUTLIER_THRESHOLD: 0.72
+NUCLEATION_RADIUS: 0.80
+```
+
+***
+
+***
+
+# ✅ STEP 8（Optional）：切替スイッチ
+
+AppConfig：
+
+```js
+SignalDetection: {
+ USE_METHOD_VECTOR: true
+}
+```
+
+***
+
+EmergingSignalEngine：
+
+```js
+const col = config.SignalDetection.USE_METHOD_VECTOR ? 7 : 6;
+const vec = parseVector(r[col]);
+```
+
+***
+
+***
+
+# 🧠 将来の目的
+
+EmergingSignal を：
+
+    Topic emergence
+
+ではなく
+
+    Measurement paradigm emergence
+
+に変更する
+
+***
+
+***
+
+# 🟡 副作用
+
+*   Embedding APIコール増加（約1.8倍）
+*   Summarization Job 実行時間増加
+*   GAS timeout注意
+
+***
+
+***
+
+# ✅ 適用タイミング
+
+*   Daily Drift観測後
+*   SignalのTopic偏重が見えたとき
+*   Method横断Emergence検知したいとき
+
+***
+
+***
+
+これをそのまま  
+`/docs/YATA_MethodEmbedding_TODO.md`  
+みたいに置いておくのが良いです 👍
