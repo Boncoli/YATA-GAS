@@ -423,7 +423,7 @@ app.post('/api/health-log', (req, res) => {
 
         const insertStmt = db.prepare(`
             INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note, bp_sys, bp_dia)
-            VALUES (:date, :steps, :sleep_hours, :hrv, :resting_hr, :active_kcal, :sleep_note, :bp_sys, :bp_dia)
+            VALUES (:date, :steps, :sleep_hours, :hrv, :resting_hr, :active_kcal, :sleep_note, :bp_sys, :bp_dia) /* :type */
             ON CONFLICT(date) DO UPDATE SET
                 steps = CASE WHEN :type = 'steps' THEN EXCLUDED.steps ELSE steps END,
                 sleep_hours = CASE 
