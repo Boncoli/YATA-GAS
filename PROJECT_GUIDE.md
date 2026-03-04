@@ -291,6 +291,9 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **2026/03/04 (パフォーマンス・コスト最適化)**: **EmbeddingモデルのNative Dimensionality Reduction (256次元圧縮) 導入**。`text-embedding-3-small` のパラメータ `dimensions: 256` を指定することで、精度劣化を2%未満に抑えつつ、ベクトル文字列の長さ（GASセル消費量）を従来の1536次元(約14KB)から1/6(約2.3KB)へと劇的に削減。Method Embedding導入による容量増加を完全に相殺。
+- **2026/03/04 (機能拡張)**: **Method Embedding (2nd Vectorization) の基盤実装**。記事の「話題 (Topic)」ではなく、「測定手法・原理 (Method/Modality)」に特化したベクトルを生成する機能を追加。`AppConfig.SignalDetection.USE_METHOD_VECTOR` を `true` に設定し、予兆検知（Signal Detection）の判定軸を「異分野で共通の手法が使われ始めた兆候（Method Emergence）」へと進化させた。
+- **2026/03/04 (機能拡張)**: **YATA.js (mainブランチ) の最新化とブリッジ対応**。`clearEnglishSummaries` などの単一列更新処理をローカル環境で実行できるよう、`gas-bridge.js` の `setValues` モック関数を拡張。また、`LanguageApp.translate` の `reasoning_effort` を "low" に最適化。
 - **2026/03/02 (バグ修正・コスト最適化)**: **YATA.js APIコスト浪費の無限ループ修正とプロンプト厳格化**。2月の月またぎ（28日問題）に起因する、ベクトル削除（1ヶ月前）と生成（30日前）の閾値競合による「無限再生成ループ」を解消。
 - **2026/03/02 (情緒向上・プライバシー)**: **AI独り言の「時計同期」と「個人情報マスク処理」を実装**。発話タイミングを時計の5分刻みに同期させ、より自然な存在感を演出。外部APIへのプロファイル送信時に特定個人情報を自動マスクするセキュリティ機能を強化。
 - **2026/03/01 (効率化・統合)**: **AIの独り言 (ai-mutter) 機能を常駐ボット (`yata-bot`) へ統合**。オーバーヘッドを完全に撤廃し、システム負荷を大幅に削減。

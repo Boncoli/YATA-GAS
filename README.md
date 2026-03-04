@@ -3,7 +3,7 @@
 > **The Three-Legged Guide to the Web.**
 > **情報の海を導き、真実を映し出す。Google Apps Script (GAS) 上で完結する、あなたのための「AIインテリジェンス・パートナー」。**
 
-[![Version](https://img.shields.io/badge/version-3.6.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-3.7.0-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Google_Apps_Script-0F9D58.svg)]()
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%7C%20Azure%20%7C%20Gemini-orange.svg)]()
 
