@@ -421,27 +421,28 @@ app.post('/api/health-log', (req, res) => {
             return res.status(400).json({ error: "Empty request" });
         }
 
-        const insertStmt = db.prepare(`
+        const sql = `
             INSERT INTO daily_health (date, steps, sleep_hours, hrv, resting_hr, active_kcal, sleep_note, bp_sys, bp_dia)
-            VALUES (:date, :steps, :sleep_hours, :hrv, :resting_hr, :active_kcal, :sleep_note, :bp_sys, :bp_dia) /* :type */
+            VALUES (:date, :steps, :sleep_hours, :hrv, :resting_hr, :active_kcal, :sleep_note, :bp_sys, :bp_dia)
             ON CONFLICT(date) DO UPDATE SET
-                steps = CASE WHEN :type = 'steps' THEN EXCLUDED.steps ELSE steps END,
+                steps = CASE WHEN :updateType = 'steps' THEN EXCLUDED.steps ELSE steps END,
                 sleep_hours = CASE 
-                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_hours 
-                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_hours
+                    WHEN :updateType IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_hours 
+                    WHEN :updateType IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_hours
                     ELSE sleep_hours 
                 END,
-                hrv = CASE WHEN :type = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
-                resting_hr = CASE WHEN :type = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
-                active_kcal = CASE WHEN :type = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
+                hrv = CASE WHEN :updateType = 'hrv' THEN EXCLUDED.hrv ELSE hrv END,
+                resting_hr = CASE WHEN :updateType = 'resting_hr' THEN EXCLUDED.resting_hr ELSE resting_hr END,
+                active_kcal = CASE WHEN :updateType = 'active_kcal' THEN EXCLUDED.active_kcal ELSE active_kcal END,
                 sleep_note = CASE 
-                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
-                    WHEN :type IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
+                    WHEN :updateType IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours > 0 THEN EXCLUDED.sleep_note 
+                    WHEN :updateType IN ('sleep', 'sleep_hours') AND EXCLUDED.sleep_hours = 0 THEN sleep_note
                     ELSE sleep_note 
                 END,
-                bp_sys = CASE WHEN :type = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
-                bp_dia = CASE WHEN :type IN ('bp_dia', 'bp_sia') THEN EXCLUDED.bp_dia ELSE bp_dia END
-        `);
+                bp_sys = CASE WHEN :updateType = 'bp_sys' THEN EXCLUDED.bp_sys ELSE bp_sys END,
+                bp_dia = CASE WHEN :updateType IN ('bp_dia', 'bp_sia') THEN EXCLUDED.bp_dia ELSE bp_dia END
+        `;
+        const insertStmt = db.prepare(sql);
 
         // まとめて処理 (トランザクション化することでSQLiteの書き込み速度・安全性が向上)
         const processRecords = db.transaction((records) => {
@@ -483,20 +484,38 @@ app.post('/api/health-log', (req, res) => {
                 const bpSysVal = (type === 'bp_sys') ? Math.round(finalValue) : 0;
                 const bpDiaVal = (type === 'bp_dia' || type === 'bp_sia') ? Math.round(finalValue) : 0;
 
-                insertStmt.run({
-                    date: formattedDate,
-                    steps: stepsVal,
-                    sleep_hours: sleepVal,
-                    hrv: hrvVal,
-                    resting_hr: restingHrVal,
-                    active_kcal: activeKcalVal,
-                    sleep_note: sleepNoteVal,
-                    bp_sys: bpSysVal,
-                    bp_dia: bpDiaVal,
-                    type: type
-                });
-                
-                console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated to ${finalValue})`);
+                try {
+                    insertStmt.run({
+                        date: formattedDate,
+                        steps: stepsVal,
+                        sleep_hours: sleepVal,
+                        hrv: hrvVal,
+                        resting_hr: restingHrVal,
+                        active_kcal: activeKcalVal,
+                        sleep_note: sleepNoteVal,
+                        bp_sys: bpSysVal,
+                        bp_dia: bpDiaVal,
+                        updateType: type
+                    });
+                    console.log(`[IoT] 🏃 Daily Health Unified: ${formattedDate} (${type} updated to ${finalValue})`);
+                } catch (runError) {
+                    console.error(`[IoT] Health Log Record Error: ${runError.message}`, {
+                        record,
+                        params: {
+                            date: formattedDate,
+                            steps: stepsVal,
+                            sleep_hours: sleepVal,
+                            hrv: hrvVal,
+                            resting_hr: restingHrVal,
+                            active_kcal: activeKcalVal,
+                            sleep_note: sleepNoteVal,
+                            bp_sys: bpSysVal,
+                            bp_dia: bpDiaVal,
+                            updateType: type
+                        }
+                    });
+                    throw runError; // トランザクションをロールバックさせる
+                }
                 processedCount++;
             }
             return processedCount;
