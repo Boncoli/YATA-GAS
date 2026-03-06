@@ -322,4 +322,8 @@ bash run-ram.sh --no-sync do-health-check.js
 ### エレベーター対策ロジック
 - マンションのエレベーター等による 5分以内の一時的な Wi-Fi 切断を「外出」とみなさないバッファロジックを実装。
 
-*Last Updated: 2026-03-05 by Gemini Agent*
+### OOM枯渇とOSフリーズ問題の完全解消 (2026/03/06)
+- **原因**: `gas-bridge.js` において、GASの同期通信をNode.jsでエミュレートするために使用していた `sync-fetch` が、通信のたびに新たなNodeワーカープロセスを起動していた。これが大量のRSS処理やCronの重複と相まってメモリを急激に食い潰し、ラズパイのOSフリーズ（および書き込み中の `yata.db` のデータ消失）を引き起こした。
+- **対策**: `sync-fetch` ライブラリを完全撤去。代わりにLinux標準の `curl` コマンドを `child_process.execSync` で呼び出す方式へ書き換えたことで、プロセス乱造とメモリ肥大化を根絶し、超軽量・安全な同期通信を実現した。
+
+*Last Updated: 2026-03-06 by Gemini Agent*
