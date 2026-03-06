@@ -71,7 +71,23 @@ def get_context():
         print(f"Context Error: {e}")
         return "コンテキストの取得に失敗しました。"
 
+def check_cpu_temp():
+    try:
+        import subprocess
+        temp_str = subprocess.check_output(['vcgencmd', 'measure_temp']).decode('utf-8')
+        # format: temp=55.0'C
+        temp_val = float(temp_str.replace('temp=', '').replace('\'C\n', ''))
+        return temp_val
+    except Exception as e:
+        print(f"Warning: Could not read CPU temperature: {e}")
+        return 0.0
+
 def main():
+    cpu_temp = check_cpu_temp()
+    if cpu_temp > 70.0:
+        print(f"[Thermal Failsafe] CPU temperature is {cpu_temp}C (above 70C limit). Skipping mutter to prevent thermal throttling/freeze.")
+        return
+
     if not os.path.exists(MODEL_PATH):
         print(f"Error: Model not found at {MODEL_PATH}")
         return
