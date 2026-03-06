@@ -99,5 +99,9 @@ fi
 echo "Starting all PM2 processes..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start all >> "$LOG_FILE" 2>&1
 
+# マイク（独り言キャッチャー）はデフォルトOFFにするため、起動直後に一旦止める
+echo "Setting mic to default OFF..." >> "$LOG_FILE"
+/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop yata-voice-catcher >> "$LOG_FILE" 2>&1
+
 echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
 send_discord_alert "✅ **システムバックアップ完了**: サーバーを正常にリフレッシュしました。"

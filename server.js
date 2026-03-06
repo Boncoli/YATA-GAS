@@ -812,7 +812,8 @@ app.post('/api/mic/toggle', (req, res) => {
         const { execSync } = require('child_process');
         const { action } = req.body; // 'start' or 'stop'
         if (action === 'start' || action === 'stop') {
-            execSync(`pm2 ${action} yata-voice-catcher && pm2 save`);
+            // 手動でのON/OFFは永続化（pm2 save）しない。再起動時は常にデフォルト状態に戻るようにする。
+            execSync(`pm2 ${action} yata-voice-catcher`);
             res.json({ status: "success", action });
         } else {
             res.status(400).json({ error: "Invalid action" });
