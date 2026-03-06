@@ -79,23 +79,25 @@ done
 echo "Syncing RAM to SD before restart..." >> "$LOG_FILE"
 /home/boncoli/yata-local/run-ram.sh --sync-only >> "$LOG_FILE" 2>&1
 
-echo "Stopping yata-server..." >> "$LOG_FILE"
-/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop yata-server >> "$LOG_FILE" 2>&1
+echo "Stopping all PM2 processes..." >> "$LOG_FILE"
+/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop all >> "$LOG_FILE" 2>&1
 
-# 致命的なバグ対策：確実にプロセスが停止したか確認する
-if pgrep -f "server.js" > /dev/null; then
-    echo "CRITICAL ERROR: yata-server process is still running after stop command!" >> "$LOG_FILE"
+# 致命的なバグ対策：確実に全プロセスが停止したか確認する
+if pgrep -f "node" > /dev/null || pgrep -f "python3" > /dev/null; then
+    echo "CRITICAL ERROR: Some processes are still running after stop command!" >> "$LOG_FILE"
     echo "ABORTING RAM DB CLEANUP TO PREVENT DATA LOSS." >> "$LOG_FILE"
-    send_discord_alert "🚨 **バックアップ警告**: サーバー停止に失敗したため、RAM DBの削除を中止しました。データ消失は回避しましたが、再起動が必要です。"
-    # プロセスが残っている場合、RAM上のDBを消すとデータが消滅するのでスキップして再起動だけ試みる
+    send_discord_alert "🚨 **バックアップ警告**: プロセス停止に失敗したため、RAM DBの削除を中止しました。データ消失は回避しましたが、再起動が必要です。"
 else
     # プロセスが完全に終了していること（＝ファイルが握られていないこと）を確認できた場合のみ削除
-    echo "Server completely stopped. Cleaning up RAM DB..." >> "$LOG_FILE"
+    echo "Processes completely stopped. Cleaning up RAM DB and garbage..." >> "$LOG_FILE"
+    # RAMディスク上の yata.db および関連ファイル (-wal, -shm, ジャーナル等) を一掃
     rm -f /dev/shm/yata.db* >> "$LOG_FILE" 2>&1
+    # ついでにホームディレクトリに発生したコアダンプなどのゴミも掃除
+    rm -f /home/boncoli/yata-local/core.* >> "$LOG_FILE" 2>&1
 fi
 
-echo "Starting yata-server..." >> "$LOG_FILE"
-/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start yata-server >> "$LOG_FILE" 2>&1
+echo "Starting all PM2 processes..." >> "$LOG_FILE"
+/home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start all >> "$LOG_FILE" 2>&1
 
 echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
 send_discord_alert "✅ **システムバックアップ完了**: サーバーを正常にリフレッシュしました。"
