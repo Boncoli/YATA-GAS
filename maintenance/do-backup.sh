@@ -60,19 +60,30 @@ if [ -d "$NAS_BACKUP" ]; then
     cp "$YATA_DIR/yata.db" "$NAS_BACKUP/yata_db_history/yata_$(date +%Y%m%d).db"
     find "$NAS_BACKUP/yata_db_history/" -name "yata_*.db" -mtime +30 -delete
 
+    # D. ログの退避 (RAM -> NAS)
+    # 目的: 日中のSDカードへの書き込みを避けるためRAMに吐いたログを、再起動前にNASへ退避させる
+    echo "Archiving RAM logs to NAS..." >> "$LOG_FILE"
+    NAS_LOG_DIR="$NAS_BACKUP/yata_logs"
+    mkdir -p "$NAS_LOG_DIR"
+    
+    RAM_LOGS=("/dev/shm/collect.log" "/dev/shm/summarize.log" "/dev/shm/yata.log" "/dev/shm/yata_task.log" "/dev/shm/yata_dashboard.log" "/dev/shm/yata_mutter.log")
+    TODAY_STR=$(date +%Y%m%d)
+
+    for RAM_LOG in "${RAM_LOGS[@]}"; do
+        if [ -f "$RAM_LOG" ]; then
+            BASENAME=$(basename "$RAM_LOG" .log)
+            cp "$RAM_LOG" "$NAS_LOG_DIR/${BASENAME}_${TODAY_STR}.log"
+        fi
+    done
+    
+    # NAS上のログも過去30日分残して古いものは削除
+    find "$NAS_LOG_DIR/" -name "*.log" -mtime +30 -delete
+
 else
     echo "Warning: NAS not mounted. Skipping NAS backup." >> "$LOG_FILE"
 fi
 
-# --- 3. ログのローテーション ---
-echo "Rotating logs..." >> "$LOG_FILE"
-LOG_LIST=("$YATA_DIR/logs/collect.log" "$YATA_DIR/logs/summarize.log" "$YATA_DIR/logs/yata.log" "$YATA_DIR/logs/dashboard.log" "$YATA_DIR/logs/task.log")
-
-for LOG in "${LOG_LIST[@]}"; do
-    if [ -f "$LOG" ]; then
-        tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
-    fi
-done
+# (旧来のSDカード上でのログローテーション処理は、RAM→NAS退避に移行したため削除)
 
 # --- 4. サーバーのリフレッシュ (完全再起動) ---
 # 安全第一: 再起動前にメモリ上のデータをSDカードへ強制同期する
