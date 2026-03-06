@@ -105,11 +105,11 @@ if [ "$SYNC_ONLY" = false ]; then
     # ログファイルの決定 (logs/ フォルダ配下にする)
     LOG_FILE=""
     if [[ "$NODE_SCRIPT" == *"do-collect"* ]]; then
-      LOG_FILE="logs/collect.log"
+      LOG_FILE="/dev/shm/collect.log"
     elif [[ "$NODE_SCRIPT" == *"do-summarize"* ]]; then
-      LOG_FILE="logs/summarize.log"
+      LOG_FILE="/dev/shm/summarize.log"
     elif [[ "$NODE_SCRIPT" == *"yata-task"* ]]; then
-      LOG_FILE="logs/yata.log"
+      LOG_FILE="/dev/shm/yata.log"
     fi
 
     # 実行コマンドの判定
