@@ -85,13 +85,14 @@ def process_audio():
                 print(f"✨ 認識結果: 「{text}」 ({elapsed_time:.2f}秒)")
                 
                 if not TEST_MODE:
-                    print(f"🔄 Node.jsへ送信中: 「{text[:10]}...」")
+                    print(f"🔄 ローカルLLMへ送信中: 「{text[:10]}...」")
                     try:
-                        node_cmd = ["node", "tasks/process-mutter.js", text]
-                        subprocess.run(node_cmd, cwd="/home/boncoli/yata-local", check=True, capture_output=True, text=True)
-                        print("✅ AI解析＆DB保存完了")
+                        # ローカルLLM版のPythonスクリプトを呼び出す
+                        python_cmd = ["/home/boncoli/yata-local/local_llm/.venv/bin/python3", "tasks/process-mutter-local.py", text]
+                        subprocess.run(python_cmd, cwd="/home/boncoli/yata-local", check=True, capture_output=True, text=True)
+                        print("✅ ローカルAI解析＆DB保存完了")
                     except Exception as e:
-                        print(f"❌ Node.js送信エラー: {e}")
+                        print(f"❌ ローカルLLM送信エラー: {e}")
                 else:
                     print("🛠️ テストモード: LLM送信をスキップしました")
 
