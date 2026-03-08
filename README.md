@@ -72,6 +72,10 @@ YATAをあなたの環境で動かすための手順です。
 * **`Keywords`** シート: 観測したいキーワード設定
   * `[A: Query, B: Flag(TRUE), C: (空), D: Label(短縮名)]`
 * **`prompt`** シート: LLMに渡すプロンプトテンプレート
+  * `[A: キー(Key), B: プロンプト本文(Value)]`
+  * ※最低限以下のキーが必要です: `BATCH_SYSTEM`, `BATCH_USER_TEMPLATE`, `TREND_SYSTEM`, `TREND_USER_TEMPLATE`
+  * > **💡 プロンプトの例 (`BATCH_SYSTEM`):**
+    > あなたは情報圧縮エンジンです。提供された記事からマーケティング表現を除去し、客観的事実のみを抽出してください。JSON形式 `{ "tldr": "..." }` で出力せよ。
 * **`DigestHistory`** シート: AIの要約履歴記録用
 
 ### Step 2: GASプロジェクトの作成とコード配置
