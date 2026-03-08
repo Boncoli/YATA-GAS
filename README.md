@@ -392,7 +392,9 @@ AIの気まぐれによる出力ミスや、過去データの再利用を行う
 本プロジェクトのソースコード（`lib/YATA.js`等）およびドキュメントは、開発者（ヒト）によるアーキテクチャ設計と検証のもと、生成AI（Gemini, GPT等）をコーディング・パートナーとして活用して記述・リファクタリングされています。
 
 ## ⚖️ License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).
+You are free to share and adapt the material, but you may **NOT** use it for commercial purposes.
+See the [LICENSE](LICENSE) file for details.
 
 ---
 
