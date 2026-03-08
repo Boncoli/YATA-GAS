@@ -12,6 +12,9 @@ server-properties.json
 *.db-shm
 *.db-wal
 *.db-journal
+*.db.broken*
+*.db.corrupt*
+
 
 # --- Logs ---
 *.log
@@ -26,7 +29,14 @@ Thumbs.db
 
 # --- Frontend & Local Testing ---
 public/
-local_public/
+# local_public/ は基本管理対象とし、生成物のみ除外する
+local_public/*.png
+local_public/*.jpg
+local_public/*.json
+!local_public/*.html
+!local_public/*.css
+!local_public/*.js
+!local_public/icon.png
 
 # --- Python & Dashboard specific ---
 *.png
@@ -40,3 +50,12 @@ dashboard/fonts/
 
 # lib/YATA.js は唯一の正本なので無視してはいけません
 !lib/YATA.js
+
+# --- Dynamic Data ---
+interests.json
+interests_test.json
+persona.txt
+local_llm/models/
+core.*
+hdd.logs/
+data/high_concentration_archive.json
