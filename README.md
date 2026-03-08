@@ -6,6 +6,7 @@
 [![Version](https://img.shields.io/badge/version-3.8.0-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Google_Apps_Script-0F9D58.svg)]()
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%7C%20Azure%20%7C%20Gemini-orange.svg)]()
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 本書は、完全サーバーレスで動作するAI駆動型RSS収集・分析プラットフォーム「YATA」の全貌を記したマスターマニュアル（虎の巻）である。システムの全体像、日々の運用、緊急時の対応までを網羅する。
 
