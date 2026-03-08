@@ -354,4 +354,25 @@ bash run-ram.sh --no-sync do-health-check.js
     - `tasks/process-mutter.js` で Node.js v24 の `fetch` 直後の終了によるクラッシュ（85MBの `core` ファイル大量生成）が発生していたため、安定した `https` モジュールへ書き換えて根絶。
     - 定期タスク（`yata-task` 等）の重いログ出力をSDカードからRAMディスク (`/var/log/`) へ逃がし、毎朝のバックアップ時にRAM上の全ゴミ（一時ファイル等）を強制掃除するロジックを確立。
 
-*Last Updated: 2026-03-08 by Gemini Agent*
+## 7. 運用・デバッグと安全性 (2026/03/08 導入)
+
+### 7.1 DRY_RUN 安全装置 (GAS Bridge)
+本家 `lib/YATA.js` の正規フロー（`sendPersonalizedReport` 等）をローカル環境で安全にテストするため、`gas-bridge.js` に **DRY_RUN 機能** を搭載しています。
+
+- **発動条件**: `.env` で `DRY_RUN="TRUE"` を設定する。
+- **保護対象**:
+    - **`PropertiesService` (server-properties.json)**: 送信完了タイムスタンプの更新をスキップ。
+    - **`history` / `log` テーブル**: AI による要約や動作ログの書き込みをスキップ。
+- **メリット**: 本家コードを 1 文字も汚さず、本番の履歴（State）を一切汚染せずに、何度でもフル配信テストが可能です。
+
+### 7.2 ローカル環境でのユーザー設定のモック
+ローカル環境ではスプレッドシートの代わりに `.env` を参照して「Users シート」を模倣します。
+- `USER_KEYWORDS`: 配信対象キーワード（カンマ区切り）
+- `USE_SEMANTIC`: セマンティック検索の有効化 (`TRUE/FALSE`)
+- `DAILY_REPORT_ENABLED`: デイリー配信（全記事要約）の有効化 (`TRUE/FALSE`)
+
+これらの設定値は `gas-bridge.js` 内部で自動的に「名前：Admin, メール：MAIL_TO」のユーザー設定として YATA に供給されます。
+
+---
+
+*Last Updated: 2026-03-08 by Gemini Agent (Add: DRY_RUN & Normal Flow Testing)*
