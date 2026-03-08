@@ -388,4 +388,12 @@ AIの気まぐれによる出力ミスや、過去データの再利用を行う
 
 ---
 
+## 🤖 AI Declaration
+本プロジェクトのソースコード（`lib/YATA.js`等）およびドキュメントは、開発者（ヒト）によるアーキテクチャ設計と検証のもと、生成AI（Gemini, GPT等）をコーディング・パートナーとして活用して記述・リファクタリングされています。
+
+## ⚖️ License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
 **YATA Project** - *Illuminating the unseen paths of information.*
