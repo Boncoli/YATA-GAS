@@ -391,4 +391,20 @@ bash run-ram.sh --no-sync do-health-check.js
 
 ---
 
-*Last Updated: 2026-03-08 by Gemini Agent (Add: 3-Tier Branching Strategy & Public Release Workflow)*
+## 12. 将来的なデータ肥大化への備えとメンテ指針 (2026/03/08 追記)
+
+現状の DB サイズ (161MB) と NAS 容量 (113GB) では数年間は安泰だが、将来的に GB オーダーに達した際の「有効なメンテ」の指針を以下に定める。
+
+### 12.1 物理的な軽量化 (VACUUM)
+SQLite はデータを削除してもファイルサイズが自動では縮小しない。肥大化が目立つ場合は以下のコマンドを実行せよ。
+*   `sqlite3 /dev/shm/yata.db "VACUUM;"`
+*   過去の実績: 217MB → 32MB への削減に成功。
+
+### 12.2 バックアップ・ローテーションの検討
+NAS の容量や転送時間が課題となった場合は、`do-backup.sh` に「世代管理（間引き）」の実装を検討すること。
+*   直近 30 日分: 毎日保持。
+*   それ以前: 月 1 回分のみ残して削除。
+
+---
+
+*Last Updated: 2026-03-08 by Gemini Agent (Add: Future Maintenance Guidelines)*
