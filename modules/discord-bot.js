@@ -171,109 +171,140 @@ async function performMutter() {
 
 // --- ボットのイベントハンドラ ---
 
+const { execSync } = require('child_process');
+
 async function getAIResponse(userMessage) {
-    const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
-    const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
+    const modelPath = "./local_llm/models/gemma-3-4b-it-Q4_K_M.gguf";
+    const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
     
     // 1. ユーザーメッセージをDBに保存
-    const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).replace(/\//g, '-');
     db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('user', userMessage, now);
 
-    // 2. 履歴とコンテキストの準備
-    const dbHistory = db.prepare("SELECT role, content FROM ai_chat_log ORDER BY id DESC LIMIT 15").all().reverse();
+    // 2. 状況コンテキストの収集 (Mutterと同様)
+    let contextInfo = "【旦那様の現在地】不明";
+    try {
+        const l = db.prepare("SELECT action, address, note FROM drive_logs ORDER BY timestamp DESC LIMIT 1").get();
+        if (l) {
+            if (l.action === 'InHome') contextInfo = "【旦那様の現在地】お屋敷にご在宅です。";
+            else if (l.action === 'OutHome') contextInfo = "【旦那様の現在地】お出かけ中です。";
+            else if (l.action === 'InCar') contextInfo = `【旦那様の現在地】ドライブ中（${l.address || '走行中'}）です。`;
+            else if (l.action === 'OutCar') contextInfo = `【旦那様の現在地】${l.address || '目的地'}に到着されました。`;
+        }
+        const w = db.prepare("SELECT temp, main_weather FROM weather_log ORDER BY datetime DESC LIMIT 1").get();
+        if (w) contextInfo += `\n【お外の様子】${w.main_weather}、気温は${Math.round(w.temp)}℃です。`;
+        const cpu = execSync('vcgencmd measure_temp').toString().replace(/[^\d.]/g, '');
+        contextInfo += `\n【私の体調(CPU)】${cpu}℃`;
+    } catch (e) { console.error("[Chat] Context gathering error:", e); }
+
+    // 3. 履歴とペルソナ、および旦那様のプロファイル (GEMINI.md)
+    const dbHistory = db.prepare("SELECT role, content FROM ai_chat_log ORDER BY id DESC LIMIT 5").all().reverse();
     const memoryPath = path.join(process.env.HOME || '/home/boncoli', '.gemini', 'GEMINI.md');
     let userProfile = "";
     try { 
         if (fs.existsSync(memoryPath)) {
             userProfile = fs.readFileSync(memoryPath, 'utf8').substring(0, 3000);
-            // --- Privacy Masking ---
-            userProfile = userProfile
-                .replace(/明石/g, "【某市】")
-                .replace(/メーカー|会社|勤務/g, "【某所】");
+            // --- Privacy Masking (地域名などを念のため伏せる) ---
+            userProfile = userProfile.replace(/明石/g, "【某市】").replace(/メーカー|会社|勤務/g, "【某所】");
         } 
-    } catch (e) {}
+    } catch (e) { console.error("[Chat] GEMINI.md read error:", e); }
 
     let personaConfig = "";
     try { personaConfig = fs.readFileSync(path.join(__dirname, '../data/digital_twin_analysis/synthesized_master_persona.md'), 'utf8'); } catch (e) { personaConfig = "有能なアシスタント"; }
 
-    const systemPrompt = `【最優先：会話の掟】
-- **短文（40文字以内）で1〜2文のみ**話してください。
-- **箇条書き、解説、アドバイス、能書きは【絶対禁止】**です。
-- 親身な「挨拶と共感」に留め、世話を焼く場合も「〜しましょうか？」の一言だけにしてください。
-
-【現在の設定（Persona）】
+    const systemPrompt = `【あなたの魂（Persona設定）】
 ${personaConfig}
 
-[旦那メモ] ${userProfile}
-(Discord経由での会話です)`;
+【会話の掟】
+- あなたは、旦那様（BON様）に心から寄り添う正統派メイドです。
+- 旦那様の今の言葉、感情、状況（寒い、お疲れ様、等）を深く受け止め、慈しむような返答をしてください。
+- 特定の趣味（車や食）を無理に話題にする必要はありません。それよりも、今の会話の流れを最も大切にしてください。
+- **短文（60文字以内）で1〜2文のみ**話してください。
+- 箇条書き、解説、能書きは【絶対禁止】です。
+- メイドとしての品格と、家族のような温かさを両立させた言葉遣いを心がけてください。
+- 返答のみを出力してください。
 
-    // 3. OpenAI API呼び出し
-    const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
-    const payload = {
-        model: modelName,
-        messages: [
-            { role: "system", content: systemPrompt },
-            ...dbHistory.map(h => ({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content }))
-        ]
-    };
+【背景知識：旦那様（BON様）について】
+${userProfile}
 
-    if (isReasoning) {
-        payload.max_completion_tokens = 500;
-        payload.reasoning_effort = "low";
-    } else {
-        payload.max_tokens = 500;
-        payload.temperature = 0.5;
-    }
+【現在の状況（変動コンテキスト）】
+${contextInfo}`;
 
+
+    // 4. ローカルLLM (Gemma 3 4B サーバー) の呼び出し
     try {
-        console.log(`[Chat] Calling OpenAI (${modelName})...`);
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        console.log(`[Chat] 🤖 Calling Local LLM Server (Gemma 3 4B)...`);
+        
+        // 熱暴走チェック
+        const currentTemp = parseFloat(execSync('vcgencmd measure_temp').toString().replace(/[^\d.]/g, ''));
+        if (currentTemp > 75) {
+            throw new Error(`Temperature too high: ${currentTemp}°C`);
+        }
+
+        const payload = {
+            messages: [
+                { role: "system", content: systemPrompt },
+                ...dbHistory.map(h => ({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content }))
+            ],
+            max_tokens: 150,
+            temperature: 0.7,
+            stop: ["<end_of_turn>", "<eos>", "ユーザー:", "旦那様:"]
+        };
+
+        // サーバーへのリクエスト (タイムアウト 40秒)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 40000);
+
+        const response = await fetch("http://localhost:8000/v1/chat/completions", {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
-            body: JSON.stringify(payload)
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         const data = await response.json();
         if (response.ok && data.choices?.[0]?.message?.content) {
-            const aiResponse = data.choices[0].message.content.trim();
-            db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', aiResponse, now);
-            return aiResponse;
+            const responseText = data.choices[0].message.content.trim();
+            db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', responseText, now);
+            return responseText;
         } else {
-            const errorMsg = data.error?.message || response.statusText || "Unknown OpenAI Error";
-            console.warn(`[Chat] OpenAI Failed (${response.status}): ${errorMsg}`);
-            
-            // --- Fallback to Gemini ---
-            const geminiKey = process.env.GEMINI_API_KEY;
-            if (geminiKey) {
-                console.log("[Chat] 🔄 Falling back to Gemini...");
-                const gRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        contents: [
-                            { role: "user", parts: [{ text: systemPrompt + "\n\nこれまでの会話履歴を考慮して返答してください。" }] },
-                            ...dbHistory.map(h => ({ 
-                                role: h.role === 'user' ? 'user' : 'model', 
-                                parts: [{ text: h.content }] 
-                            }))
-                        ],
-                        generationConfig: { temperature: 0.7, maxOutputTokens: 300 }
-                    })
-                });
-                const gData = await gRes.json();
-                if (gData.candidates?.[0]?.content?.parts?.[0]?.text) {
-                    const gResponse = gData.candidates[0].content.parts[0].text.trim();
-                    db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', gResponse, now);
-                    return gResponse;
-                } else {
-                    console.error("[Chat] ❌ Gemini fallback also failed:", gData.error?.message || "Unknown error");
-                }
-            }
+            throw new Error(data.error?.message || "Empty response from local AI server");
         }
+
     } catch (err) {
-        console.error("[Chat] ❌ System error during AI response:", err);
+        console.warn(`[Chat] 🔄 Local LLM Server failed, falling back... (${err.message})`);
+        
+        // --- クラウド (OpenAI/Gemini) へのフォールバック (従来のロジック) ---
+        const openAiKey = process.env.OPENAI_API_KEY_PERSONAL;
+        const modelName = process.env.OPENAI_MODEL_NANO || "gpt-5-nano";
+        const isReasoning = /^(gpt-5|o1|o3|o4)/.test(modelName.toLowerCase());
+        
+        const payload = {
+            model: modelName,
+            messages: [
+                { role: "system", content: systemPrompt },
+                ...dbHistory.map(h => ({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content }))
+            ]
+        };
+        if (isReasoning) { payload.max_completion_tokens = 500; payload.reasoning_effort = "low"; } else { payload.max_tokens = 500; payload.temperature = 0.5; }
+
+        try {
+            const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAiKey}` },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (res.ok && data.choices?.[0]?.message?.content) {
+                const aiResponse = data.choices[0].message.content.trim();
+                db.prepare("INSERT INTO ai_chat_log (role, content, timestamp) VALUES (?, ?, ?)").run('ai', aiResponse, now);
+                return aiResponse;
+            }
+        } catch (cloudErr) {
+            console.error("[Chat] ❌ Cloud fallback failed:", cloudErr);
+        }
     }
-    return "申し訳ありません、旦那様。思考回路が少し混線しております。";
+    return "旦那様、申し訳ありません。少し考えがまとまりませんでしたわ。";
 }
 
 client.on('ready', () => {
