@@ -1,3 +1,4 @@
+- [x] 2026-03-10: v1.1.2 バグ修正（コンテキスト圧縮の無駄打ち防止）とデイリートレンド実装を完了し、OSSへ反映。
 - [x] 2026-03-10: YATA.js (main) 最新化と prompt_company.json の統合完了。JSONモードとバッジレンダリング導入。
 # YATA Project TODO & Ambitions
 

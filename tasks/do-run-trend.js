@@ -9,7 +9,7 @@
 const path = require('path');
 
 // 1. 環境変数の読み込み (.env)
-require('dotenv').config();
+require('dotenv').config({ override: true });
 
 // 2. GAS Bridge と YATA Loader の読み込み
 require('../lib/gas-bridge.js');
@@ -23,14 +23,18 @@ async function main() {
   console.log(`Recipient (MAIL_TO): ${process.env.MAIL_TO}`);
   console.log("---------------------------------------------------------");
 
-  if (process.env.DAILY_REPORT_ENABLED !== "TRUE") {
-    console.warn("⚠️  DAILY_REPORT_ENABLED is not TRUE. Task will skip report generation.");
-    return;
-  }
+  // process.env.DAILY_REPORT_ENABLED の事前チェックは外す（強制実行するため）
 
   try {
-    // lib/YATA.js の本家メイン関数をそのまま（引数なしで）呼び出し
-    // ブリッジ側が DRY_RUN を参照して履歴保存をスキップします
+    // 【重要】本家 YATA の仕様では、「日刊KWダイジェスト」が ON (TRUE) のユーザーには
+    // トレンドレポートを送信しない（重複防止のための排他制御）。
+    // ローカルで意図的にこのトレンドレポートを実行するため、
+    // ブリッジ (gas-bridge.js) に渡る環境変数を一時的に FALSE に上書きし、スキップ判定を回避する。
+    process.env.DAILY_REPORT_ENABLED = "FALSE";
+
+    // lib/YATA.js の本家メイン関数をそのまま呼び出し
+    // 日数は YATA.js 内部のステートフルロジック（PropertiesService）により自動的に
+    // 「前回実行時からの差分（毎日実行なら約24時間）」が計算されます。
     sendPersonalizedReport();
 
     console.log("\n✅ Personalized report task (Normal Flow) finished.");
