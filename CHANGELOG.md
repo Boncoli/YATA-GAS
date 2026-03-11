@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-03-11
+### Fixed
+- `processSummarization`: 要約エラー時に生成されたベクトルと保存先記事がズレる致命的なバグを修正。
+- `getVisualizationData`: 不正なベクトルデータのパース時にエラーで停止する問題を修正（安全なスキップ化）。
+- `filterArticlesByKeywords`: タイトルや本文がない記事の検索エラーを防止し、高度な検索判定（`isTextMatchQuery`）に対応。
+- `getRecipients`: 配信先メールアドレス取得時の曜日（Day）条件を撤廃し、全有効ユーザーを確実に対象化。
+- `LlmService`: プロンプトにJSONが含まれる場合、強制的に `response_format: { type: "json_object" }` を付与し出力の安定性を向上。
+
 ## [1.0.0] - 2026-03-10
 ### Added
 - JSON強制モード (Structured Outputs) を導入し、LLMの出力パース失敗を完全に根絶。
