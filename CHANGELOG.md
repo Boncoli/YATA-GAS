@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `filterArticlesByKeywords`: タイトルや本文がない記事の検索エラーを防止し、高度な検索判定（`isTextMatchQuery`）に対応。
 - `getRecipients`: 配信先メールアドレス取得時の曜日（Day）条件を撤廃し、全有効ユーザーを確実に対象化。
 - `LlmService`: プロンプトにJSONが含まれる場合、強制的に `response_format: { type: "json_object" }` を付与し出力の安定性を向上。
+### Added (Local-only)
+- `tests/test-local-all.js`: SDカード書き込みゼロ・通信コストゼロで全ロジックを検証できる統合テストを導入。
+- `tasks/stealth-backfill.js`: 過去記事に「手法ベクトル」をコッソリ付与する、低負荷なバックフィルサービスを実装。
+- `gas-bridge.js`: `curl` 通信にリトライ機能（3回）を追加し、ネットワーク不安定時の耐性を強化。
+- `gas-bridge.js`: データベース接続を `global.YATA_DB` で共有可能にし、各種スクリプト間の連携を最適化。
 
 ## [1.0.0] - 2026-03-10
 ### Added

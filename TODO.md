@@ -1,3 +1,6 @@
+- [x] 2026-03-11: v1.0.1 アップデート（YATA.js本家修正の取り込み）および「Local版 All Test」の導入。
+- [x] 2026-03-11: 要約失敗時のベクトルズレ修正、GeminiのJSON強制条件化、パーサーの型安全化を完了。
+- [x] 2026-03-11: 機器に優しいインメモリDB (:memory:) を用いた全ロジック検証用スクリプト `tests/test-local-all.js` を実装。
 - [x] 2026-03-10: v1.1.2 バグ修正（コンテキスト圧縮の無駄打ち防止）とデイリートレンド実装を完了し、OSSへ反映。
 - [x] 2026-03-10: YATA.js (main) 最新化と prompt_company.json の統合完了。JSONモードとバッジレンダリング導入。
 # YATA Project TODO & Ambitions
