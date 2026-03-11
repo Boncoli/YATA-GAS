@@ -41,10 +41,11 @@ if [ -d "$NAS_BACKUP" ]; then
     # A. ホームディレクトリ全体の完全同期
     mkdir -p "$NAS_BACKUP/home_backup"
     # --no-links: ショートカットを無視（エラー回避の決定打）
-    # --exclude: エラーの元になるシステムフォルダを全除外
+    # --exclude: エラーの元になるシステムフォルダおよび再生成可能な重いデータを全除外
     # --no-devices --no-specials: CIFS(NAS)でのmknodエラー回避
     rsync -a --delete --no-links --no-devices --no-specials \
-      --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' \
+      --exclude='**/node_modules' --exclude='.cache' --exclude='**/__pycache__' \
+      --exclude='.venv' --exclude='local_llm/models' \
       --exclude='*.png' \
       --exclude='.nvm' --exclude='.npm' \
       --exclude='.pm2' --exclude='.vscode-server' --exclude='.local' \
