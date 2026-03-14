@@ -774,9 +774,8 @@ def create_stock_grid_direct(draw_b, draw_r, start_x, start_y, w, h):
             margin = (y_max - y_min) * 0.15 if y_max != y_min else y_max * 0.01
             plt.ylim(y_min - margin, y_max + margin)
 
-            # USD/JPYの場合、Y軸を反転 (値が小さい=円高 を上に)
-            if item["symbol"] == "JPY=X":
-                plt.gca().invert_yaxis()
+            # USD/JPYも株価と同様に値が大きい（円安）を上に揃えるため、反転処理を削除
+
             
             plt.axis('off'); plt.tight_layout(pad=0)
             buf = io.BytesIO(); plt.savefig(buf, format='png', facecolor='white', transparent=False); plt.close(); buf.seek(0)

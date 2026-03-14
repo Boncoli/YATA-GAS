@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-03-14
+### Fixed
+- `YATA.js`: `performSemanticSearch` において、指定されたキーワードとの類似度が低い記事（無関係な記事）がレポートに混入する問題を修正。デフォルトの足切り閾値 (`0.32`) を導入し、検索精度を大幅に向上。
+- `dashboard.py`: 為替(USD/JPY)グラフにおいて、Y軸の反転処理を削除し、円安が上方向になるように表示を修正。
+
 ## [1.0.1] - 2026-03-11
 ### Fixed
 - `processSummarization`: 要約エラー時に生成されたベクトルと保存先記事がズレる致命的なバグを修正。
