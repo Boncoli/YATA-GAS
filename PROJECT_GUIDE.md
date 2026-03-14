@@ -302,6 +302,10 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **v1.0.3 - 2026/03/15 (Modern Era: 堅牢化・コスト最適化)**: **GAS Bridge の互換性向上と API 請求急増への対応**。
+    - `lib/gas-bridge.js` に `clearContent`, `deleteRows`, `clear`, `setValue` 等のスタブメソッドを実装。GAS 特有のシート操作命令による収集ジョブのクラッシュを根絶。
+    - `XmlService.parse` の挙動を調整し、解析失敗時に例外を投げず空オブジェクトを返すことで、正規表現解析への安全なフォールバックを保証。
+    - 過去記事への手法ベクトル付与タスク (`yata-backfill`) を停止・削除。Embedding API の継続的な課金を抑制し、新着記事のみの運用に回帰。
 - **v1.0.2 - 2026/03/14 (Modern Era: 精度向上)**: **ベクトル検索の足切り閾値導入とUI修正**。
     - `YATA.js` の `performSemanticSearch` にて、キーワードとの類似度が極端に低い記事（無関係な記事）がレポートに混入する問題を防止するため、類似度 `0.32` の閾値を導入。
     - E-Ink ダッシュボードの USD/JPY グラフの Y軸反転処理を削除し、直感的な表示に改善。
