@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-03-15
+### Fixed
+- **XML解析フォールバックの修正**: 前回のアップデートで `XmlService.parse` がエラーを投げないように変更した結果、正規表現フォールバックが発動せず `getChildren` 等でクラッシュする問題を修正。正しくエラーを投げるように戻し、安全にフォールバックへ移行するよう改善。
+
+## [1.0.3] - 2026-03-15
+### Fixed
+- **RSS収集のクラッシュ修正**: `lib/gas-bridge.js` に `clearContent` 等の GAS 互換メソッドが不足していたため、ニュース収集が 3/12 から停止していた問題を解決。
+- **XML解析の安定化 (Buggy)**: `XmlService.parse` がエラーを投げず、安全に正規表現フォールバックへ移行するように試みた（※この変更によりバグが発生し 1.0.4 で修正）。
+### Changed
+- **APIコスト最適化**: 過去記事への手法ベクトル（Method Vector）付与タスク (`yata-backfill`) を停止・削除。API の連続的な課金を抑制。
+- **ブリッジ堅牢化**: `deleteRows`, `clear`, `setValue` などのスタブを実装し、将来的な GAS メソッド不足による事故を防止。
+
 ## [1.0.2] - 2026-03-14
 ### Fixed
 - `YATA.js`: `performSemanticSearch` において、指定されたキーワードとの類似度が低い記事（無関係な記事）がレポートに混入する問題を修正。デフォルトの足切り閾値 (`0.32`) を導入し、検索精度を大幅に向上。
