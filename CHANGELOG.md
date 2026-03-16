@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-16
+### Changed
+- **ログの可観測性向上**: 各LLM通信関数およびラッパー関数に `taskLabel` を追加。要約、Method抽出などのタスク内容がログで明確に区別できるように改善。
+- **リベンジロジックの追加**: 並列要約処理 (`summarizeBatch`) にリベンジロジックを追加。節約トークンで並列実行し、文字数上限(`length`)で途切れた場合のみ、大盛りトークン(`NANO_REVENGE`)で直列再試行するよう最適化。
+- **設定値のAppConfig完全集約**: コード内に散在していた以下のマジックナンバーを `AppConfig` に集約。
+  - バッチサイズと待機時間 (`LLM_BATCH_SIZE`, `LLM_BATCH_DELAY`)
+  - ベクトル生成・履歴保持などの各種期間設定
+  - APIトークン上限 (`MaxCompletionTokens`)
+  - 類似検索の閾値、ジョブタイムアウト、為替レート、検索ヒット上限(`SEARCH_MAX_RESULTS`)など
+- **GAS Bridge の強化**: 新たに追加された `getMaxRows` および `insertRowsAfter` メソッドを `gas-bridge.js` 側で安全に吸収するように対応。
+
 ## [1.0.4] - 2026-03-15
 ### Fixed
 - **XML解析フォールバックの修正**: 前回のアップデートで `XmlService.parse` がエラーを投げないように変更した結果、正規表現フォールバックが発動せず `getChildren` 等でクラッシュする問題を修正。正しくエラーを投げるように戻し、安全にフォールバックへ移行するよう改善。

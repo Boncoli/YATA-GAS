@@ -302,6 +302,11 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **v1.2.0 - 2026/03/16 (Modern Era: ログ強化・設定集約・リベンジロジック)**:
+    - 各LLM通信関数に `taskLabel` を追加し、ログから「何のタスクでAPIを呼んだか」を明確に判別可能にした。
+    - 並列要約処理にリベンジロジックを追加。トークン節約のために `length` 上限で途切れた場合のみ、大盛りトークン (`NANO_REVENGE`) で直列再試行する機構を実装。
+    - `YATA.js` 内のマジックナンバー（バッチサイズ、閾値、APIトークン上限など）をすべて `AppConfig` に集約し、保守性を 向上。
+    - ブリッジ側で `getMaxRows` および `insertRowsAfter` をモック対応。
 - **v1.0.3 - 2026/03/15 (Modern Era: 堅牢化・コスト最適化)**: **GAS Bridge の互換性向上と API 請求急増への対応**。
     - `lib/gas-bridge.js` に `clearContent`, `deleteRows`, `clear`, `setValue` 等のスタブメソッドを実装。GAS 特有のシート操作命令による収集ジョブのクラッシュを根絶。
     - `XmlService.parse` の挙動を調整し、解析失敗時に例外を投げず空オブジェクトを返すことで、正規表現解析への安全なフォールバックを保証。
