@@ -148,14 +148,27 @@ if [ "$SYNC_BACK" = true ]; then
     exec 9>"/tmp/yata-sd-copy.lock"
     flock 9
 
-    # WALとSHMも含めて同期するように改善
-    cp "$RAM_DB" "$REAL_DB"
-    [ -f "$RAM_DB-wal" ] && cp "$RAM_DB-wal" "${REAL_DB}-wal"
-    [ -f "$RAM_DB-shm" ] && cp "$RAM_DB-shm" "${REAL_DB}-shm"
-    
-    # 書き戻したファイルの所有権を修正 (root実行対策)
+    # 書き戻しのため、一時的にSD上の実体ファイルの権限を開放する (物理ガードの解除)
     REAL_TARGET=$(readlink -f "$REAL_DB")
     chmod 666 "$REAL_TARGET" "${REAL_TARGET}-wal" "${REAL_TARGET}-shm" 2>/dev/null
+
+    # WALとSHMも含めて同期するように改善 (存在しない場合はSD側も削除する)
+    cp -f "$RAM_DB" "$REAL_DB"
+    
+    if [ -f "$RAM_DB-wal" ]; then
+        cp -f "$RAM_DB-wal" "${REAL_DB}-wal"
+    else
+        rm -f "${REAL_DB}-wal"
+    fi
+    
+    if [ -f "$RAM_DB-shm" ]; then
+        cp -f "$RAM_DB-shm" "${REAL_DB}-shm"
+    else
+        rm -f "${REAL_DB}-shm"
+    fi
+    
+    # 書き戻し完了後、SD上の実体ファイルを即座に Read-Only にしてロックする (物理ガードの施錠)
+    chmod 444 "$REAL_TARGET" "${REAL_TARGET}-wal" "${REAL_TARGET}-shm" 2>/dev/null
 
     # ロック解放
     flock -u 9
