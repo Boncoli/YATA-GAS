@@ -17,7 +17,8 @@
 
 ## 3. 開発・運用フローの黄金律 (DevOps Flow)
 - **ブランチ戦略**: 基点は `local-raspi`（`main`は会社、`public`はOSS）。作業時は `Temp_yymmdd` ブランチで細かくコミットを重ね、セッション終了時に初めてスカッシュマージせよ。履歴の美しさを死守せよ。
-- **YATA.js同期**: 指示があったら `git fetch origin && git show origin/main:YATA.js > lib/YATA.js` で強制上書きせよ。
+- **三ブランチ完全同期**: セッション終了前、`local-raspi` のドキュメント（README/CHANGELOG/GUIDE）が他ブランチ (`main`, `public`) と完全に同期されていることを、バージョン番号（例: 1.2.1）を含め物理的に確認せよ。`local-raspi` が唯一の正本 (SSoT) である。
+- **YATA.js同期**: 指示があったら `git fetch origin && git show origin/main:lib/YATA.js > lib/YATA.js` で強制上書きせよ。
 - **リスク回避**: トラブル対応時、副作用（データ喪失等）を「まず説明」し、BON様の判断を仰げ。技術的正解より安全を優先。
 
 ## 4. 通知とレポートの品質基準 (Notifications & Reporting)
