@@ -101,10 +101,39 @@
         }
         h1 {
             font-size: 1.8rem;
-            margin-bottom: 20px;
+            margin-bottom: 10px;
             color: var(--accent-color);
             letter-spacing: 2px;
         }
+
+        /* --- Maid Avatar (Grid Top) --- */
+        #maid-hero {
+            width: 150px;
+            height: 150px;
+            margin: 0 auto 20px auto;
+            border-radius: 50%;
+            overflow: hidden;
+            border: 4px solid var(--accent-color);
+            background-color: #000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        #maid-hero:active { transform: scale(0.95); }
+        #maid-pic {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform-origin: center center;
+            /* 👇 ここを調整：translate(左右, 上下) ※マイナスで左/上へ */
+            transform: scale(1.8) translate(0%, 20%);
+            transition: transform 0.2s;
+        }
+        .maid-talking { transform: scale(2.0) translate(0%, 20%) !important; }
+
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -140,7 +169,6 @@
 
         /* --- Chat UI --- */
         #chat-widget {
-            /* Mobile Default Style (Overlay) */
             position: fixed;
             bottom: 20px;
             right: 20px;
@@ -158,7 +186,6 @@
             display: flex; align-items: center; justify-content: center;
         }
         #chat-window {
-            /* Mobile Default Style (Overlay) */
             position: fixed;
             bottom: 80px; right: 20px;
             width: 350px; height: 500px;
@@ -187,7 +214,6 @@
             header { padding: 5px 10px; }
         }
 
-        /* --- Desktop Mode (Sidebar Chat) --- */
         @media (min-width: 769px) {
             #chat-widget {
                 position: relative;
@@ -209,10 +235,10 @@
                 border: none;
                 border-radius: 0;
                 box-shadow: none;
-                display: flex !important; /* Always show */
+                display: flex !important;
             }
             #chat-button { display: none; }
-            #chat-header button { display: none; } /* Hide close button */
+            #chat-header button { display: none; }
         }
     </style>
 </head>
@@ -237,6 +263,10 @@
     <div id="content-wrapper">
         <main>
             <div id="view-grid">
+                <!-- Maid Hero Avatar -->
+                <div id="maid-hero" onclick="toggleChat()">
+                    <img id="maid-pic" src="maid_Smile.png" alt="YATA Maid">
+                </div>
                 <h1>YATA PORTAL</h1>
                 <div class="grid">
                     <div onclick="openPage('map.html')" class="card">
@@ -320,7 +350,6 @@
         const frameView = document.getElementById('view-frame');
 
         function openPage(url) {
-            // キャッシュ回避のためタイムスタンプを付与
             const cacheBuster = 'v=' + Date.now();
             const finalUrl = url.includes('?') ? `${url}&${cacheBuster}` : `${url}?${cacheBuster}`;
             frameView.src = finalUrl;
@@ -343,6 +372,22 @@
                 document.getElementById('diskPercent').textContent = data.diskPercent;
                 document.getElementById('nasAvail').textContent = data.nasAvail;
                 
+                // --- Maid Emotion Logic ---
+                const temp = parseFloat(data.cpuTemp);
+                const todayCount = data.todayArticles || 0;
+
+                if (temp >= 60) {
+                    updateMaidEmotion('Angry'); // Hot/Fan spinning!
+                } else if (temp < 40) {
+                    updateMaidEmotion('sad'); // Chilly...
+                } else if (todayCount >= 400) {
+                    updateMaidEmotion('enjoy'); // Huge harvest!
+                } else if (todayCount >= 100) {
+                    updateMaidEmotion('Smile'); // Good progress!
+                } else {
+                    updateMaidEmotion('SD'); // Neutral base pose
+                }
+
                 if (data.totalArticles) {
                     document.getElementById('articleCount').textContent = `${data.totalArticles} + ${data.todayArticles || 0}`;
                 }
@@ -353,7 +398,6 @@
                     document.getElementById('weather').textContent = data.weather;
                 }
                 
-                // --- 追加: 今日の歩数を取得 ---
                 try {
                     const hRes = await fetch('/api/health-stats?limit=1');
                     const hData = await hRes.json();
@@ -367,15 +411,12 @@
                     } else {
                         document.getElementById('todaySteps').textContent = "0";
                     }
-                } catch (he) {
-                    document.getElementById('todaySteps').textContent = "--";
-                }
+                } catch (he) {}
             } catch (e) {}
         }
         updateStatus();
         setInterval(updateStatus, 30000);
 
-        // Chat Logic
         const chatWindow = document.getElementById('chat-window');
         const chatInput = document.getElementById('chat-input');
         const chatMessages = document.getElementById('chat-messages');
@@ -384,9 +425,11 @@
         let isChatOpen = false;
 
         function toggleChat() {
-            isChatOpen = chatWindow.style.display === 'flex' ? false : true;
-            chatWindow.style.display = isChatOpen ? 'flex' : 'none';
-            if (isChatOpen) {
+            isChatOpen = (chatWindow.style.display === 'flex' || (window.innerWidth >= 769)) ? false : true;
+            if (window.innerWidth < 769) {
+                chatWindow.style.display = isChatOpen ? 'flex' : 'none';
+            }
+            if (isChatOpen || window.innerWidth >= 769) {
                 chatInput.focus();
                 loadChatHistory();
             }
@@ -402,16 +445,12 @@
                     lastMessageId = Math.max(lastMessageId, msg.id);
                 });
                 chatMessages.scrollTop = chatMessages.scrollHeight;
-            } catch (e) {
-                console.error("Failed to load chat history:", e);
-            }
+            } catch (e) {}
         }
 
         async function pollMessages() {
-            // PCモードなら常時Open扱い
             const isAlwaysOpen = window.innerWidth >= 769;
             const effectiveOpen = isChatOpen || isAlwaysOpen;
-
             try {
                 const res = await fetch('/api/chat-history?limit=10');
                 const data = await res.json();
@@ -431,10 +470,9 @@
         async function sendMessage() {
             const text = chatInput.value.trim();
             if (!text) return;
-
             appendMessage('user', text);
             chatInput.value = '';
-
+            updateMaidEmotion('thinking');
             try {
                 const res = await fetch('/api/chat', {
                     method: 'POST',
@@ -442,11 +480,21 @@
                     body: JSON.stringify({ message: text })
                 });
                 const data = await res.json();
-                if (data.response) {
-                    pollMessages();
-                }
+                if (data.response) { pollMessages(); }
             } catch (e) {
                 appendMessage('ai', "通信エラーが発生しました。", true);
+                updateMaidEmotion('sad');
+            }
+        }
+
+        function updateMaidEmotion(emotion) {
+            const maidPic = document.getElementById('maid-pic');
+            if (!maidPic) return;
+            const newSrc = `maid_${emotion}.png`;
+            if (maidPic.src.indexOf(newSrc) === -1) {
+                maidPic.src = newSrc;
+                maidPic.classList.add('maid-talking');
+                setTimeout(() => maidPic.classList.remove('maid-talking'), 300);
             }
         }
 
@@ -460,19 +508,13 @@
 
         chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
 
-        // Layout Check for Desktop
         function checkLayout() {
             if (window.innerWidth >= 769) {
-                // Desktop: Always load history if empty
-                if (chatMessages.innerHTML === '' || chatMessages.innerHTML.trim() === '<div class="message ai-message">こんにちは、BON様。</div>') {
-                    loadChatHistory();
-                }
+                loadChatHistory();
             }
         }
         window.addEventListener('resize', checkLayout);
-        // Initial check
         checkLayout();
-
     </script>
 </body>
 </html>

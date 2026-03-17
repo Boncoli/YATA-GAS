@@ -747,7 +747,8 @@ app.get('/api/system-status', (req, res) => {
         // --- 追加: 記事数、スポット、天気 ---
         try {
             const total = db.prepare("SELECT COUNT(*) as count FROM collect").get();
-            const today = db.prepare("SELECT COUNT(*) as count FROM collect WHERE date >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')").get();
+            // カレンダー上の「今日(JST)」の00:00:00以降をカウント
+            const today = db.prepare("SELECT COUNT(*) as count FROM collect WHERE date >= date('now', 'localtime') || 'T00:00:00Z'").get();
             status.totalArticles = total.count;
             status.todayArticles = today.count;
 
