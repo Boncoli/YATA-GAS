@@ -1,0 +1,61 @@
+# --- Node.js ---
+node_modules/
+package-lock.json
+
+# --- Environment variables and secrets (Security) ---
+.env
+credentials.json
+server-properties.json
+
+# --- Database ---
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.db.broken*
+*.db.corrupt*
+
+
+# --- Logs ---
+*.log
+logs/
+archive/
+npm-debug.log*
+
+# --- OS & System generated files ---
+.DS_Store
+Thumbs.db
+*.bak
+
+# --- Frontend & Local Testing ---
+public/
+# local_public/ は基本管理対象とし、生成物のみ除外する
+local_public/*.png
+local_public/*.jpg
+local_public/*.json
+!local_public/*.html
+!local_public/*.css
+!local_public/*.js
+!local_public/icon.png
+
+# --- Python & Dashboard specific ---
+*.png
+__pycache__/
+*.py[cod]
+dashboard/fonts/
+
+# --- 資料等 ---
+"YATA - Context-Aware Intelligence Platform (Full).pdf"
+案内資料/
+
+# lib/YATA.js は唯一の正本なので無視してはいけません
+!lib/YATA.js
+
+# --- Dynamic Data ---
+interests.json
+interests_test.json
+persona.txt
+local_llm/models/
+core.*
+hdd.logs/
+data/high_concentration_archive.json

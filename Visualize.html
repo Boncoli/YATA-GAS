@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: sans-serif; overflow: hidden; }
+    #chart { width: 100vw; height: 100vh; }
+    
+    /* ローディング画面 */
+    #loading { 
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(255,255,255,0.95); padding: 30px; border-radius: 12px;
+      text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.2); pointer-events: none;
+      z-index: 100; border: 1px solid #eee;
+    }
+    
+    /* 戻るボタン */
+    .back-btn {
+      position: absolute; top: 15px; left: 15px; z-index: 999;
+      background: #fff; padding: 10px 20px; border-radius: 30px;
+      text-decoration: none; color: #333; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      font-weight: bold; font-size: 14px; transition: transform 0.2s;
+    }
+    .back-btn:hover { transform: scale(1.05); }
+    
+    /* 操作ガイド（凡例） */
+    .legend-box {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 999;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 15px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+      font-size: 13px;
+      line-height: 1.8;
+      max-width: 240px;
+      border-left: 5px solid #3498db;
+      backdrop-filter: blur(5px);
+    }
+    .legend-title {
+      font-weight: bold; font-size: 15px; margin-bottom: 8px; color: #2c3e50;
+      border-bottom: 1px solid #eee; padding-bottom: 5px;
+    }
+    .legend-item { display: flex; align-items: center; }
+    .key-icon { width: 20px; text-align: center; margin-right: 10px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <a href="<?= ScriptApp.getService().getUrl() ?>" class="back-btn">← 検索画面に戻る</a>
+
+  <div id="loading">
+    <h3 style="margin-top:0; color:#3498db;">Mapping the Cosmos...</h3>
+    <p style="color:#666; font-size:14px;">記事データを3次元空間へ展開しています。<br>しばらくお待ちください。</p>
+  </div>
+  
+  <div class="legend-box">
+    <div class="legend-title">🗺️ Information Space</div>
+    <div class="legend-item"><span class="key-icon">🖱️</span>回転: ドラッグ</div>
+    <div class="legend-item"><span class="key-icon">🔍</span>拡大: スクロール/ピンチ</div>
+    <div class="legend-item"><span class="key-icon">👆</span>詳細: 点をクリック</div>
+    <div style="margin-top: 8px; font-size: 12px; color: #666;">
+      <b>距離が近い</b> = 文脈・話題が似ている<br>
+      <b>孤立した点</b> = 独自の動き（予兆候補）<br>
+      <span style="font-size: 11px; color: #999;">※色はZ軸(高さ)を表しています</span>
+    </div>
+  </div>
+
+  <div id="chart"></div>
+
+  <script>
+    // サーバーからデータを取得
+    google.script.run
+      .withSuccessHandler(renderChart)
+      .withFailureHandler(e => {
+        document.getElementById('loading').innerHTML = 
+          `<p style="color:red">エラーが発生しました:<br>${e}</p>`;
+      })
+      .getVisualizationData();
+
+    /**
+     * チャートを描画するメイン関数
+     */
+    function renderChart(data) {
+      if (!data || data.length === 0) {
+        document.getElementById('loading').innerHTML = 
+          "<h3>No Data</h3><p>表示できる記事データがありませんでした。<br>要約ジョブが完了しているか確認してください。</p>";
+        return;
+      }
+
+      // 1. PCA（主成分分析）で 1536次元 -> 3次元 に圧縮
+      // サーバーから受け取った data[i].v (ベクトル配列) を使用
+      const vectors = data.map(d => d.v);
+      
+      // 次元圧縮を実行
+      const coords = simplePCA(vectors, 3);
+
+      // 2. Plotly用にデータを整形
+      const trace = {
+        x: coords.map(c => c[0]),
+        y: coords.map(c => c[1]),
+        z: coords.map(c => c[2]),
+        mode: 'markers',
+        type: 'scatter3d',
+        // ホバー時のテキスト（太字ソース + タイトル）
+        text: data.map(d => `<b>${d.s}</b><br>${d.t}`),
+        // クリック時に開くURLを隠しデータとして持たせる
+        customdata: data.map(d => d.u), 
+        marker: {
+          size: 5,               // 点の大きさ
+          color: coords.map(c => c[2]), // Z軸の値で色分け
+          colorscale: 'Viridis', // 色のテーマ (Viridis, Plasma, Jetなど)
+          opacity: 0.8,
+          line: { width: 0 }     // 点の枠線なし
+        },
+        hoverinfo: 'text' // 座標値は出さずテキストのみ表示
+      };
+
+      const layout = {
+        margin: {l:0, r:0, b:0, t:0},
+        paper_bgcolor: '#f4f7f6', // 背景色
+        scene: {
+          // 軸の線や目盛りを消して「宇宙」っぽくする
+          xaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false, backgroundcolor: '#f4f7f6'},
+          yaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false, backgroundcolor: '#f4f7f6'},
+          zaxis: {title: '', showgrid: true, zeroline: false, showticklabels: false, backgroundcolor: '#f4f7f6'},
+          camera: { eye: {x: 1.6, y: 1.6, z: 1.4} } // カメラの初期位置
+        },
+        hoverlabel: { 
+          bgcolor: "#FFF",
+          bordercolor: "#ccc",
+          font: { size: 13 }
+        }
+      };
+
+      // ローディングを消す
+      document.getElementById('loading').style.display = 'none';
+      
+      // 描画実行
+      Plotly.newPlot('chart', [trace], layout, {responsive: true});
+
+      // イベントリスナー: 点をクリックしたら記事を開く
+      document.getElementById('chart').on('plotly_click', function(data){
+        if (data.points.length > 0) {
+          const url = data.points[0].customdata;
+          if(url) window.open(url, '_blank');
+        }
+      });
+    }
+
+    /**
+     * 簡易PCA (主成分分析) アルゴリズム
+     * ランダム射影を用いて高次元ベクトルを3次元に落とし込む
+     */
+    function simplePCA(vectors, k) {
+      const n = vectors.length;
+      if (n === 0) return [];
+      const dim = vectors[0].length;
+      
+      // 1. 中心化 (Mean centering)
+      // 全データの平均ベクトルを計算
+      const mean = new Array(dim).fill(0);
+      for(let i=0; i<n; i++) {
+        for(let j=0; j<dim; j++) {
+          mean[j] += vectors[i][j];
+        }
+      }
+      for(let j=0; j<dim; j++) mean[j] /= n;
+
+      // 各点から平均を引く
+      const centered = vectors.map(v => v.map((val, j) => val - mean[j]));
+
+      // 2. ランダム射影行列の作成 (Gaussian Random Matrix)
+      // 本来はSVDを行うが、計算コスト削減のためランダム射影で近似
+      const projectionMatrix = [];
+      for(let i=0; i<dim; i++) {
+        const row = [];
+        for(let j=0; j<k; j++) {
+          // Box-Muller変換で正規分布乱数を生成
+          const u = 1 - Math.random(); 
+          const v = Math.random();
+          const z = Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+          row.push(z);
+        }
+        projectionMatrix.push(row);
+      }
+
+      // 3. 行列積: (n x dim) * (dim x k) -> (n x k)
+      const result = [];
+      for(let i=0; i<n; i++) {
+        const row = [];
+        for(let col=0; col<k; col++) {
+          let sum = 0;
+          for(let d=0; d<dim; d++) {
+            sum += centered[i][d] * projectionMatrix[d][col];
+          }
+          row.push(sum);
+        }
+        result.push(row);
+      }
+      return result;
+    }
+  </script>
+</body>
+</html>
