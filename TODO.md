@@ -1,3 +1,4 @@
+- [x] 2026-03-17: **【運用環境の整理】** SQLite Web (`yata-db-web`) をポート 8082 で PM2 常駐化。`yata-studio` (8080) とのポート競合を解消し、Windows バッチ側も同期。
 - [x] 2026-03-17: **【本家同期 & Web UI 改善】** `origin/main` (会社/リモート正本) の最新 `YATA.js` を同期。`markdownToHtml` 適用により Web ポータルのカード表示崩れを解消。
 - [x] 2026-03-17: 臨床検査・バイオ特化の厳格プロンプト (`prompt_company.json`) と、Reveal.js 製のリッチなプレゼン資料 (`presentation.html`) をローカル環境へ導入。
 - [x] 2026-03-17: 最新ロジックの統合テスト (`tests/test-local-all.js`) を実施し、`gas-bridge.js` との完全な互換性を確認。
