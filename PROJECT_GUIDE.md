@@ -325,6 +325,12 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **v1.2.1 - 2026/03/17 (Modern Era: 本家同期・HTML生成改善)**:
+    - `origin/main`（会社/リモート正本）の `lib/YATA.js` を同期。
+    - `generateTrendReportHtml` 内に `markdownToHtml` を適用。Web UI でのカード表示崩れを解消。
+    - メンテナンス用関数 `toolArchiveAndClearHistory` を追加（GAS用）。
+    - 臨床検査・バイオ特化の厳格なプロンプト `prompt_company.json` を導入。
+    - プロジェクト紹介用 Reveal.js スライド `presentation.html` を導入。
 - **v1.2.0 - 2026/03/16 (Modern Era: ログ強化・設定集約・リベンジロジック)**:
     - 各LLM通信関数に `taskLabel` を追加し、ログから「何のタスクでAPIを呼んだか」を明確に判別可能にした。
     - 並列要約処理にリベンジロジックを追加。トークン節約のために `length` 上限で途切れた場合のみ、大盛りトークン (`NANO_REVENGE`) で直列再試行する機構を実装。
