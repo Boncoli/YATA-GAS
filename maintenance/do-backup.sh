@@ -73,7 +73,10 @@ if [ -d "$NAS_BACKUP" ]; then
     for RAM_LOG in "${RAM_LOGS[@]}"; do
         if [ -f "$RAM_LOG" ]; then
             BASENAME=$(basename "$RAM_LOG" .log)
+            # NASへコピー
             cp "$RAM_LOG" "$NAS_LOG_DIR/${BASENAME}_${TODAY_STR}.log"
+            # 元のRAMログをクリア (SDカード保護のため truncate を使用)
+            truncate -s 0 "$RAM_LOG"
         fi
     done
     

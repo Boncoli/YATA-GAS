@@ -1,3 +1,4 @@
+- [x] 2026-03-17: **【運用堅牢化】** ログの無限肥大化を解消（truncate処理導入）。.env の DB_PATH を RAM に固定し SD カードを物理保護。gas-bridge に爆速軽量化フックを実装し、1.4万件超の DB でも収集ジョブを数ミリ秒で完遂可能にした。
 - [x] 2026-03-17: **【運用環境の整理】** SQLite Web (`yata-db-web`) をポート 8082 で PM2 常駐化。`yata-studio` (8080) とのポート競合を解消し、Windows バッチ側も同期。
 - [x] 2026-03-17: **【本家同期 & Web UI 改善】** `origin/main` (会社/リモート正本) の最新 `YATA.js` を同期。`markdownToHtml` 適用により Web ポータルのカード表示崩れを解消。
 - [x] 2026-03-17: 臨床検査・バイオ特化の厳格プロンプト (`prompt_company.json`) と、Reveal.js 製のリッチなプレゼン資料 (`presentation.html`) をローカル環境へ導入。
