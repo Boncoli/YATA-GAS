@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-03-17
+### Changed
+- **本家同期 (YATA.js v1.2.1)**: `origin/main` から最新ロジックを同期。コードの整形、インデント調整を適用。
+- **Web UI 改善 (HTML生成ロジック)**: `generateTrendReportHtml` 内で `markdownToHtml` を適用するように変更。Markdown 形式の AI 出力が Web ポータルのカード表示で崩れる問題を解消。
+- **メンテナンス機能追加**: GAS 用の履歴アーカイブ・シート初期化関数 `toolArchiveAndClearHistory` を実装。
+
+### Added
+- **専門分野特化プロンプト**: 臨床検査・バイオ技術分野に特化した厳格なファクト監査プロンプト `prompt_company.json` を導入（Private）。
+- **プレゼン用資料**: Reveal.js を使用したアーキテクチャ解説スライド `presentation.html` を追加。
+- **公開用プロンプト雛形**: OSS 版向けに、専門分野を除去した汎用的なプロンプト雛形 `prompt_template.json` を整備。
+
 ## [1.2.0] - 2026-03-16
 ### Changed
 - **ログの可観測性向上**: 各LLM通信関数およびラッパー関数に `taskLabel` を追加。要約、Method抽出などのタスク内容がログで明確に区別できるように改善。
