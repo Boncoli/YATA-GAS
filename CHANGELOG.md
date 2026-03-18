@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-03-18
+### Fixed
+- **API厳格化への対応**: `gpt-5.4` などの最新推論モデルにおいて `top_p` パラメータがAPI側で完全に拒否（Unsupported）される仕様に追従し、該当モデルの場合は `temperature` と共に `top_p` も送信から除外するよう修正。
+
 ## [1.2.3] - 2026-03-18
 ### Changed
 - **GPT-5.4対応とアーキテクチャ刷新**: `gpt-5.4` モデルへの移行に伴い、AI推論制御パラメータを `temperature` から `top_p`, `reasoning_effort`, `verbosity` を主軸とする「5.4流」の構成へ完全移行。
