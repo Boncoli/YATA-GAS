@@ -24,12 +24,6 @@
     "active": true
   },
   {
-    "label": "MacRumors",
-    "url": "https://feeds.macrumors.com/MacRumors-Front",
-    "category": "General",
-    "active": true
-  },
-  {
     "label": "9to5Mac",
     "url": "https://9to5mac.com/feed/",
     "category": "General",
@@ -110,12 +104,6 @@
   {
     "label": "Ars Technica",
     "url": "https://arstechnica.com/feed/",
-    "category": "General",
-    "active": true
-  },
-  {
-    "label": "Hacker News – Best",
-    "url": "https://news.ycombinator.com/rss",
     "category": "General",
     "active": true
   },
@@ -222,26 +210,8 @@
     "active": true
   },
   {
-    "label": "Ars Technica",
-    "url": "http://feeds.arstechnica.com/arstechnica/index",
-    "category": "General",
-    "active": true
-  },
-  {
     "label": "TechCrunch",
     "url": "https://feeds.feedburner.com/TechCrunch/",
-    "category": "General",
-    "active": true
-  },
-  {
-    "label": "The Verge",
-    "url": "https://www.theverge.com/rss/index.xml",
-    "category": "General",
-    "active": true
-  },
-  {
-    "label": "MacRumors",
-    "url": "https://www.macrumors.com/macrumors.xml",
     "category": "General",
     "active": true
   },
@@ -278,6 +248,90 @@
   {
     "label": "Fierce Biotech / Fierce Medtech",
     "url": "https://www.fiercebiotech.com/rss/xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "NHK NEWS",
+    "url": "https://www.nhk.or.jp/rss/news/cat0.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "東洋経済オンライン",
+    "url": "https://toyokeizai.net/list/feed/rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Business Insider Japan",
+    "url": "https://www.businessinsider.jp/feed/index.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "BBC News (World)",
+    "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "The New York Times (World)",
+    "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "Reuters (World)",
+    "url": "https://news.google.com/rss/search?q=site:jp.reuters.com+%E5%9B%BD%E9%9A%9B&hl=ja&gl=JP&ceid=JP:ja",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "CNN (World)",
+    "url": "http://rss.cnn.com/rss/edition_world.rss",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ナゾロジー（Science News）",
+    "url": "https://nazology.net/feed",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "コリス（Webクリエイター向け情報）",
+    "url": "https://coliss.com/feed/",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ねとらぼ（エンタメ・ネットの話題）",
+    "url": "https://rss.itmedia.co.jp/rss/2.0/netlab.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ScienceDaily (Top News)",
+    "url": "https://www.sciencedaily.com/rss/top.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ScienceDaily(Science)",
+    "url": "https://www.sciencedaily.com/rss/top/science.xml",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "ナゾロジー（科学・サイエンスの面白枠）",
+    "url": "https://nazology.kusuguru.co.jp/feed",
+    "category": "General",
+    "active": true
+  },
+  {
+    "label": "sorae（宇宙へのロマン）",
+    "url": "https://sorae.info/feed",
     "category": "General",
     "active": true
   }

@@ -114,11 +114,11 @@ if [ "$SYNC_ONLY" = false ]; then
 
     # 実行コマンドの判定
     if [[ "$NODE_SCRIPT" == *.py ]]; then
-        # 末尾に "$@" を追加（クォーテーションで囲むのがコツ）
-        CMD="python3 -u \"$SCRIPT_PATH\" \"\$@\""
+        # 末尾に "${EXT_ARGS[@]}" を追加
+        CMD="python3 -u \"$SCRIPT_PATH\" ${EXT_ARGS[@]}"
     else
-        # 末尾に "$@" を追加
-        CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\" \"\$@\""
+        # 末尾に "${EXT_ARGS[@]}" を追加
+        CMD="/home/boncoli/.nvm/versions/node/v24.12.0/bin/node \"$SCRIPT_PATH\" ${EXT_ARGS[@]}"
     fi
 
     if [ -n "$LOG_FILE" ]; then
