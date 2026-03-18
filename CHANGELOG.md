@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-03-18
+### Changed
+- **GPT-5.4対応とアーキテクチャ刷新**: `gpt-5.4` モデルへの移行に伴い、AI推論制御パラメータを `temperature` から `top_p`, `reasoning_effort`, `verbosity` を主軸とする「5.4流」の構成へ完全移行。
+- **推論パラメータの外部化**: `AppConfig` に新設した `TopP` などの各種パラメータを `PropertiesService`（`.env`）から取得可能にし、ローカル環境と会社（GAS）環境で異なるモデル挙動をコード変更なしで切り替え可能に改善。
+
 ## [1.2.2] - 2026-03-18
 ### Changed
 - **収集ロジックの堅牢化**: RSSから取得した日付が「明らかな未来（24時間以上先）」である場合、現在日時に補正する処理を追加。
