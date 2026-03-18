@@ -134,7 +134,7 @@ DB_PATH=/dev/shm/yata.db
 
 ### AI推論パラメータの完全外部化 (GPT-5.4対応 / 2026/03)
 最新の `gpt-5.4` モデルへの移行に伴い、`lib/YATA.js`（本家と共通の聖域コード）を一切汚すことなく、ローカル環境（.env）および会社環境（GASのスクリプトプロパティ）からモデルの挙動を直接制御できる「完全外部化」を実現しています。
-特に、GPT-5.4で廃止された `temperature` の代わりに、`top_p`, `verbosity`, `reasoning_effort` を用いた「5.4流」の最適化設定が可能となりました。
+※ OpenAIの厳格な仕様により、5.4系推論モデルでは `temperature` および `top_p` の両方が使用不可（エラー）となるため、システム内部で自動的に送信を除外する安全設計となっています。
 
 **▼ 推奨される `.env` 設定（ローカルRasPi用）**
 ```env
@@ -142,13 +142,11 @@ DB_PATH=/dev/shm/yata.db
 OPENAI_MODEL_NANO="gpt-5.4-nano"
 VERBOSITY_NANO="low"
 REASONING_NANO="none"
-TOP_P_NANO="0.05"
 
 # 2. 統合分析フェーズ（インサイト抽出: 文脈を読み解く）
 OPENAI_MODEL_MINI="gpt-5.4-mini"
 VERBOSITY_MINI="medium"
 REASONING_MINI="high"
-TOP_P_MINI="0.15"
 ```
 
 **【会社（GAS）環境での運用】**
