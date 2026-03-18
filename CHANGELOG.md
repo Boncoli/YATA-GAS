@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-03-18
+### Changed
+- **収集ロジックの堅牢化**: RSSから取得した日付が「明らかな未来（24時間以上先）」である場合、現在日時に補正する処理を追加。
+- **コスト計算の精緻化**: `System.Budget.RatesPer1M` を導入し、モデルごとのトークン単価に基づいた正確なコスト計算（1Mトークン単位）へ移行。
+- **プロンプトの完全外部化**: `YATA.js` 内にハードコードされていた `METHOD_EXTRACTION_SYSTEM`, `ARCHIVE_TOPIC_SYSTEM`, `WEBPAGE_SUMMARY_SYSTEM` をプロンプト設定(`prompts.json`)から読み込むように変更。
+- **シート拡張バッファの導入**: データ追加時に不足行を拡張する際、余裕バッファ行数(`INSERT_ROW_BUFFER`)を追加するよう改善。
+
+### Added
+- **メンテナンス機能強化**: E列に残存するJSON形式のパース失敗エラーを一掃する `toolResetAllJsonErrors`、および5000行の壁を越えて全行スキャンし要約の穴埋めを行う `toolFillMissingSummariesFullScan` を実装。
+
 ## [1.2.1] - 2026-03-17
 ### Changed
 - **本家同期 (YATA.js v1.2.1)**: `origin/main` から最新ロジックを同期。コードの整形、インデント調整を適用。
