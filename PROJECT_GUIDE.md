@@ -347,6 +347,12 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **v1.2.2 - 2026/03/18 (Modern Era: 収集ロジック堅牢化・コスト精緻化)**:
+    - 本家 `main` ブランチから最新ロジックを同期。
+    - RSS日付の「未来」判定および補正ロジックを導入。
+    - APIコスト計算に `RatesPer1M` を導入し、1Mトークン単位の精緻な計算へ移行。
+    - プロンプト (`METHOD_EXTRACTION_SYSTEM`等) を完全外部化し `prompts.json` から取得するよう変更。
+    - シート行拡張時の余裕バッファ (`INSERT_ROW_BUFFER`)、および全件スキャンやJSON残骸削除のメンテナンスツールを追加。
 - **v1.2.1 - 2026/03/17 (Modern Era: 本家同期・HTML生成改善)**:
     - `origin/main`（会社/リモート正本）の `lib/YATA.js` を同期。
     - `generateTrendReportHtml` 内に `markdownToHtml` を適用。Web UI でのカード表示崩れを解消。
