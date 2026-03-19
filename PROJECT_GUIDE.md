@@ -368,6 +368,10 @@ bash run-ram.sh --no-sync do-health-check.js
 ---
 
 ### メンテナンス記録
+- **v1.2.7 - 2026/03/19 (Transparency Era: 詳細トークン管理の実装)**:
+    - **Usageトラッキング**: APIレスポンスから `usage` オブジェクト（input/output/reasoning）を正確に抽出するよう `lib/YATA.js` を改修。
+    - **日次統計DB**: `api_usage_daily` テーブルを新設。日ごと・モデルごとのトークン消費量と推定コストを SQLite に永続化。
+    - **思考トークンの可視化**: 従来不明確だった Reasoning Tokens（思考トークン）を「出力トークン」の一部としてだけでなく、独立した指標として捕捉・蓄積可能に。
 - **v1.2.6 - 2026/03/19 (Modern Era: HTMLクリーンアップとトークン爆増の制圧)**:
     - **物理清掃**: DB内の `abstract` カラムに混入していた HTML タグ（&lt;p&gt;等）および実体参照（&amp;lt;等）を含む 906 件の記事を一括クリーンアップ。
     - **防壁強化**: `lib/yata-loader.js` において本体の `stripHtml_` をオーバーライド。実体参照デコードを含む強力なローカル版をパッチし、今後の汚染を物理的にブロック。
