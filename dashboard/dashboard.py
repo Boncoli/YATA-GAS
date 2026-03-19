@@ -645,9 +645,12 @@ def create_dashboard_layers():
     tokens = get_api_usage_stats()
     SP = LO['sys']
     # 1. LLMトークン情報 (i:Input, o:Output, r:Reasoning)
-    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row1']),
-    f"LLM: i:{tokens['in']}k o:{tokens['out']}k r:{tokens['re']}k",
-    font=s_f, fill=0)
+    # 合計(In+Out)が 2000k を超えたら警告(赤)にする
+    total_k = tokens['in'] + tokens['out']
+    llm_color = COLOR_RED if total_k >= 2000 else COLOR_BLACK
+    
+    llm_text = f"LLM: i:{tokens['in']}k o:{tokens['out']}k r:{tokens['re']}k"
+    draw_smart_text(draw_b, draw_r, (LO['col1_x']+SP['pad_x'], cy+SP['row1']), llm_text, s_f, llm_color)
     # 2. システム情報 (Mem / SD を2行に分割)
     draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2']), f"Mem: {s_s['mem_str']}", font=s_f, fill=0)
     draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2b']), f"SD : {s_s['disk_str']}", font=s_f, fill=0)
