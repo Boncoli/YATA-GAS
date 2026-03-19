@@ -25,7 +25,7 @@ async function main() {
       return;
     }
 
-    // 2. 過去24時間の記事を抽出 (DBを直接開く)
+    // 2. 過去24時間の関連記事を抽出 (DBを直接開く)
     const Database = require('better-sqlite3');
     const dbPath = process.env.DB_PATH || path.join(__dirname, '../yata.db');
     const db = new Database(dbPath);
@@ -36,11 +36,13 @@ async function main() {
     const yesterdayStr = yesterday.toISOString().replace('T', ' ').substring(0, 19);
 
     let allTargetArticles = [];
-    // セマンティック検索をフル活用するため、キーワードによるSQLでの事前絞り込みをせず、
-    // 過去24時間の全記事を取得して YATA.js のエンジンに渡す。
+    
+    // 【最適化】全件投げず、キーワードのいずれかを含む記事のみをSQLで抽出する
+    const keywordConditions = keywords.map(k => `title LIKE '%${k}%' OR summary LIKE '%${k}%' OR abstract LIKE '%${k}%'`).join(" OR ");
+    
     const articles = db.prepare(`
       SELECT * FROM collect 
-      WHERE date >= ?
+      WHERE date >= ? AND (${keywordConditions})
     `).all(yesterdayStr);
     
     // YATA.js が期待する Article オブジェクトの形式に整形
@@ -53,29 +55,27 @@ async function main() {
         abstract: a.abstract,
         summary: a.summary,
         source: a.source,
-        vectorStr: a.vector // ← YATA.js のセマンティック検索で必要
+        vectorStr: a.vector
       });
     });
 
     if (allTargetArticles.length === 0) {
-      console.log(`- No articles found in the last 24h for the specified keywords.`);
+      console.log(`- No articles found in the last 24h for: ${keywords.join(", ")}`);
       return;
     }
 
-    console.log(`- Found ${allTargetArticles.length} articles. Generating Trend Report...`);
+    console.log(`- Found ${allTargetArticles.length} relevant articles. Generating Trend Report...`);
 
     // 3. ターゲットアイテムの作成
     const targetItems = keywords.map(kw => ({ query: kw, label: kw }));
 
     // 4. トレンドレポート生成 (聖域の関数を直接呼び出し)
-    // - enableHistory: false (履歴無視)
-    // - saveHistory: false (履歴保存しない)
-    // - isHtmlOutput: false (メール用のフル装飾を追加)
     const reportHtml = generateTrendReportHtml(allTargetArticles, targetItems, yesterday, now, {
       useSemantic: (process.env.USE_SEMANTIC === "TRUE"),
       enableHistory: false, 
       saveHistory: false,
-      dateRangeStr: `${fmtDate(yesterday)} 〜 ${fmtDate(now)}`
+      dateRangeStr: `${fmtDate(yesterday)} 〜 ${fmtDate(now)}`,
+      reasoning_effort: "low" // 🌟 思考コストを抑制
     });
 
     // 5. メール送信
