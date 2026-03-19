@@ -155,9 +155,9 @@ LO = {
     },
     "sys": {
         "pad_x": 10, 
-        "row1": 0, "row2": 20,       # 1行目(CPU), 2行目(Mem) Y座標
-        "line": 45,                   # 区切り線Y座標
-        "row3": 55, "row4": 75        # 3行目(DB Total), 4行目(DB Size) Y座標
+        "row1": 0, "row2": 20, "row2b": 40, # 1:AI, 2:Mem, 2b:SD
+        "line": 62,                         # 区切り線
+        "row3": 68, "row4": 86              # 3:Total, 4:Size (少し上に上げた)
     },
     "market_pos": {
         "txt_x": 5, "name_y": 0, "val_y": 16, # テキストX, 銘柄名Y, 数値Y
@@ -324,19 +324,26 @@ def draw_card_smart(draw_b, draw_r, x, y, w, h, title, label_font):
     return y + 30, y + h - 2
 
 def get_system_stats():
-    stats = {'cpu_temp': "--", 'load': "--", 'mem': "--", 'disk': "--"}
+    stats = {'mem_str': "--", 'disk_str': "--"}
     try:
-        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            stats['cpu_temp'] = f"{int(f.read()) / 1000.0:.1f}°C"
-        stats['load'] = f"{os.getloadavg()[0]:.2f}"
+        # Memory
         mem_total, mem_avail = 0, 0
         with open('/proc/meminfo', 'r') as f:
             for line in f:
                 if 'MemTotal:' in line: mem_total = int(line.split()[1]) // 1024
                 if 'MemAvailable:' in line: mem_avail = int(line.split()[1]) // 1024
-        if mem_total > 0: stats['mem'] = f"{int(((mem_total-mem_avail)/mem_total)*100)}%"
+        if mem_total > 0:
+            used_gb = (mem_total - mem_avail) / 1024.0
+            total_gb = mem_total / 1024.0
+            pct = int(((mem_total - mem_avail) / mem_total) * 100)
+            stats['mem_str'] = f"{used_gb:.1f}/{total_gb:.1f}G ({pct}%)"
+        
+        # Disk
         total, used, _ = shutil.disk_usage("/")
-        stats['disk'] = f"{int((used/total)*100)}%"
+        u_gb = used / (1024**3)
+        t_gb = total / (1024**3)
+        pct = int((used / total) * 100)
+        stats['disk_str'] = f"{u_gb:.0f}/{t_gb:.0f}G ({pct}%)"
     except: pass
     return stats
 
@@ -351,6 +358,25 @@ def get_db_stats():
             cur.execute("SELECT count(*) FROM collect WHERE date >= date('now', 'localtime') || 'T00:00:00Z'"); stats["new"] = f"{cur.fetchone()[0]}"
             conn.close()
     except: pass
+    return stats
+
+def get_api_usage_stats():
+    stats = {"in": 0, "out": 0, "re": 0}
+    try:
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            today = datetime.now().strftime("%Y-%m-%d")
+            cur.execute("SELECT SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens) FROM api_usage_daily WHERE date = ?", (today,))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                # 単位をキロトークン(k)にして丸める
+                stats["in"] = round(row[0] / 1000, 1)
+                stats["out"] = round(row[1] / 1000, 1)
+                stats["re"] = round(row[2] / 1000, 1)
+            conn.close()
+    except Exception as e:
+        print(f"DEBUG: Error in get_api_usage_stats: {e}")
     return stats
 
 def create_dashboard_layers():
@@ -376,8 +402,32 @@ def create_dashboard_layers():
         daily_rows = cur.fetchall()
         cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
         remo_row = cur.fetchone()
-        cur.execute("SELECT COALESCE(summary, title), source FROM (SELECT summary, title, source FROM collect WHERE summary IS NOT NULL OR title IS NOT NULL ORDER BY date DESC LIMIT 40) ORDER BY RANDOM() LIMIT 3")
+        
+        # 【改善】最新1時間以内の記事から、ソースが重複しないようにランダムに3件選定
+        # 未来の日付(2027年など)を除外し、JST/UTCの差を考慮。datetime()で型変換して確実に比較。
+        news_query = """
+            SELECT text, source, date FROM (
+                SELECT 
+                    COALESCE(summary, title) as text, 
+                    source, 
+                    date,
+                    ROW_NUMBER() OVER (PARTITION BY source ORDER BY date DESC) as rn
+                FROM collect
+                WHERE datetime(date) >= datetime('now', '-1 hour') 
+                  AND datetime(date) <= datetime('now', '+1 hour')
+                  AND (summary IS NOT NULL AND summary != '' OR title IS NOT NULL AND title != '')
+            ) WHERE rn = 1
+            ORDER BY RANDOM() LIMIT 3
+        """
+        cur.execute(news_query)
         news_rows = cur.fetchall()
+        
+        # 万が一1時間以内に記事が極端に少ない場合のフォールバック (24時間以内に広げる)
+        if len(news_rows) < 3:
+            news_query_fallback = news_query.replace("-1 hour", "-24 hours")
+            cur.execute(news_query_fallback)
+            news_rows = cur.fetchall()
+
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
         trend_row = cur.fetchone()
     except Exception as e:
@@ -592,12 +642,16 @@ def create_dashboard_layers():
     l_f = get_font("bold", 16)
     cy, _ = draw_card_smart(draw_b, draw_r, LO['col1_x'], LO['cards_y'], LO['col1_w'], LO['h_sys'], "SYSTEM & DATABASE", l_f)
     s_f, s_s = get_font("medium", 16), get_system_stats()
+    tokens = get_api_usage_stats()
     SP = LO['sys']
-    # システム情報
+    # 1. LLMトークン情報 (i:Input, o:Output, r:Reasoning)
     draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row1']),
-    f"CPU: {s_s['cpu_temp']} Load: {s_s['load']}",
-    font=get_font("medium", 16), fill=0)
-    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2']), f"Mem: {s_s['mem']}  Disk: {s_s['disk']}", font=s_f, fill=0)
+    f"LLM: i:{tokens['in']}k o:{tokens['out']}k r:{tokens['re']}k",
+    font=s_f, fill=0)
+    # 2. システム情報 (Mem / SD を2行に分割)
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2']), f"Mem: {s_s['mem_str']}", font=s_f, fill=0)
+    draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row2b']), f"SD : {s_s['disk_str']}", font=s_f, fill=0)
+    
     draw_b.line((LO['col1_x']+SP['pad_x'], cy+SP['line'], LO['col1_x']+LO['col1_w']-SP['pad_x'], cy+SP['line']), fill=0)
     db = get_db_stats()
     draw_b.text((LO['col1_x']+SP['pad_x'], cy+SP['row3']), f"Total: {db['total']}   New: +{db['new']}", font=s_f, fill=0)
@@ -608,10 +662,27 @@ def create_dashboard_layers():
     create_stock_grid_direct(draw_b, draw_r, LO['col1_x']+5, m_y+30, LO['col1_w']-10, LO['h_market']-34)
 
     n_y, n_lim = draw_card_smart(draw_b, draw_r, LO['col2_x'], LO['cards_y'], LO['col2_w'], LO['h_news'], "TOP NEWS SUMMARY", l_f)
-    for txt, src in news_rows:
+    for txt, src, dt_str in news_rows:
         if n_y + 18 > n_lim: break 
         
-        draw_smart_text(draw_b, draw_r, (LO['col2_x']+10, n_y), f"[{src}]", get_font("bold", 14), COLOR_RED)
+        # [ソース] 日時 (例: 03/19 22:30 JST)
+        try:
+            # ISO形式 "2026-03-19T13:26:29.579Z" の先頭19文字をパース
+            dt_utc = datetime.strptime(dt_str[:19], "%Y-%m-%dT%H:%M:%S")
+            # UTCからJST(+9時間)へ変換
+            dt_jst = dt_utc + timedelta(hours=9)
+            timestamp = dt_jst.strftime("%m/%d %H:%M")
+        except:
+            # 失敗時は簡易スライス (UTCのまま表示)
+            timestamp = f"{dt_str[5:7]}/{dt_str[8:10]} {dt_str[11:16]}"
+
+        src_label = f"[{src}]"
+        draw_smart_text(draw_b, draw_r, (LO['col2_x']+10, n_y), src_label, get_font("bold", 14), COLOR_RED)
+        
+        # ソース名の幅を取得して、その右に日時を添える (ベースラインを揃えるため +4px 調整)
+        src_w = draw_b.textlength(src_label, font=get_font("bold", 14))
+        draw_smart_text(draw_b, draw_r, (LO['col2_x']+10 + src_w + 8, n_y + 4), timestamp, get_font("medium", 10))
+        
         n_y += 18 
         
         n_y = draw_text_wrapped_smart(

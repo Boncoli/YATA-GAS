@@ -75,7 +75,7 @@ async function main() {
       enableHistory: false, 
       saveHistory: false,
       dateRangeStr: `${fmtDate(yesterday)} 〜 ${fmtDate(now)}`,
-      reasoning_effort: "low" // 🌟 思考コストを抑制
+      reasoning_effort: process.env.REASONING_MINI || "medium" // 🌟 思考レベルを medium に設定
     });
 
     // 5. メール送信
