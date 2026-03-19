@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **情報ポートフォリオの完成**: `rss-list.json` を大幅にアップデート。重複フィードを整理し、「ロイター（国際）」「BBC」「CNN」などのフラットな世界情勢と、「ナゾロジー」「sorae」「ねとらぼ」などの知的好奇心を刺激するエンタメ・科学ニュース枠を追加。YATAのAI要約エンジンに最適な「見出し＋スニペット」の形式で収集効率を最大化。
 
+## [1.2.5] - 2026-03-19
+### Added
+- **Gzip Compression Support (Bridge)**: `lib/gas-bridge.js` の `curl` コマンドに `--compressed` フラグを追加。本家 v1.2.5 から導入された `Accept-Encoding: gzip` レスポンスをローカル環境でも自動解凍・パース可能に。
+- **isLikelyEnglish_ Override (Loader)**: 本家での関数名変更 (`isLikelyEnglish` -> `isLikelyEnglish_`) に対応。`lib/yata-loader.js` において、ローカルの緩和された判定ロジックを強制的に再注入し、システム全体の判定精度を維持。
+
+### Changed
+- **Core Logic Synchronization**: 会社本家ブランチ (v1.2.5) の最新 `lib/YATA.js` を同期。
+- **Vectorization Batch Optimization**: 記事本文と測定手法 (Method) のベクトル生成を1つのリクエストに統合し、通信回数を半減させる最適化を適用。
+- **Function Privacy Refactoring**: 内部ヘルパー関数群への `_` (アンダースコア) 付与によるカプセル化を本家と統一。
+- **Cost Tracking Precision**: 1Mトークン単位の精緻なコスト計算ロジック (`_trackCost`) を強化。
+
+### Fixed
+- **Integration Test Compatibility**: `tests/test-local-all.js` 内のベクトルパース関数呼び出しを最新の `parseVector_` に修正。
+
 ## [1.2.4] - 2026-03-18
 ### Fixed
 - **API厳格化への対応**: `gpt-5.4` などの最新推論モデルにおいて `top_p` パラメータがAPI側で完全に拒否（Unsupported）される仕様に追従し、該当モデルの場合は `temperature` と共に `top_p` も送信から除外するよう修正。

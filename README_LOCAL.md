@@ -1,4 +1,7 @@
 # YATA (八咫) - Local AI Intelligence Hub (boncoli RasPi)
+[![Version](https://img.shields.io/badge/version-1.2.5-green.svg)]()
+[![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red.svg)]()
+
 > **ラズパイで稼働する、あなた専用の「AI インテリジェンス・パートナー」。**
 > **情報の海を導き、日々の移動を刻み、記憶を共有する。**
 

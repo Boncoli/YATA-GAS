@@ -92,8 +92,8 @@ async function runLocalAllTest() {
   if (summarized.length > 0) {
     console.log(`✅ 要約完了: 「${summarized[0].title}」の要約「${summarized[0].summary}」を生成。`);
     if (summarized[0].vector) {
-      // 修正: vectorはCSV形式なのでparseVectorを使用
-      const vecArray = parseVector(summarized[0].vector);
+      // 修正: vectorはCSV形式なのでparseVector_を使用
+      const vecArray = parseVector_(summarized[0].vector);
       console.log("✅ ベクトル生成確認: 長さ " + vecArray.length);
     }
   } else {
