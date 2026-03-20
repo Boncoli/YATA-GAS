@@ -558,20 +558,32 @@ app.get('/api/drive-history', (req, res) => {
     }
 });
 
+// 🌟 JSONを安全にパースして tldr を抽出するヘルパー
+const extractTldr = (text) => {
+    if (!text || !text.trim().startsWith('{')) return text;
+    try {
+        const json = JSON.parse(text);
+        // 1. 直接 tldr がある場合
+        if (json.tldr) return json.tldr;
+        // 2. results 配列の中にある場合 (バッチ処理の残り)
+        if (json.results && Array.isArray(json.results) && json.results.length > 0) {
+            return json.results[0].tldr || text;
+        }
+        return text;
+    } catch (e) {
+        return text;
+    }
+};
+
 // 0.3 ニュース取得 API
 app.get('/api/news', (req, res) => {
     try {
         // 直近100件を取得し、配列をランダムにシャッフルして返す (埋もれた記事を拾いやすくするため)
         const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 100").all();
         
-        // 🌟 JSONパース処理を追加
+        // 🌟 JSONパース処理
         const processedRows = rows.map(row => {
-            if (row.summary && row.summary.trim().startsWith('{')) {
-                try {
-                    const json = JSON.parse(row.summary);
-                    row.summary = json.tldr || row.summary; // tldrがあればそれを使用
-                } catch(e) { /* parse error, ignore */ }
-            }
+            row.summary = extractTldr(row.summary);
             return row;
         });
 
@@ -596,10 +608,14 @@ app.post('/api/search', async (req, res) => {
         // YATA.js の検索関数を呼び出し
         let resultHtml = global.searchAndAnalyzeKeyword(keyword, options);
 
-        // 🌟 検索結果(HTML)に含まれる生のJSONを文章に置換
-        // YATA.jsが出力するHTML内の JSON文字列パターンを正規表現で探して tldr に置換
-        resultHtml = resultHtml.replace(/\{"tldr":"(.*?)"(?:,".*?")?\}/g, (match, tldr) => {
-            return tldr.replace(/\\n/g, "\n"); // 改行コードの復元
+        // 🌟 検索結果(HTML)に含まれる JSON文字列を tldr に置換
+        // 複雑なパターンに対応するため、JSONっぽい部分を正規表現で探して置換
+        resultHtml = resultHtml.replace(/\{"tldr":.*?\}/g, (match) => {
+            return extractTldr(match).replace(/\\n/g, "\n");
+        });
+        // results配列形式にも対応
+        resultHtml = resultHtml.replace(/\{"results":\[\{"id":.*?\}/g, (match) => {
+            return extractTldr(match).replace(/\\n/g, "\n");
         });
 
         res.send(resultHtml);
@@ -625,13 +641,8 @@ app.post('/api/summary', async (req, res) => {
         // YATA.jsの関数を呼び出し
         let summary = await global.getWebPageSummary(url);
         
-        // 🌟 JSONパース処理を追加
-        if (summary && summary.trim().startsWith('{')) {
-            try {
-                const json = JSON.parse(summary);
-                summary = json.tldr || summary;
-            } catch(e) { /* ignore */ }
-        }
+        // 🌟 JSONパース処理
+        summary = extractTldr(summary);
 
         console.log(`[Web] ✅ AI要約完了 (${summary ? summary.length : 0}文字)`);
         if (!summary) return res.status(500).send("AI要約を生成できませんでした。");

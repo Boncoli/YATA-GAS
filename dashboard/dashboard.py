@@ -422,15 +422,24 @@ def create_dashboard_layers():
         cur.execute(news_query)
         raw_news_rows = cur.fetchall()
         
-        # 🌟 JSONパース処理を追加
+        # 🌟 JSONパース処理を強化 (results配列形式にも対応)
+        def parse_yata_json(raw_text):
+            if not raw_text or not raw_text.strip().startswith('{'):
+                return raw_text
+            try:
+                js = json.loads(raw_text)
+                # 1. トップレベルに tldr がある場合
+                if 'tldr' in js: return js['tldr']
+                # 2. results 配列の中にある場合 (バッチ処理の残り)
+                if 'results' in js and isinstance(js['results'], list) and len(js['results']) > 0:
+                    return js['results'][0].get('tldr', raw_text)
+                return raw_text
+            except:
+                return raw_text
+
         news_rows = []
         for r_text, r_src, r_date in raw_news_rows:
-            display_text = r_text
-            if r_text and r_text.strip().startswith('{'):
-                try:
-                    js = json.loads(r_text)
-                    display_text = js.get('tldr', r_text)
-                except: pass
+            display_text = parse_yata_json(r_text)
             news_rows.append((display_text, r_src, r_date))
         
         # 万が一1時間以内に記事が極端に少ない場合のフォールバック (24時間以内に広げる)
@@ -441,12 +450,7 @@ def create_dashboard_layers():
             
             news_rows = []
             for r_text, r_src, r_date in raw_news_rows:
-                display_text = r_text
-                if r_text and r_text.strip().startswith('{'):
-                    try:
-                        js = json.loads(r_text)
-                        display_text = js.get('tldr', r_text)
-                    except: pass
+                display_text = parse_yata_json(r_text)
                 news_rows.append((display_text, r_src, r_date))
 
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
