@@ -564,13 +564,24 @@ app.get('/api/news', (req, res) => {
         // 直近100件を取得し、配列をランダムにシャッフルして返す (埋もれた記事を拾いやすくするため)
         const rows = db.prepare("SELECT date, title, url, abstract, summary, source FROM collect ORDER BY date DESC LIMIT 100").all();
         
+        // 🌟 JSONパース処理を追加
+        const processedRows = rows.map(row => {
+            if (row.summary && row.summary.trim().startsWith('{')) {
+                try {
+                    const json = JSON.parse(row.summary);
+                    row.summary = json.tldr || row.summary; // tldrがあればそれを使用
+                } catch(e) { /* parse error, ignore */ }
+            }
+            return row;
+        });
+
         // Fisher-Yates シャッフル
-        for (let i = rows.length - 1; i > 0; i--) {
+        for (let i = processedRows.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
-            [rows[i], rows[j]] = [rows[j], rows[i]];
+            [processedRows[i], processedRows[j]] = [processedRows[j], processedRows[i]];
         }
         
-        res.json(rows);
+        res.json(processedRows);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -583,7 +594,14 @@ app.post('/api/search', async (req, res) => {
         console.log(`[Web] 検索リクエスト: "${keyword}"`);
 
         // YATA.js の検索関数を呼び出し
-        const resultHtml = global.searchAndAnalyzeKeyword(keyword, options);
+        let resultHtml = global.searchAndAnalyzeKeyword(keyword, options);
+
+        // 🌟 検索結果(HTML)に含まれる生のJSONを文章に置換
+        // YATA.jsが出力するHTML内の JSON文字列パターンを正規表現で探して tldr に置換
+        resultHtml = resultHtml.replace(/\{"tldr":"(.*?)"(?:,".*?")?\}/g, (match, tldr) => {
+            return tldr.replace(/\\n/g, "\n"); // 改行コードの復元
+        });
+
         res.send(resultHtml);
     } catch (e) {
         console.error(e);
@@ -605,8 +623,16 @@ app.post('/api/summary', async (req, res) => {
         }
 
         // YATA.jsの関数を呼び出し
-        const summary = await global.getWebPageSummary(url);
+        let summary = await global.getWebPageSummary(url);
         
+        // 🌟 JSONパース処理を追加
+        if (summary && summary.trim().startsWith('{')) {
+            try {
+                const json = JSON.parse(summary);
+                summary = json.tldr || summary;
+            } catch(e) { /* ignore */ }
+        }
+
         console.log(`[Web] ✅ AI要約完了 (${summary ? summary.length : 0}文字)`);
         if (!summary) return res.status(500).send("AI要約を生成できませんでした。");
         

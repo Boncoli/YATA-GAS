@@ -41,7 +41,7 @@ db.pragma('journal_mode = WAL');
 // 閾値日付の計算 (YYYY-MM-DD)
 const thresholdDate = new Date();
 thresholdDate.setDate(thresholdDate.getDate() - retentionDays);
-const thresholdStr = thresholdDate.toISOString().split('T')[0];
+const thresholdStr = thresholdDate.toLocaleDateString('sv-SE');
 console.log(`削除対象: ${thresholdStr} 以前のデータ`);
 
 // --- メンテナンス対象テーブル定義 ---

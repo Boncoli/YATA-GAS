@@ -420,13 +420,34 @@ def create_dashboard_layers():
             ORDER BY RANDOM() LIMIT 3
         """
         cur.execute(news_query)
-        news_rows = cur.fetchall()
+        raw_news_rows = cur.fetchall()
+        
+        # 🌟 JSONパース処理を追加
+        news_rows = []
+        for r_text, r_src, r_date in raw_news_rows:
+            display_text = r_text
+            if r_text and r_text.strip().startswith('{'):
+                try:
+                    js = json.loads(r_text)
+                    display_text = js.get('tldr', r_text)
+                except: pass
+            news_rows.append((display_text, r_src, r_date))
         
         # 万が一1時間以内に記事が極端に少ない場合のフォールバック (24時間以内に広げる)
         if len(news_rows) < 3:
             news_query_fallback = news_query.replace("-1 hour", "-24 hours")
             cur.execute(news_query_fallback)
-            news_rows = cur.fetchall()
+            raw_news_rows = cur.fetchall()
+            
+            news_rows = []
+            for r_text, r_src, r_date in raw_news_rows:
+                display_text = r_text
+                if r_text and r_text.strip().startswith('{'):
+                    try:
+                        js = json.loads(r_text)
+                        display_text = js.get('tldr', r_text)
+                    except: pass
+                news_rows.append((display_text, r_src, r_date))
 
         cur.execute("SELECT rank1, rank2, rank3, rank4, rank5 FROM trend_log ORDER BY date DESC LIMIT 1")
         trend_row = cur.fetchone()
