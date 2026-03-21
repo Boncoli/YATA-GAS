@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.10] - 2026-03-21
+### Added
+- **API通信ごとの詳細コスト記録（SDカード非破壊アーキテクチャ）**:
+    - `lib/gas-bridge.js` において、従来の1日累計に加え、通信ごとの詳細情報（タイムスタンプ、モデル名、入出力・推論トークン数、コスト）を `api_usage.log` にJSON Lines形式で記録する機能を実装。
+    - SDカードの摩耗を防ぐため、記録先を RAM ディスク (`/dev/shm/api_usage.log`) に指定。
+    - `maintenance/do-backup.sh` を改修し、毎朝4:35に RAM ディスクから NAS (`/mnt/nas/yata_logs/`) へ日別ファイルとして退避させ、過去30日分を安全に保管・ローテーションする仕組みに統合。これにより、特定時間帯における特定のモデル（nano等）の異常なトークン消費を追跡可能とした。
+
 ## [1.2.9] - 2026-03-20
 ### Added
 - **5件バッチ要約「超節約モード」の導入**:

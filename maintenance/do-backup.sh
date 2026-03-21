@@ -67,7 +67,7 @@ if [ -d "$NAS_BACKUP" ]; then
     NAS_LOG_DIR="$NAS_BACKUP/yata_logs"
     mkdir -p "$NAS_LOG_DIR"
     
-    RAM_LOGS=("/dev/shm/collect.log" "/dev/shm/summarize.log" "/dev/shm/yata.log" "/dev/shm/yata_task.log" "/dev/shm/yata_dashboard.log" "/dev/shm/yata_mutter.log")
+    RAM_LOGS=("/dev/shm/collect.log" "/dev/shm/summarize.log" "/dev/shm/yata.log" "/dev/shm/yata_task.log" "/dev/shm/yata_dashboard.log" "/dev/shm/yata_mutter.log" "/dev/shm/api_usage.log")
     TODAY_STR=$(date +%Y%m%d)
 
     for RAM_LOG in "${RAM_LOGS[@]}"; do

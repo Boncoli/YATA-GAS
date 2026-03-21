@@ -354,8 +354,8 @@ def get_db_stats():
             stats["size"] = f"{os.path.getsize(DB_PATH) / (1024*1024):.1f} MB"
             conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
             cur.execute("SELECT count(*) FROM collect"); stats["total"] = f"{cur.fetchone()[0]:,}"
-            # カレンダー上の「今日(JST)」の00:00:00以降をカウント
-            cur.execute("SELECT count(*) FROM collect WHERE date >= date('now', 'localtime') || 'T00:00:00Z'"); stats["new"] = f"{cur.fetchone()[0]}"
+            # カレンダー上の「今日(JST)」の00:00:00以降をカウント (+9h 補正)
+            cur.execute("SELECT count(*) FROM collect WHERE date(date, '+9 hours') = date('now', 'localtime')"); stats["new"] = f"{cur.fetchone()[0]}"
             conn.close()
     except: pass
     return stats
