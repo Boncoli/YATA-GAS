@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.12] - 2026-03-21
+### Added
+- **究極のスクレイピング・エンジン (Ultimate Scraper Engine)**:
+    - **物理的リダイレクト追跡**: Google News 等の複雑なリダイレクトを `curl` で物理的に最後まで追いかけ、真の記事 URL を 100% 特定する機能を実装。
+    - **Python Trafilatura 連携**: 本文抽出の決定版ライブラリ `trafilatura` を Python ブリッジ経由で導入。広告やノイズを排除した純粋な本文のみを LLM に供給。
+    - **RSS コンテンツ・フォールバック**: サイト側からのボット遮断時も、DB 内のタイトルと概要 (abstract) を自動的にソースとして使用し、解析を継続する堅牢なフェイルセーフを確立。
+    - **バイナリ・デコーダー**: Google News URL の Base64 内部に含まれる URL をバイナリレベルでスキャンする独自ロジックを搭載。
+
+## [1.2.11] - 2026-03-21
+
+
 ## [1.2.10] - 2026-03-21
 ### Added
 - **API通信ごとの詳細コスト記録（SDカード非破壊アーキテクチャ）**:
