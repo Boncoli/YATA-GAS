@@ -52,7 +52,7 @@ try {
     while ($true) {
         Clear-Host
         Write-Host "================================================================================" -ForegroundColor Cyan
-        Write-Host "                    YATA Expert Console [v5.1.2 BugFix]" -ForegroundColor Cyan
+        Write-Host "                    YATA Expert Console [v5.0.0 Flat]" -ForegroundColor Cyan
         Write-Host "================================================================================" -ForegroundColor Cyan
 
         $status = Get-YataStatus
@@ -70,11 +70,11 @@ try {
         Write-Host "  3. Full Task (全自動)     6. YATA.js Sync"
         Write-Host ""
         Write-Host " [Monitoring]              [Dashboard]             [Admin]" -ForegroundColor Yellow
-        Write-Host "  9. sqlite-web (CoreLim)  13. Preview (Normal)    17. Backup (NAS)"
+        Write-Host "  9. sqlite-web (CoreLim)   13. Preview (Normal)    17. Backup (NAS)"
         Write-Host " 10. Web Portal (Port:3001) 14. Preview (Weather)   18. Full Image (NAS)"
-        Write-Host " 11. Grafana Dashboard     15. Preview (Env)       19. System Update"
-        Write-Host " 12. btop (System Monitor) 16. E-Ink Write (実機)  20. Reboot (Sync & Rbt)"
-        Write-Host "                           22. Show Logs           21. Poweroff (Sync & Off)"
+        Write-Host " 11. Grafana Dashboard      15. Preview (Env)       19. System Update"
+        Write-Host " 12. btop (System Monitor)  16. E-Ink Write (実機)  20. Reboot (Sync & Rbt)"
+        Write-Host "                            22. Show Logs           21. Poweroff (Sync & Off)"
         Write-Host ""
         Write-Host "                                                     0. Exit"
         Write-Host "================================================================================"
