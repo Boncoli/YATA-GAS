@@ -1,4 +1,4 @@
-$Host.UI.RawUI.WindowTitle = "YATA Expert Console v5.1.1 (Turbo Edition)"
+$Host.UI.RawUI.WindowTitle = "YATA Expert Console v5.1.2 (BugFix)"
 
 # コンソールの入出力を完全にUTF-8に固定（文字化け防止）
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -42,8 +42,7 @@ function Invoke-YataRemote {
 
 function Get-YataStatus {
     try {
-        # 事前に作ったコマンドを使い、余計なオプションを削って接続
-        return ssh -o ConnectTimeout=3 "$SSH_USER@$SSH_HOST" $GLOBAL_REMOTE_EXEC 2>$null
+        return ssh -q -o ConnectTimeout=3 "$SSH_USER@$SSH_HOST" $GLOBAL_REMOTE_EXEC 2>$null
     } catch {
         return $null
     }
@@ -53,7 +52,7 @@ try {
     while ($true) {
         Clear-Host
         Write-Host "================================================================================" -ForegroundColor Cyan
-        Write-Host "                    YATA Expert Console [v5.1.1 Turbo Edition]" -ForegroundColor Cyan
+        Write-Host "                    YATA Expert Console [v5.1.2 BugFix]" -ForegroundColor Cyan
         Write-Host "================================================================================" -ForegroundColor Cyan
 
         $status = Get-YataStatus
@@ -71,11 +70,11 @@ try {
         Write-Host "  3. Full Task (全自動)     6. YATA.js Sync"
         Write-Host ""
         Write-Host " [Monitoring]              [Dashboard]             [Admin]" -ForegroundColor Yellow
-        Write-Host "  9. sqlite-web (CoreLim)   13. Preview (Normal)    17. Backup (NAS)"
+        Write-Host "  9. sqlite-web (CoreLim)  13. Preview (Normal)    17. Backup (NAS)"
         Write-Host " 10. Web Portal (Port:3001) 14. Preview (Weather)   18. Full Image (NAS)"
-        Write-Host " 11. Grafana Dashboard      15. Preview (Env)       19. System Update"
-        Write-Host " 12. btop (System Monitor)  16. E-Ink Write (実機)  20. Reboot (Sync & Rbt)"
-        Write-Host "                            22. Show Logs           21. Poweroff (Sync & Off)"
+        Write-Host " 11. Grafana Dashboard     15. Preview (Env)       19. System Update"
+        Write-Host " 12. btop (System Monitor) 16. E-Ink Write (実機)  20. Reboot (Sync & Rbt)"
+        Write-Host "                           22. Show Logs           21. Poweroff (Sync & Off)"
         Write-Host ""
         Write-Host "                                                     0. Exit"
         Write-Host "================================================================================"
@@ -83,7 +82,6 @@ try {
         $CHOICE = Read-Host "Enter Command Number"
 
         switch ($CHOICE) {
-            # --- Daily ---
             "1" { Invoke-YataRemote "./run-ram.sh tasks/do-collect.js" }
             "2" { Invoke-YataRemote "./run-ram.sh tasks/do-summarize.js" }
             "3" { Invoke-YataRemote "./run-ram.sh tasks/yata-task.js" }
@@ -94,8 +92,11 @@ try {
                 Write-Host "完了。" -ForegroundColor Green
             }
             "6" { Invoke-YataRemote "git fetch origin && git show origin/main:lib/YATA.js > lib/YATA.js && echo 'YATA.js Updated.'" }
-            "7" { code --folder-uri "vscode-remote://ssh-remote+$SSH_HOST$WORK_DIR" }
-            "8" { Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "cd $WORK_DIR; $GEMINI_CMD; bash --login" }
+            "7" { code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR" }
+            "8" { 
+                Write-Host "Connecting to $SSH_USER@$SSH_HOST and entering $WORK_DIR..." -ForegroundColor Cyan
+                Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "cd $WORK_DIR; bash --login"
+            }
             "9" {
                 $job = Start-Job -ScriptBlock { param($ip); Start-Sleep -Seconds 3; try { Start-Process "http://$($ip):8082" } catch {} } -ArgumentList $SSH_HOST
                 Invoke-YataRemote "taskset -c 0-2 ./local_llm/.venv/bin/python3 -m sqlite_web /dev/shm/yata.db -H 0.0.0.0 -p 8082 -x" -interactive $true
@@ -115,9 +116,8 @@ try {
             "21" { if ((Read-Host "Sync & Poweroff? (y/n)") -eq "y") { Invoke-YataRemote "./run-ram.sh --sync-only && sudo poweroff" } }
             "22" { Invoke-YataRemote "echo '--- Task Log ---'; tail -n 15 /dev/shm/yata_task.log; echo ''; echo '--- System Log ---'; tail -n 15 /dev/shm/yata.log" -interactive $true }
             "0" { exit }
-            default { continue } # 数字以外、またはEnterのみの場合は即ループトップへ
+            default { continue }
         }
-        # 実行したコマンドが特定のもの（VSCode起動など）以外で、かつ空入力でない場合のみ一時停止
         if ($CHOICE -ne "" -and $CHOICE -ne "0" -and $CHOICE -ne "7" -and $CHOICE -ne "10" -and $CHOICE -ne "11" -and $CHOICE -ne "20" -and $CHOICE -ne "21") {
             Write-Host "`nTask completed." -ForegroundColor Cyan
             Pause
