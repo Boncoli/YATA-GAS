@@ -287,14 +287,13 @@ SDカードの摩耗を極限まで抑え、かつ誤操作による直接書き
 *   **GAS互換性の維持**: `lib/YATA.js` はGASでも動くように書く。Node.js固有機能は `gas-bridge.js` に隠蔽する。
 *   **セキュリティ**: 外部API送信前に、`lib/YATA.js` 内のプロファイルマスク処理により特定個人情報を自動的に伏せ字にする。
 *   **Git運用とブランチ戦略 (重要)**:
-    *   `main`: 会社/リモート (`origin`) と共通の本家ブランチ。
-    *   `local-raspi`: ラズパイ環境専用のブランチ。**全プロジェクトの「唯一の正本 (SSoT)」である。** 日々の開発・ドキュメント更新・運用はこのブランチで行う。
-    *   **3ブランチ完全同期プロトコル (Standardization)**:
-        *   ドキュメント（README, CHANGELOG, PROJECT_GUIDE）の修正は、必ず `local-raspi` で行い、完了後に `main` および `public` へ「逆輸入」して同期させること。
-        *   バージョン（package.json, READMEバッジ）は、全ブランチで常に同一（例: v1.2.1）に保たなければならない。
-        *   `local-raspi` で培った最新の知見（ドキュメント）を他のブランチへ反映させる際、古い歴史（Legacy Era）が残っていないか物理的に確認（grep/diff）すること。
-    *   **Tempブランチの掟**: 作業開始時に `Temp_yymmdd` を作成し、セッション終了時に `local-raspi` へスカッシュマージする。履歴の美しさを死守せよ。
-
+    *   **`local-raspi` (SSoT)**: ラズパイ実運用・開発ブランチ。**全プロジェクトの「唯一の正本 (SSoT)」である。** 全ファイル・全履歴を保持。
+    *   **`main` (会社用)**: 会社環境（GAS等）に必要な 6 ファイルのみ。
+    *   **`public` (OSS用)**: 機密情報を除いた公開用 6 ファイルのみ。
+*   **3ブランチ完全同期プロトコル (Standardization)**:
+    *   ドキュメントやロジックの修正は、必ず `local-raspi` で完結させ、その成果を `main` や `public` へ同期させる。
+    *   詳細は「11. 公開リポジトリ (YATA-GAS) の分離運用」を参照。
+*   **Tempブランチの掟**: 作業開始時に `Temp_yymmdd` を作成し、セッション終了時に `local-raspi` へスカッシュマージする。履歴の美しさを死守せよ。
 ---
 
 ## 6. プロセス管理 (PM2)
@@ -511,29 +510,29 @@ bash run-ram.sh --no-sync do-health-check.js
 
 | ブランチ名 | 対応リモート | ファイル構成 | 役割 |
 | :--- | :--- | :---: | :--- |
-| **`main`** | `origin/main` (Private: `YATA`) | 7ファイル | 非公開（自分用）の正本。`presentation.html` を含む。 |
-| **`public`** | `public/main` (Public: `YATA-GAS`) | **6ファイル** | **OSS公開用配布ブランチ。** 履歴は常に1コミットにスカッシュする。 |
-| **`local-raspi`**| `origin/local-raspi` (Private: `YATA`) | 全ファイル | ラズパイ実運用・開発ブランチ。`tasks/` 等を含む。 |
+| **`local-raspi`**| `origin/local-raspi` (Private: `YATA`) | 全ファイル | **開発・運用ブランチ。プロジェクトの「唯一の正本 (SSoT)」。** |
+| **`main`** | `origin/main` (Private: `YATA`) | **6ファイル** | **会社共有用。** 会社環境（GAS等）で必要なコアセット。 |
+| **`public`** | `public/main` (Public: `YATA-GAS`) | **6ファイル** | **OSS公開用。** 機密情報を除いた配布用。履歴は常にスカッシュ。 |
 
-### 11.2 公開（Push）時の絶対手順
-公開リポジトリを更新する際は、必ず以下の手順を「機械的」に実行せよ。
+### 11.2 公開・同期時の絶対手順
+各ブランチへの反映は、必ず `local-raspi` での動作確認・ドキュメント更新後に行うこと。
 
-1.  **サニタイズ**: `lib/YATA.js` 内の機密情報をプレースホルダに差し替える。
-    - 例: `https://pubmed-summary.openai.azure.com/` → `https://YOUR_RESOURCE_NAME.openai.azure.com/`
-2.  **`public` ブランチの更新**: `main` の修正を `public` ブランチへ反映し、不要なローカル用ファイルを削除。
-3.  **歴史のリセット（スカッシュ）**: `git checkout --orphan` 等で履歴を 1 つのコミットにまとめる。
-4.  **強制プッシュ**: `git push public public:main -f` で公開側の歴史を書き換える。
+1.  **`main` への同期**: `lib/YATA.js` 等のコアファイルを `main` へ反映。会社用プロンプト (`prompt_company.json`) を含める。
+2.  **`public` への同期**: `lib/YATA.js` をサニタイズ（機密情報置換）して反映。公開用プロンプト (`prompts.json`) を使用。
+3.  **歴史の管理**: `public` ブランチは履歴を 1 つのコミットにまとめる（スカッシュ）。
 
-### 11.3 構成ファイル・マトリックス
-| ファイル名 | 非公開 (main) | 公開 (public) | 備考 |
+### 11.3 構成ファイル・マトリックス (2026/03 整理済)
+| ファイル名 | `main` (会社用) | `public` (公開用) | 備考 |
 | :--- | :---: | :---: | :--- |
-| `lib/YATA.js` | ◯ (サニタイズ済) | ◯ (サニタイズ済) | **聖域**。ロジックの正本。 |
+| `lib/YATA.js` | ◯ | ◯ (サニタイズ済) | **聖域**。ロジック의 正本。 |
 | `Index.html` | ◯ | ◯ | GAS Web UI 用。 |
 | `Visualize.html` | ◯ | ◯ | GAS 3D 可視化用。 |
-| `LICENSE` | ◯ | ◯ | CC BY-NC 4.0。 |
-| `README.md` | ◯ | ◯ | GAS版の解説。 |
-| `.gitignore` | ◯ | ◯ | |
-| `presentation.html` | **◯** | **×** | ローカルでのプレゼン・デモ用。 |
+| `CHANGELOG.md` | ◯ | ◯ | 開発履歴。 |
+| `README.md` | ◯ | ◯ | プロジェクト解説。 |
+| `prompt_company.json` | **◯** | × | 会社用プロンプト（公開厳禁）。 |
+| `prompts.json` | × | **◯** | 公開用テンプレートプロンプト。 |
+| `LICENSE` | × | ◯ | CC BY-NC 4.0。 |
+| `.gitignore` | × | ◯ | 公開用除外設定。 |
 
 ### 11.4 自動バージョンアップと CHANGELOG 運用 (ローカル)
 バージョン番号を手動で書き換えるミスを防ぐため、専用のシェルスクリプトを使用する。
