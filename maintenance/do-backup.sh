@@ -25,24 +25,23 @@ fi
 echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"
 send_discord_alert "🛠️ **システムバックアップ開始**"
 
-# --- 1. SDカードへのバックアップ (ホーム全体同期) ---
-# 目的: SDカード内での冗長化（直近の復旧用）
-# echo "Syncing to SD Card..." >> "$LOG_FILE"
-# rsync -a --delete --exclude='node_modules' --exclude='.cache' --exclude='__pycache__' "$HOME_DIR/" "$SD_BACKUP/home_backup/"
+# --- 1. RAMディスク上でのDB最適化 (SDカードへの同期を含む) ---
+# 目的: 重複を削除し、VACUUMでDBを物理圧縮した上でSDカードへ書き戻す。
+# これを最初に行うことで、後続のNAS転送時間を劇的に短縮する。
+echo "Step 1: Cleaning and Vacuuming RAM DB before any sync..." >> "$LOG_FILE"
+$YATA_DIR/run-ram.sh maintenance/clean-db-duplicates.js >> "$LOG_FILE" 2>&1
 
 # --- 2. NASへのバックアップ (完全クローン ＆ 履歴) ---
 if [ -d "$NAS_BACKUP" ]; then
-    echo "Saving to NAS..." >> "$LOG_FILE"
+    echo "Step 2: Saving Optimized data to NAS..." >> "$LOG_FILE"
 
     # --- システム情報の保存 (復旧用パッケージリスト) ---
     dpkg --get-selections > "$HOME_DIR/package_list.txt"
     crontab -l > "$HOME_DIR/crontab_last.txt"
 
-    # A. ホームディレクトリ全体の完全同期
+    # A. ホームディレクトリ全体の完全同期 (この時点で yata.db は軽量化済み)
+    echo "Syncing home directory to NAS (current)..." >> "$LOG_FILE"
     mkdir -p "$NAS_BACKUP/home_backup"
-    # --no-links: ショートカットを無視（エラー回避の決定打）
-    # --exclude: エラーの元になるシステムフォルダおよび再生成可能な重いデータを全除外
-    # --no-devices --no-specials: CIFS(NAS)でのmknodエラー回避
     rsync -a --delete --no-links --no-devices --no-specials \
       --exclude='**/node_modules' --exclude='.cache' --exclude='**/__pycache__' \
       --exclude='.venv' --exclude='local_llm/models' \
@@ -51,18 +50,17 @@ if [ -d "$NAS_BACKUP" ]; then
       --exclude='.pm2' --exclude='.vscode-server' --exclude='.local' \
       "$HOME_DIR/" "$NAS_BACKUP/home_backup/"
 
-    # B. /etc のバックアップ (システム設定をtarで固める)
-    echo "Archiving /etc to NAS..." >> "$LOG_FILE"
-    sudo tar -czf "$NAS_BACKUP/etc_backup.tar.gz" /etc/
-
-    # C. DBの履歴保存 (アーカイブ)
-    # ここは変更なし。過去30日分のデータを別で確保します。
+    # B. DBの履歴保存 (アーカイブ)
+    echo "Creating DB history snapshot on NAS..." >> "$LOG_FILE"
     mkdir -p "$NAS_BACKUP/yata_db_history"
     cp "$YATA_DIR/yata.db" "$NAS_BACKUP/yata_db_history/yata_$(date +%Y%m%d).db"
     find "$NAS_BACKUP/yata_db_history/" -name "yata_*.db" -mtime +30 -delete
 
+    # C. /etc のバックアップ (システム設定)
+    echo "Archiving /etc to NAS..." >> "$LOG_FILE"
+    sudo tar -czf "$NAS_BACKUP/etc_backup.tar.gz" /etc/
+
     # D. ログの退避 (RAM -> NAS)
-    # 目的: 日中のSDカードへの書き込みを避けるためRAMに吐いたログを、再起動前にNASへ退避させる
     echo "Archiving RAM logs to NAS..." >> "$LOG_FILE"
     NAS_LOG_DIR="$NAS_BACKUP/yata_logs"
     mkdir -p "$NAS_LOG_DIR"
@@ -73,50 +71,34 @@ if [ -d "$NAS_BACKUP" ]; then
     for RAM_LOG in "${RAM_LOGS[@]}"; do
         if [ -f "$RAM_LOG" ]; then
             BASENAME=$(basename "$RAM_LOG" .log)
-            # NASへコピー
             cp "$RAM_LOG" "$NAS_LOG_DIR/${BASENAME}_${TODAY_STR}.log"
-            # 元のRAMログをクリア (SDカード保護のため truncate を使用)
             truncate -s 0 "$RAM_LOG"
         fi
     done
-    
-    # NAS上のログも過去30日分残して古いものは削除
     find "$NAS_LOG_DIR/" -name "*.log" -mtime +30 -delete
 
 else
     echo "Warning: NAS not mounted. Skipping NAS backup." >> "$LOG_FILE"
 fi
 
-# (旧来のSDカード上でのログローテーション処理は、RAM→NAS退避に移行したため削除)
-
-# --- 4. サーバーのリフレッシュ (完全再起動) ---
-# 安全第一: 再起動前にメモリ上のデータをSDカードへ強制同期する
-echo "Syncing RAM to SD before restart..." >> "$LOG_FILE"
-/home/boncoli/yata-local/run-ram.sh --sync-only >> "$LOG_FILE" 2>&1
-
+# --- 3. サーバーのリフレッシュ (完全再起動) ---
+echo "Step 3: Refreshing system processes..." >> "$LOG_FILE"
 echo "Stopping all PM2 processes..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop all >> "$LOG_FILE" 2>&1
 
-# 致命的なバグ対策：確実に全プロセスが停止したか確認する
+# 安全確認：プロセス停止
 if pgrep -f "node" > /dev/null || pgrep -f "python3" > /dev/null; then
-    echo "CRITICAL ERROR: Some processes are still running after stop command!" >> "$LOG_FILE"
-    echo "ABORTING RAM DB CLEANUP TO PREVENT DATA LOSS." >> "$LOG_FILE"
-    send_discord_alert "🚨 **バックアップ警告**: プロセス停止に失敗したため、RAM DBの削除を中止しました。データ消失は回避しましたが、再起動が必要です。"
+    echo "CRITICAL ERROR: Processes still running! Aborting RAM cleanup." >> "$LOG_FILE"
+    send_discord_alert "🚨 **バックアップ警告**: プロセス停止に失敗。"
 else
-    # プロセスが完全に終了していること（＝ファイルが握られていないこと）を確認できた場合のみ削除
-    echo "Processes completely stopped. Cleaning up RAM DB and garbage..." >> "$LOG_FILE"
-    # RAMディスク上の yata.db および関連ファイル (-wal, -shm, ジャーナル等) を一掃
+    echo "Cleaning up RAM DB garbage..." >> "$LOG_FILE"
     rm -f /dev/shm/yata.db* >> "$LOG_FILE" 2>&1
-    # ついでにホームディレクトリに発生したコアダンプなどのゴミも掃除
     rm -f /home/boncoli/yata-local/core.* >> "$LOG_FILE" 2>&1
 fi
 
 echo "Starting all PM2 processes..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 start all >> "$LOG_FILE" 2>&1
-
-# マイク（独り言キャッチャー）はデフォルトOFFにするため、起動直後に一旦止める
-echo "Setting mic to default OFF..." >> "$LOG_FILE"
 /home/boncoli/.nvm/versions/node/v24.12.0/bin/pm2 stop yata-voice-catcher >> "$LOG_FILE" 2>&1
 
 echo "--- Backup Completed: $(date) ---" >> "$LOG_FILE"
-send_discord_alert "✅ **システムバックアップ完了**: サーバーを正常にリフレッシュしました。"
+send_discord_alert "✅ **システムバックアップ完了**: DB最適化(VACUUM)とリフレッシュを正常に終了しました。"
