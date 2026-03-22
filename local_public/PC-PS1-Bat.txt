@@ -1,4 +1,4 @@
-$Host.UI.RawUI.WindowTitle = "YATA Management Console v5.0.2 (Polished)"
+$Host.UI.RawUI.WindowTitle = "YATA Expert Console v5.1.1 (Turbo Edition)"
 
 # コンソールの入出力を完全にUTF-8に固定（文字化け防止）
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -12,6 +12,23 @@ $WORK_DIR = "/home/boncoli/yata-local"
 $GEMINI_CMD = "gemini" 
 # ▲▲ 設定 ▲▲
 
+# --- [高速化のキモ] ステータス取得コマンドを事前に生成 ---
+$statusScript = @'
+if [ -f /dev/shm/yata.db ]; then DB=/dev/shm/yata.db; MODE="RAM"; else DB=/home/boncoli/yata-local/yata.db; MODE="SD"; fi
+TEMP=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 | tr -d '\n' || echo "N/A")
+MEM=$(free -h | awk 'NR==2{print $3 "/" $2}')
+SD=$(df -h / | awk 'NR==2{print $5}')
+SVR=$(if ss -tuln | grep -q ":3001 "; then echo "ON"; else echo "OFF"; fi)
+COUNT=$(sqlite3 "$DB" "SELECT count(*) FROM collect;" 2>/dev/null | numfmt --grouping 2>/dev/null || echo "-")
+TODO=$(sqlite3 "$DB" "SELECT count(*) FROM collect WHERE summary IS NULL OR length(summary)=0;" 2>/dev/null | numfmt --grouping 2>/dev/null || echo "-")
+DB_SIZE=$(ls -lh "$DB" 2>/dev/null | awk '{print $5}')
+echo "[$MODE] Temp: $TEMP | Mem: $MEM | SD: $SD | Svr: $SVR | DB: $DB_SIZE | Total: $COUNT | ToDo: $TODO"
+'@
+$statusScript = $statusScript -replace "`r`n", "`n"
+$bytes = [System.Text.Encoding]::UTF8.GetBytes($statusScript)
+$base64 = [Convert]::ToBase64String($bytes)
+$GLOBAL_REMOTE_EXEC = "echo $base64 | base64 -d | bash"
+
 # --- Helper Functions ---
 function Invoke-YataRemote {
     param([string]$cmd, [bool]$interactive=$false)
@@ -19,28 +36,14 @@ function Invoke-YataRemote {
         if ($interactive) { ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && $cmd" }
         else { ssh "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && $cmd" }
     } catch {
-        Write-Host "[Error] リモート実行に失敗しました: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[Error] リモート実行に失敗しました" -ForegroundColor Red
     }
 }
 
 function Get-YataStatus {
-    $statusScript = @'
-    if [ -f /dev/shm/yata.db ]; then DB=/dev/shm/yata.db; MODE="RAM"; else DB=/home/boncoli/yata-local/yata.db; MODE="SD"; fi
-    TEMP=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 | tr -d '\n' || echo "N/A")
-    MEM=$(free -h | awk 'NR==2{print $3 "/" $2}')
-    SD=$(df -h / | awk 'NR==2{print $5}')
-    SVR=$(if ss -tuln | grep -q ":3001 "; then echo "ON"; else echo "OFF"; fi)
-    COUNT=$(sqlite3 "$DB" "SELECT count(*) FROM collect;" 2>/dev/null | numfmt --grouping 2>/dev/null || echo "-")
-    TODO=$(sqlite3 "$DB" "SELECT count(*) FROM collect WHERE summary IS NULL OR length(summary)=0;" 2>/dev/null | numfmt --grouping 2>/dev/null || echo "-")
-    DB_SIZE=$(ls -lh "$DB" 2>/dev/null | awk '{print $5}')
-    echo "[$MODE] Temp: $TEMP | Mem: $MEM | SD: $SD | Svr: $SVR | DB: $DB_SIZE | Total: $COUNT | ToDo: $TODO"
-'@
     try {
-        $statusScript = $statusScript -replace "`r`n", "`n"
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($statusScript)
-        $base64 = [Convert]::ToBase64String($bytes)
-        $remoteExec = "echo $base64 | base64 -d | bash"
-        return ssh -q -o ConnectTimeout=2 -o BatchMode=yes "$SSH_USER@$SSH_HOST" $remoteExec 2>$null
+        # 事前に作ったコマンドを使い、余計なオプションを削って接続
+        return ssh -o ConnectTimeout=3 "$SSH_USER@$SSH_HOST" $GLOBAL_REMOTE_EXEC 2>$null
     } catch {
         return $null
     }
@@ -49,159 +52,77 @@ function Get-YataStatus {
 try {
     while ($true) {
         Clear-Host
-        Write-Host "========================================================" -ForegroundColor Cyan
-        Write-Host "         YATA Master Control [v5.0.2 Polished]" -ForegroundColor Cyan
-        Write-Host "========================================================" -ForegroundColor Cyan
+        Write-Host "================================================================================" -ForegroundColor Cyan
+        Write-Host "                    YATA Expert Console [v5.1.1 Turbo Edition]" -ForegroundColor Cyan
+        Write-Host "================================================================================" -ForegroundColor Cyan
 
         $status = Get-YataStatus
-        if ($status) { 
-            Write-Host $status -ForegroundColor Green 
-        } else { 
+        if ($status) { Write-Host $status -ForegroundColor Green }
+        else { 
             Write-Host "[Status] 接続待機中... (SSH Connection Failed)" -ForegroundColor Yellow
-            Write-Host "  IP: $SSH_HOST に接続できません。3秒後に再試行します..."
-            Start-Sleep -Seconds 3
-            continue
+            Start-Sleep -Seconds 2
+            continue 
         }
 
-        # メニュー表示 (日本語幅を考慮してスペースでビシッと揃える)
         Write-Host ""
-        Write-Host "  [1] Daily Work (収集/要約/Task)      " -NoNewline -ForegroundColor White
-        Write-Host "[5] Dashboard (表示/実機)" -ForegroundColor White
-        
-        Write-Host "  [2] Maintenance (Sync/Vacuum)        " -NoNewline -ForegroundColor White
-        Write-Host "[6] Logs (Task/System/Dashboard)" -ForegroundColor White
-        
-        Write-Host "  [3] Development (VSCode/Gemini)      " -NoNewline -ForegroundColor White
-        Write-Host "[7] Admin (Update/Backup/Power)" -ForegroundColor White
-        
-        Write-Host "  [4] Monitoring (WebUI/DB/Grafana)    " -NoNewline -ForegroundColor White
-        Write-Host "[0] Exit" -ForegroundColor White
-        
-        Write-Host "========================================================"
+        Write-Host " [Daily Work]              [Maintenance]           [Development]" -ForegroundColor Yellow
+        Write-Host "  1. Collect (RSS収集)      4. Sync (RAM->SD)       7. VS Code (Remote)"
+        Write-Host "  2. Summarize (AI要約)     5. DB Vacuum (軽量化)   8. SSH & Start Gemini"
+        Write-Host "  3. Full Task (全自動)     6. YATA.js Sync"
+        Write-Host ""
+        Write-Host " [Monitoring]              [Dashboard]             [Admin]" -ForegroundColor Yellow
+        Write-Host "  9. sqlite-web (CoreLim)   13. Preview (Normal)    17. Backup (NAS)"
+        Write-Host " 10. Web Portal (Port:3001) 14. Preview (Weather)   18. Full Image (NAS)"
+        Write-Host " 11. Grafana Dashboard      15. Preview (Env)       19. System Update"
+        Write-Host " 12. btop (System Monitor)  16. E-Ink Write (実機)  20. Reboot (Sync & Rbt)"
+        Write-Host "                            22. Show Logs           21. Poweroff (Sync & Off)"
+        Write-Host ""
+        Write-Host "                                                     0. Exit"
+        Write-Host "================================================================================"
 
-        $CHOICE = Read-Host "Select Menu Number"
+        $CHOICE = Read-Host "Enter Command Number"
 
         switch ($CHOICE) {
-            "1" {
-                Clear-Host
-                Write-Host "--- Daily Operation ---" -ForegroundColor Yellow
-                Write-Host " 1. RSS収集のみ (Collect)"
-                Write-Host " 2. AI要約のみ (Summarize)"
-                Write-Host " 3. 全自動 (YATA-Task)"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                switch ($sub) {
-                    "1" { Invoke-YataRemote "./run-ram.sh tasks/do-collect.js" }
-                    "2" { Invoke-YataRemote "./run-ram.sh tasks/do-summarize.js" }
-                    "3" { Invoke-YataRemote "./run-ram.sh tasks/yata-task.js" }
-                }
-                if ($sub -ne "0" -and $sub -ne "") { Pause }
+            # --- Daily ---
+            "1" { Invoke-YataRemote "./run-ram.sh tasks/do-collect.js" }
+            "2" { Invoke-YataRemote "./run-ram.sh tasks/do-summarize.js" }
+            "3" { Invoke-YataRemote "./run-ram.sh tasks/yata-task.js" }
+            "4" { Invoke-YataRemote "./run-ram.sh --sync-only" }
+            "5" { 
+                Write-Host "VACUUM実行中..." -ForegroundColor Cyan
+                Invoke-YataRemote "sqlite3 /dev/shm/yata.db 'VACUUM;'; sqlite3 $WORK_DIR/yata.db 'VACUUM;'"
+                Write-Host "完了。" -ForegroundColor Green
             }
-            "2" {
-                Clear-Host
-                Write-Host "--- Database Maintenance ---" -ForegroundColor Yellow
-                Write-Host " 1. RAM DB -> SDへ強制同期 (Sync)"
-                Write-Host " 2. DB軽量化 (VACUUM)"
-                Write-Host " 3. YATA.js同期 (origin/main -> lib/)"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                switch ($sub) {
-                    "1" { Invoke-YataRemote "./run-ram.sh --sync-only" }
-                    "2" { 
-                        Write-Host "VACUUMを実行中..." -ForegroundColor Cyan
-                        Invoke-YataRemote "sqlite3 /dev/shm/yata.db 'VACUUM;'; sqlite3 $WORK_DIR/yata.db 'VACUUM;'"
-                        Write-Host "完了。" -ForegroundColor Green
-                    }
-                    "3" { Invoke-YataRemote "git fetch origin && git show origin/main:lib/YATA.js > lib/YATA.js && echo 'YATA.js Updated.'" }
-                }
-                if ($sub -ne "0" -and $sub -ne "") { Pause }
+            "6" { Invoke-YataRemote "git fetch origin && git show origin/main:lib/YATA.js > lib/YATA.js && echo 'YATA.js Updated.'" }
+            "7" { code --folder-uri "vscode-remote://ssh-remote+$SSH_HOST$WORK_DIR" }
+            "8" { Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "cd $WORK_DIR; $GEMINI_CMD; bash --login" }
+            "9" {
+                $job = Start-Job -ScriptBlock { param($ip); Start-Sleep -Seconds 3; try { Start-Process "http://$($ip):8082" } catch {} } -ArgumentList $SSH_HOST
+                Invoke-YataRemote "taskset -c 0-2 ./local_llm/.venv/bin/python3 -m sqlite_web /dev/shm/yata.db -H 0.0.0.0 -p 8082 -x" -interactive $true
+                Remove-Job $job
             }
-            "3" {
-                Clear-Host
-                Write-Host "--- Development Environment ---" -ForegroundColor Yellow
-                Write-Host " 1. VS Code (Remote-SSH) でフォルダを開く"
-                Write-Host " 2. SSH接続して Gemini を即起動する"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                switch ($sub) {
-                    "1" { code --folder-uri "vscode-remote://ssh-remote+$SSH_HOST$WORK_DIR" }
-                    "2" { 
-                        Write-Host "Launching Gemini CLI on $SSH_HOST..." -ForegroundColor Cyan
-                        Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "cd $WORK_DIR; $GEMINI_CMD; bash --login"
-                    }
-                }
-            }
-            "4" {
-                Clear-Host
-                Write-Host "--- Monitoring & Visualization ---" -ForegroundColor Yellow
-                Write-Host " 1. DBビューア (sqlite-web) ※3コア制限適用"
-                Write-Host " 2. Web Portal (Portal.html)"
-                Write-Host " 3. Grafana Dashboard"
-                Write-Host " 4. システム計器盤 (btop)"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                switch ($sub) {
-                    "1" {
-                        $job = Start-Job -ScriptBlock { param($ip); Start-Sleep -Seconds 3; try { Start-Process "http://$($ip):8082" } catch {} } -ArgumentList $SSH_HOST
-                        Write-Host "sqlite-webを起動中 (CPU Core: 0-2)..." -ForegroundColor Cyan
-                        Invoke-YataRemote "taskset -c 0-2 ./local_llm/.venv/bin/python3 -m sqlite_web /dev/shm/yata.db -H 0.0.0.0 -p 8082 -x" -interactive $true
-                        Remove-Job $job
-                    }
-                    "2" { Start-Process "http://$SSH_HOST:3001/portal.html" }
-                    "3" { Start-Process "http://$SSH_HOST:3000" }
-                    "4" { Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "btop" }
-                }
-            }
-            "5" {
-                Clear-Host
-                Write-Host "--- E-Ink Dashboard Control ---" -ForegroundColor Yellow
-                Write-Host " 1. プレビュー生成 (Normal)"
-                Write-Host " 2. プレビュー生成 (Weather)"
-                Write-Host " 3. プレビュー生成 (Env)"
-                Write-Host " 4. 実機 (E-Ink) 書き換え実行"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                if ($sub -match "[1-3]") {
-                    $mode = switch($sub) { "2" {"--mode weather"}; "3" {"--mode env"}; default {""} }
-                    Invoke-YataRemote "python3 dashboard/dashboard.py $mode --no-epd"
-                    Write-Host "画像を転送中..." -ForegroundColor Cyan
-                    $previewPath = Join-Path $env:TEMP "yata_preview.png"
-                    if (Test-Path $previewPath) { Remove-Item $previewPath -Force }
-                    scp "$SSH_USER@${SSH_HOST}:/dev/shm/dashboard.png" "$previewPath"
-                    if (Test-Path $previewPath) { Start-Process $previewPath }
-                    Pause
-                } elseif ($sub -eq "4") {
-                    Invoke-YataRemote "python3 dashboard/dashboard.py"
-                    Pause
-                }
-            }
-            "6" {
-                Invoke-YataRemote "echo '--- Task Log ---'; tail -n 15 /dev/shm/yata_task.log; echo ''; echo '--- System Log ---'; tail -n 15 /dev/shm/yata.log" -interactive $true
-                Pause
-            }
-            "7" {
-                Clear-Host
-                Write-Host "--- System Administration ---" -ForegroundColor Yellow
-                Write-Host " 1. 日次バックアップ (NAS)"
-                Write-Host " 2. フルイメージ保存 (NAS)"
-                Write-Host " 3. システム・OS更新 (Update)"
-                Write-Host " 4. 再起動 (RAM Sync & Reboot)"
-                Write-Host " 5. 終了 (RAM Sync & Poweroff)"
-                Write-Host " 0. 戻る"
-                $sub = Read-Host "Choice"
-                switch ($sub) {
-                    "1" { Invoke-YataRemote "./maintenance/do-backup.sh" }
-                    "2" { if ((Read-Host "フルバックアップ(NAS)を実行しますか？ (y/n)") -eq "y") { Invoke-YataRemote "sudo image-backup /mnt/nas/rpi_complete_backup.img" -interactive $true } }
-                    "3" { Invoke-YataRemote "sudo apt update && sudo apt upgrade -y && git pull" -interactive $true }
-                    "4" { if ((Read-Host "Sync & Reboot? (y/n)") -eq "y") { Write-Host "Syncing RAM DB..." -ForegroundColor Cyan; Invoke-YataRemote "./run-ram.sh --sync-only && sudo reboot" } }
-                    "5" { if ((Read-Host "Sync & Poweroff? (y/n)") -eq "y") { Write-Host "Syncing RAM DB..." -ForegroundColor Cyan; Invoke-YataRemote "./run-ram.sh --sync-only && sudo poweroff" } }
-                }
-                if ($sub -ne "0" -and $sub -ne "4" -and $sub -ne "5" -and $sub -ne "") { Pause }
-            }
+            "10" { Start-Process "http://$SSH_HOST:3001/portal.html" }
+            "11" { Start-Process "http://$SSH_HOST:3000" }
+            "12" { Start-Process "ssh" -ArgumentList "-t", "$SSH_USER@$SSH_HOST", "btop" }
+            "13" { Invoke-YataRemote "python3 dashboard/dashboard.py --no-epd"; scp "$SSH_USER@${SSH_HOST}:/dev/shm/dashboard.png" "$env:TEMP\yata_preview.png"; Start-Process "$env:TEMP\yata_preview.png" }
+            "14" { Invoke-YataRemote "python3 dashboard/dashboard.py --mode weather --no-epd"; scp "$SSH_USER@${SSH_HOST}:/dev/shm/dashboard.png" "$env:TEMP\yata_preview.png"; Start-Process "$env:TEMP\yata_preview.png" }
+            "15" { Invoke-YataRemote "python3 dashboard/dashboard.py --mode env --no-epd"; scp "$SSH_USER@${SSH_HOST}:/dev/shm/dashboard.png" "$env:TEMP\yata_preview.png"; Start-Process "$env:TEMP\yata_preview.png" }
+            "16" { Invoke-YataRemote "python3 dashboard/dashboard.py" }
+            "17" { Invoke-YataRemote "./maintenance/do-backup.sh" }
+            "18" { if ((Read-Host "Full Backup? (y/n)") -eq "y") { Invoke-YataRemote "sudo image-backup /mnt/nas/rpi_complete_backup.img" -interactive $true } }
+            "19" { Invoke-YataRemote "sudo apt update && sudo apt upgrade -y && git pull" -interactive $true }
+            "20" { if ((Read-Host "Sync & Reboot? (y/n)") -eq "y") { Invoke-YataRemote "./run-ram.sh --sync-only && sudo reboot" } }
+            "21" { if ((Read-Host "Sync & Poweroff? (y/n)") -eq "y") { Invoke-YataRemote "./run-ram.sh --sync-only && sudo poweroff" } }
+            "22" { Invoke-YataRemote "echo '--- Task Log ---'; tail -n 15 /dev/shm/yata_task.log; echo ''; echo '--- System Log ---'; tail -n 15 /dev/shm/yata.log" -interactive $true }
             "0" { exit }
+            default { continue } # 数字以外、またはEnterのみの場合は即ループトップへ
+        }
+        # 実行したコマンドが特定のもの（VSCode起動など）以外で、かつ空入力でない場合のみ一時停止
+        if ($CHOICE -ne "" -and $CHOICE -ne "0" -and $CHOICE -ne "7" -and $CHOICE -ne "10" -and $CHOICE -ne "11" -and $CHOICE -ne "20" -and $CHOICE -ne "21") {
+            Write-Host "`nTask completed." -ForegroundColor Cyan
+            Pause
         }
     }
 } finally {
-    Write-Host "`n[End] 管理コンソールを終了します。" -ForegroundColor Cyan
     Pause
 }
