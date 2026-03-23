@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-23
+### Added
+- **ブランチ構造の純化と会社共有用セットの確立**:
+    - `main` ブランチを会社共有用（GAS環境等）に必要な 6 ファイル（`lib/YATA.js`, `Index.html`, `Visualize.html`, `prompts.json`, `CHANGELOG.md`, `README.md`）に整理。不要なローカル用ファイル（`package.json`, `gas-bridge.js` 等）を物理的に排除し、視認性と安全性を向上。
+    - `public` ブランチを OSS 公開用として再定義。機密情報を除いたサニタイズ済みの `prompts.json` とライセンスを含む配布用 6 ファイル構成へ集約。
+    - 開発環境である `local-raspi` を「唯一の正本 (SSoT)」として物理的に分離・確立。
+- **プロンプト命名の正常化とオーバーライド機構の導入**:
+    - ファイル命名を実態に合わせ、`prompts.json`（標準/会社用・旧 `prompt_company.json`）と `prompts_local.json`（自分専用/ローカル用・旧 `prompts.json`）にリネーム・分離。
+    - `lib/gas-bridge.js` を改修。ローカル環境では `prompts_local.json` を優先的に読み込み、なければ `prompts.json` を使用する「動的オーバーライド方式」を採用。
+    - これにより、本家同期を維持しつつ、ローカル環境で自由にプロンプトをチューニングできる「安全なサンドボックス」を構築。
+- **ドキュメントの品質向上**:
+    - `PROJECT_GUIDE.md` におけるブランチ戦略と構成マトリックスを最新の状態に更新。
+    - ドキュメント内の誤字（ハングル助詞「의」の混入等）を一括修正し、日本語としての純度を確保。
+
 ## [1.2.12] - 2026-03-21
 ### Added
 - **究極のスクレイピング・エンジン (Ultimate Scraper Engine)**:
