@@ -193,10 +193,17 @@ async function runLocalAllTest() {
   
   // モックを戻す
   global.UrlFetchApp.fetch = originalFetch;
+  
+  // メモリDBを明示的にクローズして即時解放
+  memDb.close();
+  console.log("🧹 メモリDBをクローズし、リソースを解放しました。");
 }
 
 runLocalAllTest().catch(e => {
   console.error("\n❌ テスト失敗:");
   console.error(e.stack);
+  if (global.YATA_DB) {
+    try { global.YATA_DB.close(); } catch(err) {}
+  }
   process.exit(1);
 });
