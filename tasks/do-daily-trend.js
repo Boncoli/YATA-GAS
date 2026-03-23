@@ -15,7 +15,7 @@ async function main() {
   try {
     // 1. Bridge & YATA ロード
     require('../lib/gas-bridge.js');
-    require('../lib/YATA.js');
+    require('../lib/yata-loader.js'); // loader経由で最新パッチを適用したYATA.jsを読み込む
 
     const keywords = (process.env.USER_KEYWORDS || "").split(',').map(k => k.trim());
     const mailTo = process.env.MAIL_TO;
@@ -84,7 +84,10 @@ async function main() {
       console.log(`[Email] Sending trend report to ${mailTo}...`);
       
       // GmailApp (gas-bridge.js が提供) で送信
-      GmailApp.sendEmail(mailTo, subject, "", {
+      // 第3引数のプレーンテキスト版が空文字だったため、一部環境で真っ白になる問題を修正
+      const plainTextBody = typeof global.stripHtml_ === 'function' ? global.stripHtml_(reportHtml) : stripHtml_(reportHtml);
+
+      GmailApp.sendEmail(mailTo, subject, plainTextBody, {
         htmlBody: reportHtml
       });
       console.log("✅ 24h Daily Trend Report sent successfully.");
