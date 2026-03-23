@@ -100,12 +100,96 @@ async function runLocalAllTest() {
     throw new Error("要約が生成されませんでした。");
   }
 
-  // --- E. 最後に本家の runAllTests も回しておく ---
-  console.log("\n[Step E] 内部アルゴリズムの一括テスト (runAllTests)...");
+  // --- E. 日刊レポート・配信ロジックのテスト (Step Eとして追加) ---
+  console.log("\n[Step E] 日刊レポート生成とメール配信モックの検証...");
+  
+  // 送信モックの準備
+  let mailSent = false;
+  global.GmailApp = {
+    sendEmail: (to, subject, body, options) => {
+      mailSent = true;
+      console.log(`✅ メール送信モック成功: To=${to}, Subject=${subject}`);
+      if (body.trim() === "") throw new Error("メールのプレーンテキスト(body)が空です！(真っ白問題再発)");
+      if (!options || !options.htmlBody) throw new Error("メールのHTML(htmlBody)が空です！");
+      console.log(`✅ プレーンテキスト長: ${body.length}文字, HTML長: ${options.htmlBody.length}文字`);
+    }
+  };
+
+  // 環境変数のセット（モック用）
+  process.env.MAIL_TO = "test@example.com";
+  process.env.USER_KEYWORDS = "テスト";
+  
+  // テスト用によりリッチな記事データをメモリDBに注入
+  const mockDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  memDb.prepare(`INSERT INTO collect (date, title, url, abstract, summary, vector) VALUES (?, ?, ?, ?, ?, ?)`).run(
+    mockDate,
+    "テスト用記事タイトル（キーワード: テスト を含む）",
+    "https://example.com/test-article-2",
+    "テスト用の詳細な記事内容です。",
+    "テスト用の要約です。",
+    new Array(256).fill(0.1).join(",")
+  );
+  
+  // Step B の fetch モックをさらに拡張し、トレンド分析(レポート生成)のレスポンスも返すようにする
+  const previousFetch = global.UrlFetchApp.fetch;
+  global.UrlFetchApp.fetch = (url, options) => {
+    if (url.includes("openai") || url.includes("api.openai.com")) {
+      const payload = options.payload ? options.payload.toString() : "";
+      // 予兆検知/トレンド分析系のプロンプトが含まれる場合
+      if (payload.includes("トレンド") || payload.includes("topics")) {
+         return {
+           getResponseCode: () => 200,
+           getContentText: () => JSON.stringify({
+             choices: [{
+               message: {
+                 content: JSON.stringify({
+                   "isNoChange": false,
+                   "topics": [
+                     {
+                       "title": "【テスト】仮想のトレンドニュース",
+                       "last_week": "なし",
+                       "this_week": "UrlFetchAppレベルでのモックに成功しました。",
+                       "impact": "LLM費用をかけずにパイプライン全体をテストできます。",
+                       "evidence": ["https://example.com/test-article-2"]
+                     }
+                   ]
+                 })
+               }
+             }],
+             usage: { total_tokens: 0 }
+           })
+         };
+      }
+    }
+    return previousFetch(url, options);
+  };
+  
+  // 手動でレポート生成を呼び出す
+  const allArticles = memDb.prepare("SELECT * FROM collect").all().map(a => ({
+    id: a.id, date: new Date(a.date), title: a.title, url: a.url,
+    abstract: a.abstract, summary: a.summary, source: a.source, vectorStr: a.vector
+  }));
+  
+  const reportHtml = global.generateTrendReportHtml(allArticles, [{ query: "テスト", label: "テスト" }], new Date(Date.now() - 86400000), new Date(), {
+    useSemantic: false, enableHistory: false, saveHistory: false, reasoning_effort: "low"
+  });
+
+  if (!reportHtml) throw new Error("HTMLレポートが生成されませんでした。");
+  const plainTextBody = global.stripHtml_ ? global.stripHtml_(reportHtml) : stripHtml_(reportHtml);
+  
+  // モック送信を実行
+  global.GmailApp.sendEmail("test@example.com", "Test Report", plainTextBody, { htmlBody: reportHtml });
+  
+  if (!mailSent) throw new Error("メール送信フローが実行されませんでした。");
+
+  // --- F. 最後に本家の runAllTests も回しておく ---
+  console.log("\n[Step F] 内部アルゴリズムの一括テスト (runAllTests)...");
+  // フェッチモックを元に戻す
+  global.UrlFetchApp.fetch = previousFetch;
   runAllTests();
 
-  console.log("\n✨ [Local-All-Test] 全てのテストに合格しました！");
-  console.log("このテストはメモリ上のみで完結し、実データへの影響はありません。");
+  console.log("\n✨ [Local-All-Test Deluxe] 全てのライフサイクル・テストに合格しました！");
+  console.log("このテストはメモリ上のみで完結し、実データへの影響・API課金は一切ありません。");
   
   // モックを戻す
   global.UrlFetchApp.fetch = originalFetch;
