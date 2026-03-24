@@ -43,7 +43,8 @@ while true; do
     echo ""
     echo "                                                     0. Exit"
     echo -e "${CYAN}================================================================================${NC}"
-    echo -n "Enter Command Number: "
+    # パイプ経由でのバッファリング対策として、改行付きのプロンプトに変更
+    echo "Enter Command Number: "
     read -r CHOICE
 
     case $CHOICE in
@@ -72,18 +73,18 @@ while true; do
         16) python3 dashboard/dashboard.py ;;
         17) ./maintenance/do-backup.sh ;;
         18) 
-            echo -n "Full Backup? (y/n): "
+            echo "Full Backup? (y/n): "
             read -r CONFIRM
             if [ "$CONFIRM" = "y" ]; then sudo image-backup /mnt/nas/rpi_complete_backup.img; fi
             ;;
         19) sudo apt update && sudo apt upgrade -y && git pull ;;
         20) 
-            echo -n "Sync & Reboot? (y/n): "
+            echo "Sync & Reboot? (y/n): "
             read -r CONFIRM
             if [ "$CONFIRM" = "y" ]; then ./run-ram.sh --sync-only && sudo reboot; fi
             ;;
         21) 
-            echo -n "Sync & Poweroff? (y/n): "
+            echo "Sync & Poweroff? (y/n): "
             read -r CONFIRM
             if [ "$CONFIRM" = "y" ]; then ./run-ram.sh --sync-only && sudo poweroff; fi
             ;;
@@ -92,7 +93,8 @@ while true; do
     esac
 
     if [[ ! "$CHOICE" =~ ^(0|7|8|9|10|11|20|21)$ ]]; then
-        echo -e "\nPress Enter to continue..."
+        echo ""
+        echo "Press Enter to continue..."
         read -r
     fi
 done

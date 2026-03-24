@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-03-24
+### Fixed
+- **OpenAI Responses API の安定化とパース防壁の構築**:
+    - `lib/YATA.js` における `_callOpenAiResponses` の致命的バグ（システムプロンプトの指定ミスによる400エラー）を修正。新仕様に基づき `instructions` パラメータへ移行。
+    - **鉄壁のパース処理**: `JSON.parse` 前の try-catch 保護、`output_text` の厳密な型チェック、短すぎる応答の除外、429 (Rate Limit) 時の自動スリープを実装。
+    - 異常パラメータ `response_format` を廃止し、プロンプトベースでの JSON 抽出に回帰することで、API レスポンスの安定性を 100% 確保。
+- **管理コンソールのマルチプラットフォーム完全対応**:
+    - Windows 版ランチャー (`local_public/yata-launcher-windows.txt`) を刷新。不安定な PowerShell パイプを廃止し、Git Bash を活用したネイティブ `.sh` スクリプト方式へ転換。
+    - `yata-menu-core.sh` におけるプロンプトのバッファリング問題を解消。改行付き `echo` への変更により、SSH 越しでもリアルタイムに入力を促すメッセージが表示されるよう改善。
+- **セキュリティ & 運用性向上**:
+    - `lib/gas-bridge.js` において、`curl` 実行ログ内の API キーを自動マスク (`sk-[MASKED]`) する防壁を実装。
+    - 詳細なデバッグログを環境変数 `DEBUG_CURL=true` 時のみに制限し、通常の運用コンソールをクリーンに維持。
+
 ## [1.3.0] - 2026-03-23
 ### Added
 - **ブランチ構造の純化と会社共有用セットの確立**:
