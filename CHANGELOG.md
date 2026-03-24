@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.2] - 2026-03-24
+### Added
+- **検証・テストの黄金プロトコル**: 大規模修正後の動作証明を自動化する 3 つの主要テストセット (`test-ai-integrated.js`, `test-ai-batch.js`, `test-db.js`) を策定。
+- **セッション隔離型コンソール**: 信号監視システムにセッション ID を導入し、多重起動時の誤作動を物理的に排除。
+- **別窓ターミナル起動**: メニューから 8 番を打つことで、Windows (PowerShell) および Mac (Terminal.app) で新しい作業ウィンドウを自動起動する機能を実装。
+
+### Fixed
+- **OpenAI Responses API (gpt-5-nano) 安定化**: エンドポイントとペイロード構造を最新仕様に修正し、要約の「真っ白」問題を根絶。
+- **バッチ要約の不具合修正**: 5件一括処理時の ID 紐付けと内容欠落を修復。
+- **関数欠落の復旧**: 誤って削除された `_callOpenAiEmbedding` 等の LLM 関数群を完全に復元。
+
+### Changed
+- **低遅延コンソール**: SSH 接続からパイプを撤廃し、入力遅延ゼロのインタラクティブ接続へ刷新。
+- **テストスクリプト整理**: 重複・遺物テスト 7 ファイルを削除し、`tests/` ディレクトリに統合。
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

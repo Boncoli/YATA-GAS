@@ -1,34 +1,30 @@
 #!/bin/bash
 # ================================================================================
-# YATA Shared Core Menu v5.3.0 (Low-Latency Edition)
+# YATA Shared Core Menu v5.4.0 (Session-Isolated Edition)
 # ================================================================================
 WORK_DIR="/home/boncoli/yata-local"
-SIGNAL_FILE="/dev/shm/yata-console.signal"
+# 引数があればそれを信号ファイルに、なければデフォルト
+SIGNAL_FILE="${1:-/dev/shm/yata-console.signal}"
 cd "$WORK_DIR"
 
-# 信号ファイルの初期化
 touch "$SIGNAL_FILE"
 chmod 666 "$SIGNAL_FILE" 2>/dev/null
 
-# 色の定義
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# 命令送信関数
 function emit_signal() {
     echo "$1" > "$SIGNAL_FILE"
-    echo -e "$1" # 画面にも出す（レガシー互換）
 }
 
 while true; do
     clear
     echo -e "${CYAN}================================================================================"
-    echo -e "                    YATA Expert Console [v5.3.0 Shared Core]"
+    echo -e "                    YATA Expert Console [v5.4.0 Shared Core]"
     echo -e "================================================================================${NC}"
 
-    # ステータス表示
     if [ -f /dev/shm/yata.db ]; then DB=/dev/shm/yata.db; MODE="RAM"; else DB=$WORK_DIR/yata.db; MODE="SD"; fi
     TEMP=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 | tr -d '\n' || echo "N/A")
     MEM=$(free -h | awk 'NR==2{print $3 "/" $2}')
@@ -42,7 +38,7 @@ while true; do
 
     echo -e " ${YELLOW}[Daily Work]              [Maintenance]           [Development]${NC}"
     echo "  1. Collect (RSS収集)      4. Sync (RAM->SD)       7. VS Code (Remote)"
-    echo "  2. Summarize (AI要約)     5. DB Vacuum (軽量化)   8. SSH Terminal"
+    echo "  2. Summarize (AI要約)     5. DB Vacuum (軽量化)   8. SSH Terminal (New Window)"
     echo "  3. Full Task (全自動)     6. YATA.js Sync"
     echo ""
     echo -e " ${YELLOW}[Monitoring]              [Dashboard]             [Admin]${NC}"
@@ -55,11 +51,7 @@ while true; do
     echo "                                                     0. Exit"
     echo -e "${CYAN}================================================================================${NC}"
     
-    # 🌟 [改善] read -n 1 (1文字即反応) に変更。エンター不要で爆速。
-    echo -n "Enter Command: "
-    read -n 2 CHOICE_RAW  # 2文字まで（10番台以降対応のため。1文字なら即、2文字なら少し待つ）
-    CHOICE=$(echo "$CHOICE_RAW" | tr -d '[:space:]')
-    echo "" # 改行を入れて見栄えを整える
+    read -p "Enter Command: " CHOICE
 
     case $CHOICE in
         1) ./run-ram.sh tasks/yata-task.js --collect-only ;;
@@ -87,29 +79,24 @@ while true; do
         16) python3 dashboard/dashboard.py ;;
         17) ./maintenance/do-backup.sh ;;
         18) 
-            echo -n "Full Backup? (y/n): "
-            read -n 1 CONFIRM
+            read -p "Full Backup? (y/n): " CONFIRM
             if [ "$CONFIRM" = "y" ]; then sudo image-backup /mnt/nas/rpi_complete_backup.img; fi
             ;;
         19) sudo apt update && sudo apt upgrade -y && git pull ;;
         20) 
-            echo -n "Sync & Reboot? (y/n): "
-            read -n 1 CONFIRM
+            read -p "Sync & Reboot? (y/n): " CONFIRM
             if [ "$CONFIRM" = "y" ]; then ./run-ram.sh --sync-only && sudo reboot; fi
             ;;
         21) 
-            echo -n "Sync & Poweroff? (y/n): "
-            read -n 1 CONFIRM
+            read -p "Sync & Poweroff? (y/n): " CONFIRM
             if [ "$CONFIRM" = "y" ]; then ./run-ram.sh --sync-only && sudo poweroff; fi
             ;;
         22) echo '--- Task Log ---'; tail -n 15 /dev/shm/yata_task.log; echo ''; echo '--- System Log ---'; tail -n 15 /dev/shm/yata.log ;;
         0) exit 0 ;;
     esac
 
-    # 特殊コマンド以外は継続確認を入れる（画面が流れるのを防ぐ）
     if [[ ! "$CHOICE" =~ ^(0|7|8|9|10|11|12|20|21)$ ]]; then
         echo ""
-        echo -n "Press any key to continue..."
-        read -n 1
+        read -p "Press Enter to continue..."
     fi
 done
