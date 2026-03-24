@@ -1,12 +1,9 @@
-# --- YATA Launcher for Windows (Git Bash Native Script) ---
-# ※このファイルの中身をすべてコピーし、
-# Windowsのデスクトップに「yata-console.sh」として保存してください。
+# --- YATA Launcher for Windows (Git Bash Native Script) v5.3.0 ---
+# 🚀 Low-Latency & Signal-Driven Edition
 # 
 # 【起動方法】
-# Windows上で「yata-console.sh」をダブルクリックするか、
-# 右クリックして「Git Bash Here」を開き、 ./yata-console.sh と打って実行します。
-# 
-# ※もうバッチファイル (.bat) や PowerShell (.ps1) は使いません！
+# Windows上で「yata-console.sh」として保存し、ダブルクリック。
+# もしくは Git Bash で ./yata-console.sh を実行。
 
 #!/bin/bash
 
@@ -14,26 +11,42 @@
 SSH_USER="boncoli"
 SSH_HOST="192.168.1.150"
 WORK_DIR="/home/boncoli/yata-local"
+SIGNAL_FILE="/dev/shm/yata-console.signal"
 # ▲▲ Settings ▲▲
 
 echo -e "\033[0;36mConnecting to YATA (Host: $SSH_HOST)...\033[0m"
 
-ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && chmod +x yata-menu-core.sh && ./yata-menu-core.sh" | while IFS= read -r line; do
-    clean_line=$(echo "$line" | tr -d '\r' | xargs echo 2>/dev/null)
+# 🌟 [新機能] 信号監視プロセスをバックグラウンドで開始
+# メインのSSHセッションとは独立して、URL命令やVSCode命令を拾い上げる
+(
+    # 接続直後に信号ファイルを空にする
+    ssh "$SSH_USER@$SSH_HOST" "> $SIGNAL_FILE" 2>/dev/null
     
-    if [[ "$clean_line" =~ "__OPEN_URL__:"(.*) ]]; then
-        url=$(echo "${BASH_REMATCH[1]}" | sed "s/__HOST__/$SSH_HOST/" | tr -d '[:space:]')
-        start "" "$url"
-    elif [[ "$clean_line" =~ "__VSCODE__" ]]; then
-        code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
-    elif [[ "$clean_line" =~ "__PREVIEW__" ]]; then
-        scp "$SSH_USER@$SSH_HOST:/dev/shm/dashboard.png" "/tmp/yata_preview.png"
-        start "" "/tmp/yata_preview.png"
-    else
-        # \r を維持して出力（メニューの色やカーソル制御を壊さないため）
-        echo -e "$line"
-    fi
-done
+    # 信号ファイルを監視（リアルタイム）
+    ssh "$SSH_USER@$SSH_HOST" "tail -f $SIGNAL_FILE" 2>/dev/null | while IFS= read -r line; do
+        clean_line=$(echo "$line" | tr -d '\r' | xargs echo 2>/dev/null)
+        
+        if [[ "$clean_line" =~ "__OPEN_URL__:"(.*) ]]; then
+            url=$(echo "${BASH_REMATCH[1]}" | sed "s/__HOST__/$SSH_HOST/" | tr -d '[:space:]')
+            start "" "$url"
+        elif [[ "$clean_line" =~ "__VSCODE__" ]]; then
+            code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
+        elif [[ "$clean_line" =~ "__TERMINAL__" ]]; then
+            start powershell.exe -NoExit -Command "ssh -t $SSH_USER@$SSH_HOST \"cd $WORK_DIR && exec bash\""
+        elif [[ "$clean_line" =~ "__PREVIEW__" ]]; then
+            scp "$SSH_USER@$SSH_HOST:/dev/shm/dashboard.png" "/tmp/yata_preview.png" 2>/dev/null
+            start "" "/tmp/yata_preview.png"
+        fi
+    done
+) &
+MONITOR_PID=$!
+
+# 🌟 [メイン] SSH インタラクティブ・セッション
+# -t を使い、生のターミナルとして接続。入力遅延ゼロ。
+ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && ./yata-menu-core.sh"
+
+# セッション終了後に監視プロセスを殺す
+kill $MONITOR_PID 2>/dev/null
 
 echo ""
 echo -e "\033[1;33m[YATA Console Finished]\033[0m"
