@@ -1,0 +1,26 @@
+# --- YATA Launcher for Windows (PowerShell) ---
+# デスクトップの yata-console.ps1 にこの内容を貼り付けてください。
+
+# ▼▼ 設定 (ローカルIP) ▼▼
+$SSH_USER = "boncoli"
+$SSH_HOST = "192.168.1.150"
+$WORK_DIR = "/home/boncoli/yata-local"
+# ▲▲ 設定 ▲▲
+
+# 共有メニューを呼び出し、出力を監視してブラウザ起動などを制御
+ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && chmod +x yata-menu-core.sh && ./yata-menu-core.sh" | ForEach-Object {
+    if ($_ -match "__OPEN_URL__:(.*)") {
+        $url = ($matches[1] -trim) -replace "__HOST__", $SSH_HOST
+        Start-Process $url
+    }
+    elseif ($_ -match "__VSCODE__") {
+        code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
+    }
+    elseif ($_ -match "__PREVIEW__") {
+        scp "$SSH_USER@${SSH_HOST}:/dev/shm/dashboard.png" "$env:TEMP\yata_preview.png"
+        Start-Process "$env:TEMP\yata_preview.png"
+    }
+    else {
+        Write-Output $_
+    }
+}

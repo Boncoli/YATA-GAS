@@ -1,0 +1,28 @@
+#!/bin/zsh
+# --- YATA Launcher for Mac (.command) ---
+# デスクトップの yata-console.command にこの内容を貼り付けてください。
+
+# ▼▼ 設定 (Tailscale IP) ▼▼
+SSH_USER="boncoli"
+SSH_HOST="100.xxx.xxx.xxx" # <--- ここにラズパイの Tailscale IP を入れてください
+WORK_DIR="/home/boncoli/yata-local"
+# ▲▲ 設定 ▲▲
+
+# 共有メニューを呼び出し、出力を監視してブラウザ起動などを制御
+ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && chmod +x yata-menu-core.sh && ./yata-menu-core.sh" | while IFS= read -r line; do
+    # 判定用：末尾の \r や空白を消した変数を作る
+    clean_line=$(echo "$line" | tr -d '\r' | xargs echo 2>/dev/null)
+
+    if [[ "$clean_line" =~ "__OPEN_URL__:(.*)" ]]; then
+        url=$(echo "$match[1]" | sed "s/__HOST__/$SSH_HOST/" | tr -d '[:space:]')
+        open "$url"
+    elif [[ "$clean_line" =~ "__VSCODE__" ]]; then
+        code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
+    elif [[ "$clean_line" =~ "__PREVIEW__" ]]; then
+        scp "$SSH_USER@$SSH_HOST:/dev/shm/dashboard.png" "/tmp/yata_preview.png"
+        open "/tmp/yata_preview.png"
+    else
+        # そのまま表示（リモートが送ってきた \r を生かす）
+        echo "$line"
+    fi
+done
