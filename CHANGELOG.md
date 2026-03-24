@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.1] - 2026-03-24
 ### Fixed
+- **英語記事の要約が英語になる問題を根本修正**:
+    - `BATCH_SYSTEM` プロンプトをはじめとする全要約プロンプトにおいて、「出力は必ず日本語（Japanese）で行うこと」という指示を【最重要】項目として明示的に追加。これにより OpenAI Responses API での多言語混在を解消。
+- **要約フォールバック時の致命的バグ修正**:
+    - `lib/YATA.js` の `summarizeBatch` 内において、バッチ処理失敗時の個別リトライ（フォールバック）で `this.summarize` という不正な呼び出しをしていた箇所を `LlmService.summarize` に修正。
 - **OpenAI Responses API の安定化とパース防壁の構築**:
     - `lib/YATA.js` における `_callOpenAiResponses` の致命的バグ（システムプロンプトの指定ミスによる400エラー）を修正。新仕様に基づき `instructions` パラメータへ移行。
     - **鉄壁のパース処理**: `JSON.parse` 前の try-catch 保護、`output_text` の厳密な型チェック、短すぎる応答の除外、429 (Rate Limit) 時の自動スリープを実装。
