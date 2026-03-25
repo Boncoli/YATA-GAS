@@ -45,6 +45,7 @@ if [ -d "$NAS_BACKUP" ]; then
     rsync -a --delete --no-links --no-devices --no-specials \
       --exclude='**/node_modules' --exclude='.cache' --exclude='**/__pycache__' \
       --exclude='.venv' --exclude='local_llm/models' \
+      --include='maid_*.png' --include='icon/*.png' \
       --exclude='*.png' \
       --exclude='.nvm' --exclude='.npm' \
       --exclude='.pm2' --exclude='.vscode-server' --exclude='.local' \

@@ -265,7 +265,7 @@
             <div id="view-grid">
                 <!-- Maid Hero Avatar -->
                 <div id="maid-hero" onclick="toggleChat()">
-                    <img id="maid-pic" src="maid_Smile.png" alt="YATA Maid">
+                    <img id="maid-pic" src="maid_normal.png" alt="YATA Maid">
                 </div>
                 <h1>YATA PORTAL</h1>
                 <div class="grid">
@@ -377,15 +377,15 @@
                 const todayCount = data.todayArticles || 0;
 
                 if (temp >= 60) {
-                    updateMaidEmotion('Angry'); // Hot/Fan spinning!
+                    updateMaidEmotion('angry'); // Hot/Fan spinning!
                 } else if (temp < 40) {
                     updateMaidEmotion('sad'); // Chilly...
                 } else if (todayCount >= 300) {
                     updateMaidEmotion('enjoy'); // Huge harvest!
                 } else if (todayCount >= 100) {
-                    updateMaidEmotion('Smile'); // Good progress!
+                    updateMaidEmotion('smile'); // Good progress!
                 } else {
-                    updateMaidEmotion('SD'); // Neutral base pose
+                    updateMaidEmotion('normal'); // Neutral base pose
                 }
 
                 if (data.totalArticles) {
@@ -490,7 +490,7 @@
         function updateMaidEmotion(emotion) {
             const maidPic = document.getElementById('maid-pic');
             if (!maidPic) return;
-            const newSrc = `maid_${emotion}.png`;
+            const newSrc = `maid_${emotion.toLowerCase()}.png`;
             if (maidPic.src.indexOf(newSrc) === -1) {
                 maidPic.src = newSrc;
                 maidPic.classList.add('maid-talking');
