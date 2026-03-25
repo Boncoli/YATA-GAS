@@ -2,9 +2,9 @@
 # --- YATA Launcher for Mac (.command) v5.4.0 ---
 # 🚀 Session-Isolated & Robust Signal Edition (Sync with Win v5.4.0)
 
-# ▼▼ Settings (Local IP) ▼▼
+# ▼▼ Settings (Tailscale IP) ▼▼
 SSH_USER="boncoli"
-SSH_HOST="192.168.1.150"
+SSH_HOST="100.xxx.xxx.xxx" # <--- ここにラズパイの Tailscale IP を入れてください
 WORK_DIR="/home/boncoli/yata-local"
 # ▲▲ Settings ▲▲
 
