@@ -1,0 +1,283 @@
+@echo off
+title YATA Management Console
+:: 文字コードをShift-JISに固定
+chcp 932 > nul
+
+:: ▼▼ 設定 (無線LANの150固定) ▼▼
+set SSH_USER=boncoli
+set SSH_HOST=192.168.1.150
+set WORK_DIR=~/yata-local
+:: ▲▲ 設定 ▲▲
+
+:MENU
+cls
+echo ========================================================
+echo              YATA 管理パネル [v4.5 Dashboard-Mode]
+echo ========================================================
+
+:: --- ステータス取得 (安全のため1行に変更) ---
+echo | set /p="[Status] "
+ssh -o ConnectTimeout=3 %SSH_USER%@%SSH_HOST% "if [ -f /dev/shm/yata.db ]; then DB=/dev/shm/yata.db; else DB=~/yata-local/yata.db; fi; echo -n 'Temp: '; vcgencmd measure_temp 2>/dev/null | cut -d= -f2 | tr -d '\n' || echo -n 'N/A'; echo -n ' | Mem: '; free -h | awk 'NR==2{print $3 \"/\" $2}' | tr -d '\n'; echo -n ' | SD: '; df -h / | awk 'NR==2{print $5}' | tr -d '\n'; echo -n ' | Svr: '; if pgrep -f 'yata-server' > /dev/null 2>&1; then echo -n 'ON'; else echo -n 'OFF'; fi; echo -n ' | Total: '; sqlite3 \"$DB\" 'SELECT count(*) FROM collect;' 2>/dev/null | numfmt --grouping 2>/dev/null | tr -d '\n' || echo -n '-'; echo -n ' | ToDo: '; sqlite3 \"$DB\" 'SELECT count(*) FROM collect WHERE summary IS NULL OR length(summary)=0;' 2>/dev/null | numfmt --grouping 2>/dev/null || echo -n '-'" || echo [接続不可]
+
+echo.
+echo --------------------------------------------------------
+echo    ▼ 記事・RSS操作 (Daily Work)
+echo      1. RSS収集のみ              2. AI要約のみ
+echo      3. 全自動(YATA-Task)        4. Web UIを開く(Port:3001)
+echo.
+echo    ▼ モニタリング・可視化 (Dashboard)
+echo      5. DBビューア(sqlite-web)   6. Grafanaパネル
+echo      7. 画像生成・プレビュー     8. システム計器盤(btop)
+echo      9. 実行ログを確認
+echo.
+echo    ▼ システム・バックアップ (Admin)
+echo     10. 日次バックアップ(NAS)    11. NAS履歴確認
+echo     12. SSH接続(自由入力)        13. 再起動 (Auto Sync)
+echo     14. 停止 (Auto Sync)         15. システム・OS更新(Update)
+echo     16. フルイメージ保存(NAS)
+echo.
+echo    ▼ メンテナンス (Expert)
+echo     17. Cron停止 (自動運転OFF)   18. Cron開始 (自動運転ON)
+echo     19. RAM DBをSDへ強制同期 (Manual Sync)
+echo     20. YATA.js同期 (Remote -^> lib/YATA.js)
+echo     21. ファイル転送 (Download)
+echo.
+echo      0. 終了
+echo.
+echo    [EnterのみでStatus更新]
+echo ========================================================
+set CHOICE=
+set /p CHOICE="番号を選択してEnter: "
+
+:: --- 分岐処理 ---
+if "%CHOICE%"=="1"  goto COLLECT
+if "%CHOICE%"=="2"  goto SUMMARIZE
+if "%CHOICE%"=="3"  goto RUN_ALL
+if "%CHOICE%"=="4"  goto OPEN_WEB
+if "%CHOICE%"=="5"  goto VIEWER
+if "%CHOICE%"=="6"  goto GRAFANA
+if "%CHOICE%"=="7"  goto GEN_AND_VIEW
+if "%CHOICE%"=="8"  goto HEALTH_CHECK
+if "%CHOICE%"=="9"  goto LOG_VIEW
+if "%CHOICE%"=="10" goto BACKUP
+if "%CHOICE%"=="11" goto CHECK_NAS
+if "%CHOICE%"=="12" goto SSH_CONSOLE
+if "%CHOICE%"=="13" goto REBOOT_PI
+if "%CHOICE%"=="14" goto SHUTDOWN_PI
+if "%CHOICE%"=="15" goto UPDATE
+if "%CHOICE%"=="16" goto FULL_IMAGE_BACKUP
+if "%CHOICE%"=="17" goto STOP_CRON
+if "%CHOICE%"=="18" goto START_CRON
+if "%CHOICE%"=="19" goto MANUAL_SYNC
+if "%CHOICE%"=="20" goto SYNC_YATA_JS
+if "%CHOICE%"=="21" goto DOWNLOAD
+if "%CHOICE%"=="0"  exit
+:: 該当なしの場合はメニューへ戻る
+goto MENU
+
+:: --- 各セクションの実装 ---
+:COLLECT
+echo.
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh do-collect.js"
+pause
+goto MENU
+
+:SUMMARIZE
+echo.
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh do-summarize.js"
+pause
+goto MENU
+
+:RUN_ALL
+echo.
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh yata-task.js"
+pause
+goto MENU
+
+:OPEN_WEB
+echo.
+echo Webサーバーの応答を待機してブラウザを開きます...
+start http://%SSH_HOST%:3001
+goto MENU
+
+:VIEWER
+echo.
+echo Webサーバー(sqlite_web)を起動します。
+echo ブラウザが開くまで数秒お待ちください...
+start "" cmd /c "timeout /t 3 >nul && start http://%SSH_HOST%:8082"
+ssh -t %SSH_USER%@%SSH_HOST% "python3 -m sqlite_web /dev/shm/yata.db -H 0.0.0.0 -p 8082"
+goto MENU
+
+:GRAFANA
+echo.
+start http://%SSH_HOST%:3000
+goto MENU
+
+:GEN_AND_VIEW
+cls
+echo ========================================================
+echo               ダッシュボード表示モード選択
+echo ========================================================
+echo.
+echo    1. 通常 (Default)    : 標準ダッシュボード
+echo    2. 天気 (Weather)    : 詳細天気予報 + 3hグラフ
+echo    3. 環境 (Env)        : 室温・外気・湿度の24hグラフ
+echo.
+echo    0. 戻る
+echo.
+echo ========================================================
+set MODE_CHOICE=
+set /p MODE_CHOICE="番号を選択: "
+if "%MODE_CHOICE%"=="0" goto MENU
+echo.
+set UPDATE_EPD=n
+set /p UPDATE_EPD="【実機反映】 ラズパイの画面も書き換えますか？ (y/n) [Def: n]: "
+if /i "%UPDATE_EPD%"=="y" (
+    set EPD_FLAG=
+    echo [設定] 実機の画面を更新します。
+) else (
+    set EPD_FLAG=--no-epd
+    echo [設定] 実機は更新せず、プレビューのみ生成します。
+)
+set BASE_CMD=python3 dashboard/dashboard.py
+if "%MODE_CHOICE%"=="1" set ARGS=
+if "%MODE_CHOICE%"=="2" set ARGS=--mode weather
+if "%MODE_CHOICE%"=="3" set ARGS=--mode env
+set DASH_CMD=%BASE_CMD% %ARGS% %EPD_FLAG%
+echo.
+echo [実行中] %DASH_CMD%
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && %DASH_CMD%"
+echo.
+echo ローカルの古いキャッシュを削除して転送中...
+if exist "%TEMP%\preview.png" del "%TEMP%\preview.png"
+scp %SSH_USER%@%SSH_HOST%:/dev/shm/dashboard.png "%TEMP%\preview.png"
+if exist "%TEMP%\preview.png" (
+    start "" "%TEMP%\preview.png"
+) else (
+    echo [エラー] 画像の転送に失敗しました。
+)
+pause
+goto MENU
+
+:HEALTH_CHECK
+echo.
+:: 修正: wt(Windows Terminal)がない環境でも動くよう cmd /k に変更
+start "YATA Btop" cmd /k ssh -t %SSH_USER%@%SSH_HOST% "btop"
+goto MENU
+
+:LOG_VIEW
+echo.
+ssh -t %SSH_USER%@%SSH_HOST% "echo '=== [ 1. YATA Job Log ] ==='; tail -n 40 %WORK_DIR%/logs/yata.log; echo ''; echo '=== [ 2. Dashboard Log ] ==='; tail -n 4 %WORK_DIR%/logs/dashboard.log"
+pause
+goto MENU
+
+:BACKUP
+echo.
+echo 日次バックアップ(NAS同期)を実行中...
+ssh %SSH_USER%@%SSH_HOST% "/home/boncoli/yata-local/maintenance/do-backup.sh"
+pause
+goto MENU
+
+:CHECK_NAS
+echo.
+ssh %SSH_USER%@%SSH_HOST% "if [ -d /mnt/nas ]; then echo 'Checking NAS contents...'; ls -lh /mnt/nas/yata_db_history/ | tail -n 5; else echo '[Error] NAS is NOT mounted at /mnt/nas'; fi"
+pause
+goto MENU
+
+:FULL_IMAGE_BACKUP
+echo.
+echo 【警告】システム全体のフルバックアップを開始します。
+echo ※処理中はシステム負荷が高まります。
+set /p CONFIRM="実行しますか？ (y/n): "
+if /i not "%CONFIRM%"=="y" goto MENU
+ssh -t %SSH_USER%@%SSH_HOST% "if mountpoint -q /mnt/nas; then sudo image-backup /mnt/nas/rpi_complete_backup.img; else echo '[Critical Error] NAS not mounted. Backup aborted to prevent data loss.'; fi"
+pause
+goto MENU
+
+:STOP_CRON
+echo.
+echo Cronを停止しています...
+ssh -t %SSH_USER%@%SSH_HOST% "sudo systemctl stop cron && systemctl status cron --no-pager"
+echo.
+echo [注意] 自動運転がOFFになりました。作業後に18番で再開してください。
+pause
+goto MENU
+
+:START_CRON
+echo.
+echo Cronを開始しています...
+ssh -t %SSH_USER%@%SSH_HOST% "sudo systemctl start cron && systemctl status cron --no-pager"
+echo.
+echo [OK] 自動運転が再開されました。
+pause
+goto MENU
+
+:MANUAL_SYNC
+echo.
+echo ========================================================
+echo [実行中] RAM DB -> SDカード 強制同期
+echo ========================================================
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --sync-only"
+echo.
+echo [完了]
+pause
+goto MENU
+
+:SSH_CONSOLE
+echo.
+echo SSHコンソールを別ウィンドウで起動します...
+:: 修正: cmd /c(閉じる) を cmd /k(維持) に変更し、落ちないように修正
+start "YATA SSH Console" cmd /c ssh -t %SSH_USER%@%SSH_HOST% "cd %WORK_DIR%; bash --login"
+goto MENU
+
+:REBOOT_PI
+echo.
+set /p CONFIRM="データを同期して再起動しますか？ (y/n): "
+if /i not "%CONFIRM%"=="y" goto MENU
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --sync-only"
+ssh %SSH_USER%@%SSH_HOST% "sudo reboot"
+exit
+
+:SHUTDOWN_PI
+echo.
+set /p CONFIRM="データを同期して停止しますか？ (y/n): "
+if /i not "%CONFIRM%"=="y" goto MENU
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --sync-only"
+ssh %SSH_USER%@%SSH_HOST% "sudo poweroff"
+exit
+
+:UPDATE
+echo.
+echo システム更新を開始します。入力待ちが発生する場合があります。
+ssh -t %SSH_USER%@%SSH_HOST% "sudo apt update && sudo apt upgrade -y && cd ~/yata-local && git pull"
+pause
+goto MENU
+
+:SYNC_YATA_JS
+echo.
+echo ========================================================
+echo [実行中] YATA.js 同期 (origin/main -^> lib/YATA.js)
+echo ========================================================
+:: git fetchで最新情報を取得し、showコマンドで特定ファイルだけを上書き
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && git fetch origin && if ! git diff --quiet origin/main:lib/YATA.js lib/YATA.js; then git show origin/main:lib/YATA.js > lib/YATA.js && echo '[Update] New logic applied!'; else echo '[Skip] Already up to date.'; fi && ls -l lib/YATA.js"
+echo.
+echo [完了] リモートの最新ロジックを反映しました。
+echo ※ lib/YATA.js は GAS との共通コードとして維持されます。
+pause
+goto MENU
+
+:DOWNLOAD
+echo.
+echo [File Download]
+set /p R_PATH="ラズパイ側のフルパスを入力してください: "
+if "%R_PATH%"=="" goto MENU
+set L_PATH="%USERPROFILE%\Desktop\"
+echo デスクトップへ転送中...
+scp %SSH_USER%@%SSH_HOST%:"%R_PATH%" %L_PATH%
+if %ERRORLEVEL% equ 0 (
+    echo [OK]
+) else (
+    echo [Error]
+)
+pause
+goto MENU
