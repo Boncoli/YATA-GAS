@@ -29,8 +29,9 @@ trap 'kill $MONITOR_PID 2>/dev/null; exit' SIGINT SIGTERM EXIT
         elif [[ "$clean_line" =~ "__VSCODE__" ]]; then
             code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
         elif [[ "$clean_line" =~ "__TERMINAL__" ]]; then
-            # PowerShell を新しい独立したウィンドウで開く
-            powershell.exe -Command "Start-Process powershell.exe -ArgumentList '-Command',\"ssh -t $SSH_USER@$SSH_HOST 'cd $WORK_DIR && exec bash'\""
+            # Windows Terminal (wt.exe) を使ってフルカラー対応で開く。
+            # ※wt.exeがない古い環境の場合は start "YATA Terminal" ssh ... に書き換えてください。
+            wt.exe ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && exec bash"
         elif [[ "$clean_line" =~ "__PREVIEW__" ]]; then
             scp "$SSH_USER@$SSH_HOST:/dev/shm/dashboard.png" "/tmp/yata_preview.png" 2>/dev/null
             start "" "/tmp/yata_preview.png"
