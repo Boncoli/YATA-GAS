@@ -1,28 +1,25 @@
 #!/bin/zsh
-# --- YATA Launcher for Mac (.command) v5.3.0 ---
-# 🚀 Low-Latency & Signal-Driven Edition
-# 
-# 【使い方】
-# デスクトップの yata-console.command にこの内容を貼り付け、
-# chmod +x ~/Desktop/yata-console.command を実行してください。
+# --- YATA Launcher for Mac (.command) v5.4.0 ---
+# 🚀 Session-Isolated & Robust Signal Edition (Sync with Win v5.4.0)
 
-# ▼▼ 設定 (Tailscale IP) ▼▼
+# ▼▼ Settings (Local IP) ▼▼
 SSH_USER="boncoli"
-SSH_HOST="100.xxx.xxx.xxx" # <--- ここにラズパイの Tailscale IP を入れてください
+SSH_HOST="192.168.1.150"
 WORK_DIR="/home/boncoli/yata-local"
-SIGNAL_FILE="/dev/shm/yata-console.signal"
-# ▲▲ 設定 ▲▲
+# ▲▲ Settings ▲▲
 
-echo "\033[0;36mConnecting to YATA (Host: $SSH_HOST)...\033[0m"
+# 🌟 [新機能] セッションごとに一意の信号ファイルを生成
+SESSION_ID=$RANDOM
+SIGNAL_FILE="/dev/shm/yata-console.$SESSION_ID.signal"
 
-# 🌟 [新機能] 信号監視プロセスをバックグラウンドで開始
+echo "\033[0;36mConnecting to YATA (Session: $SESSION_ID)...\033[0m"
+
+# 🌟 [重要] 終了時にバックグラウンドプロセスを確実に殺す
+trap 'kill $MONITOR_PID 2>/dev/null; exit' INT TERM EXIT
+
+# 信号監視プロセスをバックグラウンドで開始
 (
-    # 接続直後に信号ファイルを空にする
-    ssh "$SSH_USER@$SSH_HOST" "> $SIGNAL_FILE" 2>/dev/null
-    
-    # 信号ファイルを監視（リアルタイム）
-    ssh "$SSH_USER@$SSH_HOST" "tail -f $SIGNAL_FILE" 2>/dev/null | while IFS= read -r line; do
-        # 制御文字除去
+    ssh "$SSH_USER@$SSH_HOST" "touch $SIGNAL_FILE && tail -n 0 -f $SIGNAL_FILE" 2>/dev/null | while IFS= read -r line; do
         clean_line=$(echo "$line" | tr -d '\r' | xargs echo 2>/dev/null)
         
         if [[ "$clean_line" =~ "__OPEN_URL__:(.*)" ]]; then
@@ -32,7 +29,7 @@ echo "\033[0;36mConnecting to YATA (Host: $SSH_HOST)...\033[0m"
             code --folder-uri "vscode-remote://ssh-remote+$SSH_USER@$SSH_HOST$WORK_DIR"
         elif [[ "$clean_line" =~ "__TERMINAL__" ]]; then
             # 🍎 AppleScript で新しいターミナルを開き、SSH 接続する
-            osascript -e "tell application \"Terminal\" to do script \"ssh -t $SSH_USER@$SSH_HOST 'cd $WORK_DIR && exec bash'\"" > /dev/null
+            osascript -e "tell application \"Terminal\" to do script \"ssh -t $SSH_USER@$SSH_HOST 'export TERM=xterm-256color && cd $WORK_DIR && exec bash'\"" > /dev/null
         elif [[ "$clean_line" =~ "__PREVIEW__" ]]; then
             scp "$SSH_USER@$SSH_HOST:/dev/shm/dashboard.png" "/tmp/yata_preview.png" 2>/dev/null
             open "/tmp/yata_preview.png"
@@ -41,12 +38,11 @@ echo "\033[0;36mConnecting to YATA (Host: $SSH_HOST)...\033[0m"
 ) &
 MONITOR_PID=$!
 
-# 🌟 [メイン] SSH インタラクティブ・セッション
-# パイプを通さず、直接 Terminal に制御を渡す
-ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && ./yata-menu-core.sh"
+# [メイン] SSH インタラクティブ・セッション
+ssh -t "$SSH_USER@$SSH_HOST" "cd $WORK_DIR && ./yata-menu-core.sh $SIGNAL_FILE"
 
-# 終了時に監視プロセスを停止
-kill $MONITOR_PID 2>/dev/null
+# 終了時にラズパイ側の信号ファイルを掃除
+ssh "$SSH_USER@$SSH_HOST" "rm $SIGNAL_FILE" 2>/dev/null
 
 echo ""
 echo "\033[1;33m[YATA Console Finished]\033[0m"
