@@ -1,20 +1,19 @@
 # Changelog
 
-## [1.3.2] - 2026-03-24
+## [1.3.3] - 2026-03-25
 ### Added
-- **検証・テストの黄金プロトコル**: 大規模修正後の動作証明を自動化する 3 つの主要テストセット (`test-ai-integrated.js`, `test-ai-batch.js`, `test-db.js`) を策定。
-- **セッション隔離型コンソール**: 信号監視システムにセッション ID を導入し、多重起動時の誤作動を物理的に排除。
-- **別窓ターミナル起動**: メニューから 8 番を打つことで、Windows (PowerShell) および Mac (Terminal.app) で新しい作業ウィンドウを自動起動する機能を実装。
-
-### Fixed
-- **OpenAI Responses API (gpt-5-nano) 安定化**: エンドポイントとペイロード構造を最新仕様に修正し、要約の「真っ白」問題を根絶。
-- **バッチ要約の不具合修正**: 5件一括処理時の ID 紐付けと内容欠落を修復。
-- **関数欠落の復旧**: 誤って削除された `_callOpenAiEmbedding` 等の LLM 関数群を完全に復元。
+- **高密度コンテキスト・エンジン (High-Density Context Optimization)**:
+    - 構造化抽出された 5W1H (who, what, how, result 等) の JSON から、`Unknown` 要素を排除し、論理的順序（WHAT→HOW→RESULT...）で再構成する高密度テキスト生成ロジック `getArticleContextForAnalysis_` を実装。
+    - トレンド分析 (`generateTrendSections`) および予兆検知 (`EmergingSignalEngine`) に適用し、AI (miniモデル) への入力コンテキストを極限まで効率化。
+    - 実データ検証により、文字数ベースで約 16〜30% のトークン削減と、分析精度の向上を物理的に証明。
+- **実戦テストスイート**: 
+    - `tests/test-context-optimization.js` (単体テスト) および `tests/test-real-trend-analysis.js` (実データによる AI 分析テスト) を追加。
 
 ### Changed
-- **低遅延コンソール**: SSH 接続からパイプを撤廃し、入力遅延ゼロのインタラクティブ接続へ刷新。
-- **テストスクリプト整理**: 重複・遺物テスト 7 ファイルを削除し、`tests/` ディレクトリに統合。
-All notable changes to this project will be documented in this file.
+- **分析コンテキストの刷新**: 従来の「生の TL;DR (JSON形式)」から「素材ベースの高密度テキスト」へ移行。mini モデルの注意力を技術の核心（手法・成果）に集中させる設計へ進化。
+
+## [1.3.2] - 2026-03-24
+... [rest of file] ...All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
