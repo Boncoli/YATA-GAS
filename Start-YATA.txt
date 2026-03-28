@@ -12,7 +12,7 @@ set WORK_DIR=~/yata-local
 :MENU
 cls
 echo ========================================================
-echo              YATA 管理パネル [v4.5 Dashboard-Mode]
+echo              YATA 管理パネル [v4.6 Modern-Log]
 echo ========================================================
 
 :: --- ステータス取得 (安全のため1行に変更) ---
@@ -28,7 +28,7 @@ echo.
 echo    ▼ モニタリング・可視化 (Dashboard)
 echo      5. DBビューア(sqlite-web)   6. Grafanaパネル
 echo      7. 画像生成・プレビュー     8. システム計器盤(btop)
-echo      9. 実行ログを確認
+echo      9. 実行ログ(RAM)を確認
 echo.
 echo    ▼ システム・バックアップ (Admin)
 echo     10. 日次バックアップ(NAS)    11. NAS履歴確認
@@ -72,25 +72,24 @@ if "%CHOICE%"=="19" goto MANUAL_SYNC
 if "%CHOICE%"=="20" goto SYNC_YATA_JS
 if "%CHOICE%"=="21" goto DOWNLOAD
 if "%CHOICE%"=="0"  exit
-:: 該当なしの場合はメニューへ戻る
 goto MENU
 
 :: --- 各セクションの実装 ---
 :COLLECT
 echo.
-ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh do-collect.js"
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --no-sync tasks/do-collect.js"
 pause
 goto MENU
 
 :SUMMARIZE
 echo.
-ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh do-summarize.js"
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --no-sync tasks/do-summarize.js"
 pause
 goto MENU
 
 :RUN_ALL
 echo.
-ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh yata-task.js"
+ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && ./run-ram.sh --no-sync tasks/yata-task.js"
 pause
 goto MENU
 
@@ -161,13 +160,12 @@ goto MENU
 
 :HEALTH_CHECK
 echo.
-:: 修正: wt(Windows Terminal)がない環境でも動くよう cmd /k に変更
 start "YATA Btop" cmd /k ssh -t %SSH_USER%@%SSH_HOST% "btop"
 goto MENU
 
 :LOG_VIEW
 echo.
-ssh -t %SSH_USER%@%SSH_HOST% "echo '=== [ 1. YATA Job Log ] ==='; tail -n 40 %WORK_DIR%/logs/yata.log; echo ''; echo '=== [ 2. Dashboard Log ] ==='; tail -n 4 %WORK_DIR%/logs/dashboard.log"
+ssh -t %SSH_USER%@%SSH_HOST% "echo '=== [ 1. YATA Job Log (RAM) ] ==='; tail -n 40 /dev/shm/yata_task.log; echo ''; echo '=== [ 2. Dashboard Log (RAM) ] ==='; tail -n 10 /dev/shm/yata_dashboard.log"
 pause
 goto MENU
 
@@ -226,7 +224,6 @@ goto MENU
 :SSH_CONSOLE
 echo.
 echo SSHコンソールを別ウィンドウで起動します...
-:: 修正: cmd /c(閉じる) を cmd /k(維持) に変更し、落ちないように修正
 start "YATA SSH Console" cmd /c ssh -t %SSH_USER%@%SSH_HOST% "cd %WORK_DIR%; bash --login"
 goto MENU
 
@@ -256,13 +253,11 @@ goto MENU
 :SYNC_YATA_JS
 echo.
 echo ========================================================
-echo [実行中] YATA.js 同期 (origin/main -^> lib/YATA.js)
+echo [実行中] YATA.js 同期 (origin/main -> lib/YATA.js)
 echo ========================================================
-:: git fetchで最新情報を取得し、showコマンドで特定ファイルだけを上書き
 ssh %SSH_USER%@%SSH_HOST% "cd %WORK_DIR% && git fetch origin && if ! git diff --quiet origin/main:lib/YATA.js lib/YATA.js; then git show origin/main:lib/YATA.js > lib/YATA.js && echo '[Update] New logic applied!'; else echo '[Skip] Already up to date.'; fi && ls -l lib/YATA.js"
 echo.
 echo [完了] リモートの最新ロジックを反映しました。
-echo ※ lib/YATA.js は GAS との共通コードとして維持されます。
 pause
 goto MENU
 
