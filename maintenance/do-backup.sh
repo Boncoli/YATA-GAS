@@ -5,7 +5,7 @@ HOME_DIR="/home/boncoli"
 YATA_DIR="$HOME_DIR/yata-local"
 SD_BACKUP="/mnt/backup"
 NAS_BACKUP="/mnt/nas"
-LOG_FILE="$YATA_DIR/backup.log"
+LOG_FILE="$YATA_DIR/logs/backup.log"
 
 export PATH="/home/boncoli/.nvm/versions/node/v24.12.0/bin:$PATH"
 
@@ -19,7 +19,8 @@ send_discord_alert() {
 
 # .env から変数を読み込む (Webhook URL取得用)
 if [ -f "$YATA_DIR/.env" ]; then
-    export $(grep -v '^#' "$YATA_DIR/.env" | xargs)
+    # コメントと空行を除去し、安全に export する
+    eval $(grep -v '^#' "$YATA_DIR/.env" | grep -v '^[[:space:]]*$' | sed 's/^/export /')
 fi
 
 echo "--- Backup Start: $(date) ---" >> "$LOG_FILE"

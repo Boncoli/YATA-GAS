@@ -403,7 +403,7 @@ def create_dashboard_layers():
         cur.execute("SELECT living_temp, living_humi FROM remo_log ORDER BY datetime DESC LIMIT 1")
         remo_row = cur.fetchone()
         
-        # 【改善】最新1時間以内の記事から、ソースが重複しないようにランダムに3件選定
+        # 【改善】最新1時間以内の記事から、ソースが重複しないように日付順に3件選定
         # 未来の日付(2027年など)を除外し、JST/UTCの差を考慮。datetime()で型変換して確実に比較。
         news_query = """
             SELECT text, source, date FROM (
@@ -417,7 +417,7 @@ def create_dashboard_layers():
                   AND datetime(date) <= datetime('now', '+1 hour')
                   AND (summary IS NOT NULL AND summary != '' OR title IS NOT NULL AND title != '')
             ) WHERE rn = 1
-            ORDER BY RANDOM() LIMIT 3
+            ORDER BY date DESC LIMIT 3
         """
         cur.execute(news_query)
         raw_news_rows = cur.fetchall()
