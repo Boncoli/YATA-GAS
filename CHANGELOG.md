@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.4.0] - 2026-03-28 (The Great Integration: 真・全統合版)
+今回のアップデートは、ローカル環境 (Raspberry Pi) で先行していた高度な分析機能と、本家 (GAS/main) で導入された新しいデータ構造を完璧に融合させた「次世代の統合安定版」です。
+
+### Added
+- **1.4.0 構造化JSON (5W1H) の完全統合**: AI要約結果を個別のカラム（TL;DR, WHO, WHAT, HOW等）に保存する最新仕様を SQLite 側でも完全統合。
+- **高密度コンテキスト・エンジン (Local Exclusive)**: ローカル独自の `getArticleContextForAnalysis_` を死守。分析時に JSON から「Unknown」を排除し、最高密度の文脈を LLM に供給することで分析精度を劇的に向上。
+- **OpenAI Responses API (gpt-5-nano) の安定稼働**: 最新エンドポイントを用いた爆速・低コスト要約を実現。
+- **環境診断・自動初期化プロトコル**: `initializeSystemProperties()` による設定不備の自動修復機能を統合。
+- **過去記事の構造化バックフィルツール**: `toolBackfillStructuredSummaries` を追加。
+
+### Fixed
+- **Usage 記録の正常化**: API 通信ごとのモデル名と回数がログの最後に正確に表示されるよう修正。
+- **DB 整合性の修復**: 1.2.5 移行に伴う URL インデックス（index 3）のズレを修正し、ゴミ ID を一掃。
+- **ベクトル計算の高速化**: 正規化済みベクトルを活かした内積 (Dot Product) 計算への置換。
+
 ## [1.3.3] - 2026-03-25
 ### Added
 - **高密度コンテキスト・エンジン (High-Density Context Optimization)**:
