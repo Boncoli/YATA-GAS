@@ -138,7 +138,11 @@ fi
 if [ "$READ_ONLY_MODE" = false ]; then
     echo "[Wrapper] Cleaning up duplicates using maintenance/clean-db-duplicates.js..."
     # 💡 直接 SQL を叩くのは危険なため、ガードの効いた JS スクリプトを呼び出す
-    /home/boncoli/.nvm/versions/node/v24.12.0/bin/node "$SCRIPT_DIR/maintenance/clean-db-duplicates.js" >> "$LOG_FILE" 2>&1
+    if [ -n "$LOG_FILE" ]; then
+        /home/boncoli/.nvm/versions/node/v24.12.0/bin/node "$SCRIPT_DIR/maintenance/clean-db-duplicates.js" >> "$LOG_FILE" 2>&1
+    else
+        /home/boncoli/.nvm/versions/node/v24.12.0/bin/node "$SCRIPT_DIR/maintenance/clean-db-duplicates.js"
+    fi
 fi
 
 # --- 3. 終わったらRAMからSDへ書き戻す (データの保存) ---
