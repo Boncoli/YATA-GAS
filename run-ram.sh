@@ -136,13 +136,34 @@ fi
 
 # --- 2.5 重複データの削除 (お掃除機能) ---
 if [ "$READ_ONLY_MODE" = false ]; then
-    echo "[Wrapper] Cleaning up duplicates..."
-    # [Nuclear Option] タイトル毎にランク付け(1.要約あり優先 2.新着優先)し、1位以外を全て削除
-    sqlite3 "$DB_PATH" "DELETE FROM collect WHERE rowid IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY title ORDER BY (CASE WHEN length(summary) > 5 THEN 1 ELSE 0 END) DESC, rowid DESC) as rn FROM collect) WHERE rn > 1);"
+    echo "[Wrapper] Cleaning up duplicates using maintenance/clean-db-duplicates.js..."
+    # 💡 直接 SQL を叩くのは危険なため、ガードの効いた JS スクリプトを呼び出す
+    /home/boncoli/.nvm/versions/node/v24.12.0/bin/node "$SCRIPT_DIR/maintenance/clean-db-duplicates.js" >> "$LOG_FILE" 2>&1
 fi
 
 # --- 3. 終わったらRAMからSDへ書き戻す (データの保存) ---
 if [ "$SYNC_BACK" = true ]; then
+    echo "[Wrapper] 🛡️ Performing safety check before syncing..."
+    
+    # 🌟 Row Count Guard (急激なデータ減少の検知)
+    COUNT_RAM=$(sqlite3 "$RAM_DB" "SELECT count(*) FROM collect;" 2>/dev/null || echo 0)
+    COUNT_SD=$(sqlite3 "$REAL_DB" "SELECT count(*) FROM collect;" 2>/dev/null || echo 0)
+    
+    # 閾値: もしSD側に100件以上データがあり、かつRAM側がSD側の 80% 以下に減っていたら「異常」とみなす
+    # (大量削除メンテナンス時を除き、通常の使用で20%も一気に減ることはないため)
+    if [ "$COUNT_SD" -gt 100 ]; then
+        THRESHOLD=$(( COUNT_SD * 80 / 100 ))
+        if [ "$COUNT_RAM" -lt "$THRESHOLD" ]; then
+            echo "🚨 [CRITICAL ERROR] Data loss detected! (SD: $COUNT_SD -> RAM: $COUNT_RAM)"
+            echo "🚨 Sync-back aborted to protect physical DB. Please check the logic."
+            # システム警告通知 (もし設定があれば)
+            if [ -n "$DISCORD_WEBHOOK_URL_SYSTEM" ]; then
+                curl -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚨 **YATA Data Loss Guard**: Sync aborted! ($COUNT_SD -> $COUNT_RAM)\"}" "$DISCORD_WEBHOOK_URL_SYSTEM" > /dev/null 2>&1
+            fi
+            exit 1
+        fi
+    fi
+
     echo "[Wrapper] Syncing back to SD card..."
     # 排他ロックを利用し、複数プロセスが同時に書き戻す競合を防止
     exec 9>"/tmp/yata-sd-copy.lock"
