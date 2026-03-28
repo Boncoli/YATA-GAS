@@ -11,7 +11,7 @@
 
 ## 2. アーキテクチャの鉄則とリソース保護 (Architecture & Safety)
 - **RAMディスク運用**: DB書き込みを伴う処理は必ず `run-ram.sh` 経由で行え。稼働中SQLiteへの `cp/mv` 禁止。`.backup` 前後に `PRAGMA integrity_check;` を実行し、SDカード寿命を死守せよ。
-- **GAS互換性と聖域化**: `lib/YATA.js` は本家（GAS共通）の聖域である。非同期関数は避け、Node固有機能は `lib/gas-bridge.js` で吸収せよ。本体変更は論理的説明と承諾を必須とする。
+- **GAS互換性と聖域化**: `lib/YATA.js` は本家（GAS共通）の聖域である。非同期関数は避け、Node固有機能は `lib/gas-bridge.js` で吸収せよ。本体変更は論理的説明と承諾を必須とする。修正時は `write_file` による全消去リスクを避けるため、`replace` による手術的修正を原則優先せよ。
 - **リソース保護**: 重い処理は `nice -n 19 taskset -c 0-2 ionice -c 3` をプリフィックスとし、1コアをシステム用に開放せよ。`sync-fetch` 禁止（curl使用）。PM2は `--nostream` 徹底。
 - **設定管理**: `rss-list.json`, `prompts.json` 等のローカル設定管理を尊重し、スプレッドシートへの過度な依存を避けよ。
 
