@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.2.3] - 2026-03-29
+### Fixed
+- **OpenAI Responses API トークン記録の修正 (15/17問題)**: 
+    - `/v1/responses` API が返す `usage` オブジェクトのキーが `prompt_tokens` ではなく `input_tokens` であることに対応。
+    - 従来のキーが見つからない場合に `[object Object]` の文字数 (15) をカウントしてしまっていたフォールバック挙動を修正し、新旧両方のキー名（`input_tokens` / `output_tokens`）を正しくパース可能に。
+    - `reasoning_tokens` も `output_tokens_details` から正確に抽出するよう拡張。
+
+## [1.4.2.2] - 2026-03-28
+### Added
+- **Windows 管理バッチの近代化 (v4.6 Modern-Log)**:
+    - ステータス表示部を大幅刷新。[RAM/SD]識別、本日新規数(+New)、要約待ち(Wait)、累計トークン(Tk)、最新天気・気温、AQI（空気質指数）を一画面に統合。
+    - **鉄壁のエスケープ防壁**: Windows cmd.exe と SSH Bash 間の特殊記号衝突（||,シングルクォート等）を、SQLite `printf` 関数と `printf` フォーマットによる文字列構築に一本化することで完全に解消。
+    - **集計ロジックの厳密化**: 本日記事カウントへの JST (+9h) 補正適用、および要約待ちカウントの参照先を `abstract` カラム（本文保持）へ修正し、実態に即した数値を表示。
+
 ## [1.4.2.1] - 2026-03-28
 ### Added
 - **物理的データ減少ガード (Row Count Guard) の実装**:
