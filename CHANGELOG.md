@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.4-local] - 2026-03-30
+### Added
+- **ADLM 専用スクレイパーの移植**: 本家 v1.4.4 より Clinical Laboratory News (ADLM) の直接収集ロジック (`collectAdlmFeed_`) を手術的に移植。ローカル環境での動作を確認済み。
+- **サーバー群の完全復旧 & PM2永続化**: 再起動後に消失した PM2 プロセス（`yata-bot`, `yata-ai-server`）をガイドに基づき完全復旧。`pm2 save` により再起動時の自動起動を物理的に確定。
+- **Windows 管理バッチの永続化対応**: シャットダウン・再起動時の SSH コマンドに `pm2 save` を組み込み、プロセスの消失を未然に防ぐ防壁を強化。
+
+### Changed
+- **GAS Bridge の一括更新対応**: v1.4.4 の高速バックフィルロジックに対応するため、`setValues` での複数列一括更新をサポート。1回の SQL 命令で 9 カラムを同時に書き換える SQLite 最適化を実装。
+
+### Fixed
+- **PM2 プロセス名の整合性修正**: `yata-llm` をガイド記載の正本名 `yata-ai-server` へ改名。
+
 ## [1.4.2.3] - 2026-03-29
 ### Fixed
 - **OpenAI Responses API トークン記録の修正 (15/17問題)**: 
