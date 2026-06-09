@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <base target="_top">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>論文要約ツール</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans JP', sans-serif;
+            background-color: #f0f2f5;
+        }
+
+        .container-fluid {
+            max-width: 1600px;
+        }
+
+        .card {
+            border: none;
+            border-radius: 0.8rem;
+            transition: all 0.2s ease-in-out;
+        }
+        
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #dee2e6;
+            font-weight: 500;
+        }
+
+        .form-control, .form-select {
+            border-radius: 0.5rem;
+        }
+
+        .btn-primary {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            padding: 0.6rem 1.5rem;
+        }
+
+        #results-container .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15); /* !important を削除 */
+        }
+
+        .summary-detail-section {
+            display: none; /* 初期状態では非表示 */
+        }
+        .toggle-summary-btn {
+            cursor: pointer;
+            color: #0d6efd; /* Bootstrap primary color */
+            text-decoration: underline;
+        }
+
+        #status-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.8);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            backdrop-filter: blur(4px);
+        }
+        
+        .summary-content {
+            white-space: pre-wrap;
+            background-color: #f8f9fa;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            /* text-align: left; を削除 */
+        }
+        .summary-content strong {
+            /* display: block; と text-align: left; を削除 */
+        }
+        
+        /* 論文のメインタイトルを左揃えにするための強化されたルール */
+        .card-body .card-title {
+            /* display: block !important; と width: 100% !important; を削除 */
+            text-align: left; /* !important を削除 */
+        }
+
+        .link-icon {
+            width: 1em;
+            height: 1em;
+            vertical-align: -0.125em;
+            margin-right: 0.3rem;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="status-overlay" style="display: none;">
+        <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p id="status-text" class="mt-3 fs-5 text-secondary">処理中です...</p>
+    </div>
+
+    <div class="container-fluid p-4">
+        <header class="text-center mb-4 position-relative">
+            <div style="position: absolute; top: 0; right: 0;">
+                <a href="<?= ScriptApp.getService().getUrl() ?>" target="_top" class="btn btn-outline-secondary btn-sm">
+                    🏠 メイン画面へ戻る
+                </a>
+            </div>
+            
+            <h1 class="display-6">AI論文要約ツール</h1>
+            <p class="text-muted">PubMed / arXiv の論文を検索し、AIが要約を作成します。</p>
+        </header>
+    <div class="row">
+            <div class="col-lg-4 col-xl-3">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-search me-2" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+                        検索条件
+                    </div>
+                    <div class="card-body">
+                        <form id="summaryForm">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">入力タイプ</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="inputType" id="inputTypeKeyword" value="keyword" checked onchange="toggleInputType()">
+                                    <label class="form-check-label" for="inputTypeKeyword">
+                                        キーワード検索
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="inputType" id="inputTypeUrl" value="url" onchange="toggleInputType()">
+                                    <label class="form-check-label" for="inputTypeUrl">
+                                        URL要約
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="keywordInputContainer">
+                                <div class="mb-3">
+                                    <label for="searchWord" class="form-label fw-bold">キーワード</label>
+                                    <input type="text" class="form-control" id="searchWord" placeholder="例: cancer[majr]" required>
+                                    <div class="form-text">PubMedの検索タグが利用できます。</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="sourceFlag" class="form-label fw-bold">検索ソース</label>
+                                    <select class="form-select" id="sourceFlag">
+                                        <option value="PubMed" selected>PubMed</option>
+                                        <option value="arXiv">arXiv</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="mb-3" id="urlInputContainer" style="display: none;">
+                                <label for="urlInput" class="form-label fw-bold">要約するURL</label>
+                                <input type="url" class="form-control" id="urlInput" placeholder="例: https://example.com/article.html">
+                                <div class="form-text">要約したいWebページのURLを入力してください。</div>
+                                <div class="text-danger small mt-1">
+                                    ※ URL要約はコンテンツを切り詰めるため、情報が欠落し、要約が不正確になる可能性があります。
+                                </div>
+                            </div>
+                            
+                            <div class="row g-2 mb-3">
+                                <div class="col">
+                                    <label for="startDate" class="form-label">検索開始日</label>
+                                    <input type="date" class="form-control" id="startDate">
+                                </div>
+                                <div class="col">
+                                    <label for="endDate" class="form-label">検索終了日</label>
+                                    <input type="date" class="form-control" id="endDate">
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="maxPaperCount" class="form-label">最大要約数</label>
+                                <input type="number" class="form-control" id="maxPaperCount" value="3" min="1" max="10" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="language" class="form-label">要約言語</label>
+                                <select class="form-select" id="language">
+                                    <option value="JP">日本語</option>
+                                    <option value="EN">英語</option>
+                                </select>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="sendEmailFlag" onchange="toggleEmailInput()">
+                                <label class="form-check-label" for="sendEmailFlag">要約をメールで送信</label>
+                            </div>
+                            <div class="mb-3" id="emailInputContainer" style="display: none;">
+                                <label for="email" class="form-label">メールアドレス</label>
+                                <input type="email" class="form-control" id="email" placeholder="your@email.com">
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button type="button" class="btn btn-primary" onclick="handleRun()">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-play-fill me-1" viewBox="0 0 16 16"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+                                    要約を実行
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" onclick="clearForm()">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-counterclockwise me-1" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 3a5 5 0 1 1-4.546 2.916.5.5 0 1 0-.908-.417A6 6 0 1 0 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466z"/></svg>
+                                    クリア
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-8 col-xl-9">
+                <div id="results-area">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h4 class="mb-0">要約結果</h4>
+                        <div class="text-end">
+                            <div id="result-stats" class="text-muted fw-bold"></div>
+                            <div id="model-used" class="text-muted small"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="expanded-query-container" class="text-muted small mb-4" style="display: none; background-color: #e9ecef; padding: 8px 12px; border-radius: 6px; font-family: monospace; word-break: break-all;">
+                        <span title="AIが自動拡張した検索クエリです">🔍 拡張クエリ: </span>
+                        <span id="expanded-query-text"></span>
+                    </div>
+
+                    <div id="results-container" class="row g-4">
+                        <!-- 結果カードはここに挿入されます -->
+                        <div id="initial-message" class="text-center text-muted mt-5">
+                            <p>ここに要約結果が表示されます。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let formElements; // グローバルスコープで宣言
+
+        function toggleEmailInput() {
+            const emailContainer = document.getElementById("emailInputContainer");
+            const sendEmailFlag = formElements.sendEmailFlag.checked;
+            emailContainer.style.display = sendEmailFlag ? "block" : "none";
+            formElements.email.required = sendEmailFlag; // メールアドレスを必須にする
+        }
+
+        function showStatus(message) {
+            document.getElementById("status-overlay").style.display = "flex";
+            document.getElementById("status-text").textContent = message;
+        }
+
+        function hideStatus() {
+            document.getElementById("status-overlay").style.display = "none";
+        }
+
+        let statusInterval; // ステータス更新用のインターバルID
+
+        function startStatusPolling() {
+            statusInterval = setInterval(() => {
+                google.script.run
+                    .withSuccessHandler(status => {
+                        document.getElementById("status-text").textContent = status;
+                    })
+                    .getScriptStatus();
+            }, 1000); // 1秒ごとにステータスを更新
+        }
+
+        function stopStatusPolling() {
+            clearInterval(statusInterval);
+            google.script.run.clearScriptStatus(); // 処理完了後にステータスをクリア
+        }
+
+        function saveSettings() {
+            const settings = {
+                inputType: document.querySelector('input[name="inputType"]:checked').value, // 追加
+                searchWord: formElements.searchWord.value,
+                urlInput: formElements.urlInput.value, // 追加
+                sourceFlag: formElements.sourceFlag.value,
+                startDate: formElements.startDate.value,
+                endDate: formElements.endDate.value,
+                maxPaperCount: formElements.maxPaperCount.value,
+                language: formElements.language.value,
+                sendEmailFlag: formElements.sendEmailFlag.checked,
+                email: formElements.email.value
+            };
+            localStorage.setItem("summaryToolSettings", JSON.stringify(settings));
+        }
+
+        function loadSettings() {
+            const settings = JSON.parse(localStorage.getItem("summaryToolSettings"));
+            if (settings) {
+                // inputTypeのラジオボタンを復元
+                const inputTypeRadio = document.getElementById('inputType' + (settings.inputType === 'url' ? 'Url' : 'Keyword'));
+                if (inputTypeRadio) {
+                    inputTypeRadio.checked = true;
+                    toggleInputType(); // UIの状態を更新
+                }
+
+                formElements.searchWord.value = settings.searchWord || "";
+                formElements.urlInput.value = settings.urlInput || ""; // 追加
+                formElements.sourceFlag.value = settings.sourceFlag || "PubMed";
+                formElements.startDate.value = settings.startDate || "";
+                formElements.endDate.value = settings.endDate || "";
+                formElements.maxPaperCount.value = settings.maxPaperCount || "3";
+                formElements.language.value = settings.language || "JP";
+                formElements.sendEmailFlag.checked = settings.sendEmailFlag || false;
+                formElements.email.value = settings.email || "";
+                toggleEmailInput(); // メール入力欄の表示を更新
+            }
+        }
+
+        function clearForm() {
+            document.getElementById("inputTypeKeyword").checked = true; // キーワード検索をデフォルトに
+            toggleInputType(); // UIを更新
+
+            formElements.searchWord.value = "";
+            formElements.urlInput.value = ""; // 追加
+            formElements.sourceFlag.value = "PubMed";
+            formElements.maxPaperCount.value = "3";
+            formElements.language.value = "JP";
+            formElements.sendEmailFlag.checked = false;
+            formElements.email.value = "";
+            toggleEmailInput();
+            setDefaultDates(); // 日付をデフォルトに戻す
+            localStorage.removeItem("summaryToolSettings"); // 保存された設定もクリア
+        }
+
+        function setDefaultDates() {
+            const today = new Date();
+            const fourteenDaysAgo = new Date(today);
+            fourteenDaysAgo.setDate(today.getDate() - 14);
+            const sevenDaysAgo = new Date(today);
+            sevenDaysAgo.setDate(today.getDate() - 7);
+
+            formElements.startDate.value = fourteenDaysAgo.toISOString().split('T')[0];
+            formElements.endDate.value = sevenDaysAgo.toISOString().split('T')[0];
+        }
+
+        function handleRun() {
+            // クライアントサイドでの入力検証
+            const form = document.getElementById("summaryForm");
+            if (!form.checkValidity()) {
+                form.reportValidity(); // HTML5のバリデーションメッセージを表示
+                return;
+            }
+
+            saveSettings(); // 設定を保存
+
+            showStatus("処理を開始しています...");
+            startStatusPolling(); // ステータス更新を開始
+            document.getElementById("initial-message")?.remove();
+            document.getElementById("results-container").innerHTML = "";
+            document.getElementById("result-stats").textContent = "";
+            document.getElementById("model-used").textContent = "";
+
+            google.script.run
+                .withSuccessHandler(function(data) {
+                    console.log("Success handler started."); 
+                    stopStatusPolling(); 
+                    showStatus("結果を準備中..."); 
+                    const resultsContainer = document.getElementById("results-container");
+                    const summaryResults = data.summaryResults;
+
+                    if (!summaryResults || summaryResults.length === 0) {
+                        resultsContainer.innerHTML = `<div class="text-center text-muted mt-5"><p>対象の論文が見つかりませんでした。</p></div>`;
+                        hideStatus();
+                        return;
+                    }
+                    
+                    document.getElementById("result-stats").textContent = `${summaryResults.length}件の結果`;
+                    document.getElementById("model-used").textContent = `使用モデル: ${data.modelUsed}`;
+
+                    // 🌟 新規追加：拡張クエリの表示制御
+                    const queryContainer = document.getElementById("expanded-query-container");
+                    const queryText = document.getElementById("expanded-query-text");
+                    const inputType = document.querySelector('input[name="inputType"]:checked').value;
+                    
+                    // キーワード検索で、かつ元の入力からAIが文字列を拡張(変更)していたら表示する
+                    if (inputType === "keyword" && data.expandedQuery && data.expandedQuery !== formElements.searchWord.value) {
+                        queryText.textContent = data.expandedQuery;
+                        queryContainer.style.display = "block";
+                    } else {
+                        queryContainer.style.display = "none";
+                    }
+
+                    summaryResults.forEach((item, index) => {
+                        const card = `
+                            <div class="col-12">
+                                <div class="card shadow-sm h-100">
+                                    <div class="card-body d-flex flex-column">
+                                        <h5 class="card-title">${item.aiSummary.title || item.title || '(タイトルなし)'}</h5>
+                                        <div class="text-muted small mb-2">
+                                            <span>${item.author || '(著者不明)'}</span> | 
+                                            <span>${item.journal || '(掲載誌不明)'}</span> | 
+                                            <span>${item.epubDate || '(日付不明)'}</span>
+                                        </div>
+                                        <div class="ai-summary-box">
+                                            ${formatSummary(item.aiSummary, index)}
+                                        </div>
+                                        <div class="mt-auto pt-3">
+                                            ${generateLinks(item)}
+                                        
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        resultsContainer.innerHTML += card;
+                    });
+                    console.log("Finished processing results. Hiding status."); // 追加
+                    hideStatus(); // 処理完了
+                })
+                .withFailureHandler(function(error) {
+                    stopStatusPolling(); // ステータス更新を停止
+                    hideStatus();
+                    const resultsContainer = document.getElementById("results-container");
+                    resultsContainer.innerHTML = `<div class="alert alert-danger" role="alert">エラーが発生しました: ${error.message}</div>`;
+                })
+                .executeScript(
+                    document.querySelector('input[name="inputType"]:checked').value, // inputType
+                    formElements.searchWord.value,
+                    formElements.urlInput.value, // urlInput
+                    formElements.startDate.value,
+                    formElements.endDate.value,
+                    parseInt(formElements.maxPaperCount.value),
+                    formElements.sendEmailFlag.checked ? formElements.email.value : "",
+                    formElements.language.value,
+                    formElements.sendEmailFlag.checked,
+                    formElements.sourceFlag.value
+                );
+        }
+        
+        function formatSummary(summaryData, index) { // index を引数に追加
+            if (typeof summaryData === 'string') {
+                // 既存の文字列処理ロジック
+                let formattedText = summaryData.trim();
+                formattedText = formattedText
+                    .replace(/\s*【タイトル】\s*([\s\S]*?)(?=(【tl;dr】|【要約】|$))/g, '<strong>【タイトル】</strong><br>$1<br>')
+                    .replace(/\s*【tl;dr】\s*([\s\S]*?)(?=(【要約】|$))/g, '<strong>【tl;dr】</strong><br>$1<br>')
+                    .replace(/\s*【要約】\s*([\s\S]*?)(?=(【タイトル】|【tl;dr】|$))/g, '<strong>【要約】</strong><br>$1<br>');
+                formattedText = formattedText.replace(/\n/g, '<br>');
+                return formattedText;
+            } else if (typeof summaryData === 'object' && summaryData !== null) {
+                // JSONオブジェクトの場合の処理
+                const tldr = summaryData.tldr || '(短縮要約なし)';
+                const summary = summaryData.summary || {};
+                const keywords = summaryData.keywords || [];
+
+                let html = '';
+                // tl;dr セクション
+                html += `<div class="tldr-section">
+`;
+                html += `<strong>【tl;dr】</strong><br>${tldr}<br>`;
+                html += `</div>`;
+
+                // 詳細要約セクション（初期非表示）
+                const detailSummaryId = `detail-summary-${index}`; // ユニークなIDを生成
+                html += `<div id="${detailSummaryId}" class="summary-detail-section mt-3">
+`;
+                html += `<strong>【要約】</strong><br>`;
+                if (summary.background) html += `<strong>背景:</strong> ${summary.background}<br>`;
+                if (summary.objective) html += `<strong>目的:</strong> ${summary.objective}<br>`;
+                if (summary.methods) html += `<strong>方法:</strong> ${summary.methods}<br>`;
+                if (summary.results) html += `<strong>結果:</strong> ${summary.results}<br>`;
+                if (summary.conclusion) html += `<strong>結論:</strong> ${summary.conclusion}<br>`;
+                
+                if (!summary.background && !summary.objective && !summary.methods && !summary.results && !summary.conclusion) {
+                    html += '(要約内容なし)';
+                }
+                html += `</div>`;
+
+                // 展開/折りたたみボタン
+                html += `<div class="text-end mt-2">
+`;
+                html += `<a href="#" class="toggle-summary-btn" data-target="${detailSummaryId}" data-expanded="false">詳細を表示</a>`;
+                html += `</div>`;
+
+                // キーワードセクション
+                if (keywords.length > 0) {
+                    html += `<div class="keywords-section mt-3">
+`;
+                    html += `<strong>キーワード:</strong> ${keywords.join(', ')}<br>`;
+                    html += `</div>`;
+                }
+
+                return html;
+            }
+            return '(要約なし)';
+        }
+
+        // 詳細要約の表示/非表示を切り替える関数
+        function toggleSummaryDetail(event) {
+            event.preventDefault(); // リンクのデフォルト動作をキャンセル
+            const button = event.target;
+            const targetId = button.dataset.target;
+            const targetElement = document.getElementById(targetId);
+
+            if (targetElement) {
+                const isExpanded = button.dataset.expanded === 'true';
+                if (isExpanded) {
+                    targetElement.style.display = 'none';
+                    button.textContent = '詳細を表示';
+                    button.dataset.expanded = 'false';
+                } else {
+                    targetElement.style.display = 'block';
+                    button.textContent = '詳細を隠す';
+                    button.dataset.expanded = 'true';
+                }
+            }
+        }
+
+        // イベントリスナーをresults-containerに追加（イベント委譲）
+        document.addEventListener('click', function(event) {
+            if (event.target.classList.contains('toggle-summary-btn')) {
+                toggleSummaryDetail(event);
+            }
+        });
+
+        function createLink(label, url) {
+            if (!url) return '';
+            const icon = {
+                'PubMed': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="link-icon"><path d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>',
+                'DOI': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="link-icon"><path d="M4.715 6.542 3.343 7.914a.5.5 0 1 0 .707.707l1.372-1.372.001-.001.002-.002.002-.002.001-.001a.5.5 0 0 0 0-.707l-1.373-1.372a.5.5 0 1 0-.707.707l.001.001.002.002.002.002.001.001ZM11.285 9.458l1.372 1.372a.5.5 0 0 0 .707-.707l-1.372-1.372-.001-.001-.002-.002-.002-.002-.001-.001a.5.5 0 0 0 0 .707l1.373 1.372a.5.5 0 0 0 .707-.707l-.001-.001-.002-.002-.002-.002-.001-.001Zm-5.106-1.089.001.001.002.002.002.002.001.001a.5.5 0 0 0 0 .707l1.373 1.372a.5.5 0 0 0 .707-.707l-1.372-1.372-.001-.001-.002-.002-.002-.002-.001-.001a.5.5 0 1 0 0-.707l1.372-1.372a.5.5 0 0 0-.707-.707L6.18 8.37a.5.5 0 0 0 0 .707Z"/></svg>',
+                'PMC': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="link-icon"><path d="M4 0h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2zm0 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H4z"/><path d="M4.5 3.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5z"/></svg>',
+                'arXiv': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="link-icon"><path d="M14 0H2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2zM5.5 4h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1zm0 2h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1zm0 2h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1zm0 2h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1z"/></svg>',
+                'PDF': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="link-icon"><path d="M14 14V2a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM4 1h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/><path d="M6 5.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z"/></svg>'
+            };
+            return `<a href="${url}" target="_blank" class="btn btn-outline-secondary btn-sm me-1">${icon[label] || ''}${label}</a>`;
+        }
+
+        function generateLinks(item) {
+            let linksHtml = '';
+            if (item.source === 'PubMed') {
+                linksHtml += createLink('PubMed', item.url); // item.url に修正
+                linksHtml += createLink('DOI', item.doiUrl);
+                linksHtml += createLink('PMC', item.pmcUrl);
+            } else if (item.source === 'arXiv') {
+                linksHtml += createLink('arXiv', item.url); // item.url に修正
+                linksHtml += createLink('PDF', item.pdfUrl);
+                linksHtml += createLink('DOI', item.doiUrl);
+            }
+            return linksHtml;
+        }
+
+        function toggleInputType() {
+            const inputType = document.querySelector('input[name="inputType"]:checked').value;
+            const keywordContainer = document.getElementById("keywordInputContainer");
+            const urlContainer = document.getElementById("urlInputContainer");
+            const maxPaperCountDiv = formElements.maxPaperCount.closest('.mb-3'); // maxPaperCountの親div
+            const dateRangeDiv = formElements.startDate.closest('.row.g-2.mb-3'); // 日付範囲の親div
+
+            if (inputType === "keyword") {
+                keywordContainer.style.display = "block";
+                urlContainer.style.display = "none";
+                maxPaperCountDiv.style.display = "block"; // 表示
+                dateRangeDiv.style.display = "flex"; // 表示 (flexboxなのでflex)
+
+                formElements.searchWord.required = true;
+                formElements.urlInput.required = false;
+                formElements.maxPaperCount.required = true; // 必須にする
+                formElements.startDate.required = false; // 日付は必須ではないが、念のため
+                formElements.endDate.required = false; // 日付は必須ではないが、念のため
+            } else { // inputType === "url"
+                keywordContainer.style.display = "none";
+                urlContainer.style.display = "block";
+                maxPaperCountDiv.style.display = "none"; // 非表示
+                dateRangeDiv.style.display = "none"; // 非表示
+
+                formElements.searchWord.required = false;
+                formElements.urlInput.required = true;
+                formElements.maxPaperCount.required = false; // 必須ではない
+                formElements.startDate.required = false;
+                formElements.endDate.required = false;
+            }
+        }
+
+        // フォーム要素を初期化する関数
+        function initializeFormElements() {
+            formElements = {
+                searchWord: document.getElementById("searchWord"),
+                sourceFlag: document.getElementById("sourceFlag"),
+                startDate: document.getElementById("startDate"),
+                endDate: document.getElementById("endDate"),
+                maxPaperCount: document.getElementById("maxPaperCount"),
+                language: document.getElementById("language"),
+                sendEmailFlag: document.getElementById("sendEmailFlag"),
+                email: document.getElementById("email"),
+                urlInput: document.getElementById("urlInput") // 追加
+            };
+        }
+
+        // 設定を読み込み、フォームに適用する関数
+        function loadAndApplySettings() {
+            loadSettings(); // localStorageから設定を読み込む
+            toggleEmailInput(); // メール入力欄の表示を更新
+        }
+
+        // 初期日付を設定する関数
+        function setInitialDates() {
+            setDefaultDates(); // 日付をデフォルトに設定
+        }
+
+        window.onload = function() {
+            try {
+                initializeFormElements();
+                loadAndApplySettings();
+                setInitialDates();
+            } catch (e) {
+                console.error("Initialization error:", e);
+                // エラーが発生した場合、ユーザーにメッセージを表示するなどのフォールバック処理
+                document.body.innerHTML = '<div style="color: red; text-align: center; margin-top: 50px;">ページの読み込み中にエラーが発生しました。ブラウザのコンソールを確認してください。</div>';
+            }
+        };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
